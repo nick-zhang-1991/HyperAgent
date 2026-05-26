@@ -39,6 +39,9 @@ walkdir = "2.5"
 # Terminal progress
 indicatif = "0.17.8"
 
+# REPL input with history (up/down arrow, line editing)
+rustyline = "14"
+
 # Utilities
 anyhow = "1.0"
 thiserror = "1.0"

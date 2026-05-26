@@ -20,6 +20,9 @@ use crate::router::ModelRouter;
 use std::path::Path;
 use std::time::Instant;
 
+use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
+
 /// Run the interactive REPL session
 pub async fn run_repl() -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
@@ -61,11 +64,19 @@ pub async fn run_repl() -> anyhow::Result<()> {
     // Current mode
     let mut current_mode = "ask".to_string();
 
+    // Setup rustyline with persistent history
+    let history_path = dir.join(".hyper").join("history.txt");
+    let mut rl = DefaultEditor::new()?;
+    if history_path.exists() {
+        let _ = rl.load_history(&history_path);
+    }
+
     // Welcome banner
     println!();
     println!("╔══════════════════════════════════════════════╗");
     println!("║        HyperAgent Interactive Shell         ║");
     println!("║    Type prompts directly, like chatting     ║");
+    println!("║    ↑↓ arrow keys to browse history          ║");
     println!("╚══════════════════════════════════════════════╝");
     println!();
     println!("  Directory: {}", dir.display());
@@ -80,29 +91,33 @@ pub async fn run_repl() -> anyhow::Result<()> {
     // REPL loop
     let mut conversation_history: Vec<(String, String)> = Vec::new();
     loop {
-        // Print prompt
-        print!("hyper> ");
-        std::io::Write::flush(&mut std::io::stdout())?;
-
-        // Read a line
-        let mut line = String::new();
-        match std::io::stdin().read_line(&mut line) {
-            Ok(0) => {
-                println!(); // EOF
+        // Read line with rustyline (supports ↑↓ history, line editing)
+        let line = match rl.readline("hyper> ") {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => {
+                // Ctrl+C — print newline, continue
+                println!("^C");
+                continue;
+            }
+            Err(ReadlineError::Eof) => {
+                // Ctrl+D — exit
+                println!();
                 break;
             }
-            Ok(_) => {}
             Err(e) => {
                 eprintln!("Read error: {e}");
                 break;
             }
-        }
+        };
 
         let trimmed = line.trim().to_string();
 
         if trimmed.is_empty() {
             continue;
         }
+
+        // Add to rustyline history (for ↑↓ navigation)
+        rl.add_history_entry(&trimmed)?;
 
         // Handle slash commands
         if trimmed.starts_with('/') {
@@ -124,6 +139,9 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  /memory            Show memory stats");
                     println!("  /reindex           Force-rebuild the code index");
                     println!("  ───────────────────────────────────────");
+                    println!("  ↑↓ arrow keys      Browse command history");
+                    println!("  Ctrl+C             Cancel current input");
+                    println!("  Ctrl+D             Exit REPL");
                     println!("  Just type anything to ask the agent!");
                     println!();
                 }
@@ -152,7 +170,6 @@ pub async fn run_repl() -> anyhow::Result<()> {
                 "/memory" => {
                     let cnt = get_memory_count(&memory_path).unwrap_or(0);
                     println!("  Memory entries: {cnt}");
-                    // Show last 5
                     if cnt > 0 {
                         if let Ok(conn) = rusqlite::Connection::open(&memory_path) {
                             if let Ok(mut stmt) =
@@ -199,7 +216,6 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     match HyperIndex::new(&dir) {
                         Ok(mut new_idx) => match new_idx.build() {
                             Ok(s) => {
-                                // Replace the in-memory index
                                 index = Some(new_idx);
                                 println!("  Done: {} files, {} symbols", s.files, s.symbols);
                             }
@@ -215,30 +231,26 @@ pub async fn run_repl() -> anyhow::Result<()> {
             continue;
         }
 
-        // Run the agent with the prompt — reuse the persisted index and memory
-        match run_prompt(
+        // Run the agent with the prompt
+        if let Some(response_text) = run_prompt(
             &trimmed,
             &dir,
             &current_mode,
             &provider,
             &memory_path,
             &memory_store,
-            &mut index,  // pass mutable reference so index can be replaced if needed
+            &mut index,
             &conversation_history,
         ).await {
-            Some(response_text) => {
-                // Add current turn to history (for next iteration)
-                // Keep only last 10 turns to bound token usage
-                conversation_history.push((trimmed.clone(), response_text));
-                if conversation_history.len() > 10 {
-                    conversation_history.remove(0);
-                }
-            }
-            None => {
-                // Error — don't record to history
+            conversation_history.push((trimmed.clone(), response_text));
+            if conversation_history.len() > 10 {
+                conversation_history.remove(0);
             }
         }
     }
+
+    // Save rustyline history for next session
+    let _ = rl.save_history(&history_path);
 
     Ok(())
 }
@@ -258,7 +270,6 @@ async fn run_prompt(
 ) -> Option<String> {
     let start = Instant::now();
 
-    // Ensure index is available (build on first use if needed)
     if index.is_none() {
         match HyperIndex::new_or_load(dir) {
             Ok(mut idx) => {
@@ -274,21 +285,16 @@ async fn run_prompt(
         }
     }
 
-    // Build memory manager — reuse the persisted store connection
     let memory = _memory_store.as_ref().map(|store| {
         let wrapped_store: Box<dyn crate::memory::MemoryStore> = Box::new(store.clone());
         MemoryManager::new(wrapped_store, "hyperagent")
     });
 
-    // Fresh hooks
     let hooks = HookRegistry::new(dir);
-
-    // Build provider clone
     let provider = provider.clone();
 
     println!();
 
-    // Build orchestrator — take ownership of index, then give it back
     if let Some(idx) = index.take() {
         let mut orchestrator = crate::agent::orchestrator::Orchestrator::new(
             idx,
@@ -305,7 +311,6 @@ async fn run_prompt(
         }
         orchestrator = orchestrator.with_hooks(hooks);
 
-        // Connect MCP servers (REPL mode)
         let mcp_registry = crate::mcp::McpRegistry::new(dir);
         let mcp_servers = crate::mcp::McpRegistry::discover_servers(&[]);
         if !mcp_servers.is_empty() {
@@ -313,7 +318,6 @@ async fn run_prompt(
             orchestrator = orchestrator.with_mcp(mcp_registry);
         }
 
-        // Run
         let result = orchestrator.run(prompt).await;
         println!();
         let elapsed = start.elapsed();
@@ -328,7 +332,6 @@ async fn run_prompt(
                     result.memories_recorded,
                     result.files_modified,
                 );
-
                 Some(result.response_text.clone())
             }
             Err(e) => {
@@ -348,7 +351,6 @@ pub fn get_provider_from_config() -> LlmProvider {
         Ok(r) => r,
         Err(_) => return LlmProvider::from_env_or(None, None, None).unwrap(),
     };
-    // Hot-reload config
     let _ = router.refresh_if_changed();
     let agent_config = router
         .get_agent("build")
