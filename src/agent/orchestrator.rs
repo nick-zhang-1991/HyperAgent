@@ -583,10 +583,7 @@ impl Orchestrator {
     /// Load memory context relevant to the task
     async fn load_memory_context(&self, prompt: &str) -> String {
         match &self.memory {
-            Some(mem) => match mem.build_context(prompt, 8) {
-                Ok(ctx) => ctx,
-                Err(_) => String::new(),
-            },
+            Some(mem) => mem.build_context(prompt, 8).unwrap_or_default(),
             None => String::new(),
         }
     }
@@ -725,7 +722,7 @@ impl Orchestrator {
         }
 
         // Distribute steps evenly across N parallel agents
-        let chunk_size = (steps.len() + n - 1) / n;
+        let chunk_size = steps.len().div_ceil(n);
         let mut chunks = Vec::new();
         for i in 0..n {
             let start = i * chunk_size;

@@ -1,0 +1,5 @@
+target/
+.hyper/
+*.bak
+*.swp
+.DS_Store

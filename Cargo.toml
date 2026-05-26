@@ -1,0 +1,69 @@
+[package]
+name = "hyperagent"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+description = "Ultra-fast CLI coding agent with intelligent code indexing and multi-agent parallelism"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+tokio-stream = "0.1.15"
+futures = "0.3.30"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP client for LLM API
+reqwest = { version = "0.12.7", features = ["json", "stream", "blocking"] }
+bytes = "1.6"
+
+# Regex
+regex = "1.10"
+
+# File watching
+notify = "7.0"
+
+# Storage
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Graph algorithms
+petgraph = "0.6.5"
+
+# File operations
+ignore = "0.4.22"
+walkdir = "2.5"
+
+# Terminal progress
+indicatif = "0.17.8"
+
+# Utilities
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+uuid = { version = "1.10", features = ["v4"] }
+chrono = { version = "0.4.38", features = ["serde"] }
+dashmap = "6.0"
+parking_lot = "0.12.3"
+dirs-next = "2.0"
+toml = "0.8.19"
+base64 = "0.22"
+
+ratatui = { version = "0.28", optional = true }
+crossterm = { version = "0.28", optional = true }
+
+[features]
+default = []
+tui = ["ratatui", "crossterm"]
+
+[dev-dependencies]
+tempfile = "3.12"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,0 +1,217 @@
+use anyhow::Result;
+use rusqlite::Connection;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use super::graph::SymbolGraph;
+
+/// SQLite-based cache for the symbol index
+///
+/// Speeds up cold starts by persisting the parsed index.
+/// Uses a simple schema:
+/// - `symbols`: all symbol definitions
+/// - `references`: inter-file references  
+/// - `file_metadata`: file-level info
+pub struct IndexCache {
+    conn: Mutex<Connection>,
+    db_path: PathBuf,
+}
+
+impl IndexCache {
+    pub fn new(root: &Path) -> Result<Self> {
+        let cache_dir = root.join(".hyper");
+        std::fs::create_dir_all(&cache_dir)?;
+
+        let db_path = cache_dir.join("index.db");
+        let conn = Connection::open(&db_path)?;
+
+        // Create tables
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS files (
+                id INTEGER PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                rel_path TEXT NOT NULL,
+                language TEXT NOT NULL,
+                pagerank REAL DEFAULT 0.0
+            );
+            CREATE TABLE IF NOT EXISTS symbols (
+                id INTEGER PRIMARY KEY,
+                file_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                start_line INTEGER,
+                end_line INTEGER,
+                signature TEXT,
+                FOREIGN KEY (file_id) REFERENCES files(id)
+            );
+            CREATE TABLE IF NOT EXISTS ref_edges (
+                from_file INTEGER NOT NULL,
+                to_file INTEGER NOT NULL,
+                weight REAL DEFAULT 1.0,
+                PRIMARY KEY (from_file, to_file),
+                FOREIGN KEY (from_file) REFERENCES files(id),
+                FOREIGN KEY (to_file) REFERENCES files(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
+            CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
+            CREATE INDEX IF NOT EXISTS idx_ref_edges_from ON ref_edges(from_file);
+            ",
+        )?;
+
+        Ok(Self {
+            conn: Mutex::new(conn),
+            db_path,
+        })
+    }
+
+    pub fn has_data(&self) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM files", [], |row| {
+            let count: i64 = row.get(0)?;
+            Ok(count > 0)
+        })
+        .unwrap_or(false)
+    }
+
+    pub fn load_graph(&self) -> Result<SymbolGraph> {
+        let conn = self.conn.lock().unwrap();
+        let mut graph = SymbolGraph::new();
+
+        // Load files (we'll rebuild symbols and edges)
+        let mut stmt = conn.prepare("SELECT id, path, rel_path, language, pagerank FROM files")?;
+        let file_rows: Vec<(i64, String, String, String, f64)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Rebuild FileSymbols from cached data
+        for (_id, path, rel_path, language, _pagerank) in &file_rows {
+            let mut sym_stmt = conn.prepare(
+                "SELECT name, kind, start_line, end_line, signature FROM symbols WHERE file_id = ?1",
+            )?;
+            let mut symbols: Vec<super::Symbol> = Vec::new();
+            let rows = sym_stmt.query_map([_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i32>(2)?,
+                    row.get::<_, i32>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
+            for (name, kind, start, end, sig) in rows.flatten() {
+                    symbols.push(super::Symbol {
+                        name,
+                        kind: super::SymbolKind::from_str(&kind),
+                        start_line: start as usize,
+                        end_line: end as usize,
+                        signature: sig,
+                    });
+            }
+            drop(sym_stmt);
+
+            graph.add_file(super::FileSymbols {
+                file_path: PathBuf::from(path),
+                rel_path: rel_path.clone(),
+                language: language.clone(),
+                symbols,
+            })?;
+        }
+
+        // Build reference graph and compute PageRank
+        graph.build_reference_graph()?;
+        graph.compute_pagerank()?;
+
+        Ok(graph)
+    }
+
+    pub fn save_graph(&self, graph: &SymbolGraph) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        // Clear old data
+        conn.execute("DELETE FROM ref_edges", [])?;
+        conn.execute("DELETE FROM symbols", [])?;
+        conn.execute("DELETE FROM files", [])?;
+
+        // Save files and their symbols
+        let mut file_id: i64 = 0;
+        for file in &graph.files {
+            file_id += 1;
+            let rel_path = file.rel_path.as_str();
+            let path = file.path.to_string_lossy();
+            let lang = file.language.as_str();
+            conn.execute(
+                "INSERT INTO files (id, path, rel_path, language, pagerank) VALUES (?1, ?2, ?3, ?4, 0.0)",
+                rusqlite::params![file_id, path, rel_path, lang],
+            )?;
+
+            // Save symbols
+            for sym in &file.symbols {
+                conn.execute(
+                    "INSERT INTO symbols (file_id, name, kind, start_line, end_line, signature) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        file_id,
+                        sym.name,
+                        format!("{}", sym.kind),
+                        sym.start_line as i32,
+                        sym.end_line as i32,
+                        sym.signature,
+                    ],
+                )?;
+            }
+        }
+
+        // Save reference edges
+        for (from, to, weight) in graph.iter_edges() {
+            conn.execute(
+                "INSERT INTO ref_edges (from_file, to_file, weight) VALUES (?1, ?2, ?3)",
+                rusqlite::params![from, to, weight],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    pub fn size_str(&self) -> String {
+        let len = std::fs::metadata(&self.db_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        if len < 1024 {
+            format!("{len}B")
+        } else if len < 1024 * 1024 {
+            format!("{:.1}KB", len as f64 / 1024.0)
+        } else {
+            format!("{:.1}MB", len as f64 / (1024.0 * 1024.0))
+        }
+    }
+
+    /// Get the path to the cache database file (for watcher invalidation)
+    pub fn db_path(&self) -> PathBuf {
+        self.db_path.clone()
+    }
+}
+
+pub fn symbol_kind_from_str(s: &str) -> super::SymbolKind {
+    match s {
+        "function" => super::SymbolKind::Function,
+        "class" => super::SymbolKind::Class,
+        "struct" => super::SymbolKind::Struct,
+        "trait" => super::SymbolKind::Trait,
+        "enum" => super::SymbolKind::Enum,
+        "interface" => super::SymbolKind::Interface,
+        "method" => super::SymbolKind::Method,
+        "variable" => super::SymbolKind::Variable,
+        "import" => super::SymbolKind::Import,
+        "macro" => super::SymbolKind::Macro,
+        _ => super::SymbolKind::Other(s.to_string()),
+    }
+}
