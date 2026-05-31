@@ -11,6 +11,7 @@ impl GitOps {
         root.join(".git").exists()
     }
 
+    #[allow(dead_code)]
     /// Get the current diff (unstaged changes)
     pub fn get_diff(root: &Path) -> Result<String> {
         let output = Command::new("git")
@@ -29,6 +30,7 @@ impl GitOps {
         Ok(())
     }
 
+    #[allow(dead_code)]
     /// Commit with message
     pub fn commit(root: &Path, message: &str) -> Result<()> {
         Command::new("git")
@@ -38,6 +40,7 @@ impl GitOps {
         Ok(())
     }
 
+    #[allow(dead_code)]
     /// Get tracked files
     pub fn get_tracked_files(root: &Path) -> Result<Vec<String>> {
         let output = Command::new("git")
@@ -111,6 +114,7 @@ impl GitOps {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
+    #[allow(dead_code)]
     /// Get changed files vs HEAD
     pub fn get_changed_files(root: &Path) -> Result<Vec<String>> {
         let output = Command::new("git")
@@ -124,6 +128,7 @@ impl GitOps {
         Ok(files)
     }
 
+    #[allow(dead_code)]
     /// Get file content at a specific commit
     pub fn show_file(root: &Path, commit: &str, path: &str) -> Result<String> {
         let output = Command::new("git")
@@ -133,6 +138,7 @@ impl GitOps {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
+    #[allow(dead_code)]
     /// Get current branch name
     pub fn current_branch(root: &Path) -> Result<String> {
         let output = Command::new("git")

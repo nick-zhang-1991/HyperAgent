@@ -7,11 +7,6 @@
 //! 4. **Minimal Context** - Only sends the most relevant code to the LLM
 //! 5. **Incremental Updates** - Watches filesystem, re-indexes only changed files
 //!
-//! Many public API structs/methods are part of the plugin/extension system,
-//! intentionally not directly called from main. dead_code is allowed at crate level.
-
-#![allow(dead_code)]
-
 mod agent;
 mod agent_graph;
 mod cli;

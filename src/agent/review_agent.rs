@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::path::Path;
 
 use crate::diff::FileChange;
 use crate::llm::{LlmProvider, Message};
@@ -13,12 +12,11 @@ use crate::llm::{LlmProvider, Message};
 /// Changes must PASS BOTH stages to be approved.
 pub struct ReviewAgent<'a> {
     provider: &'a LlmProvider,
-    root: &'a Path,
 }
 
 impl<'a> ReviewAgent<'a> {
-    pub fn new(provider: &'a LlmProvider, root: &'a Path) -> Self {
-        Self { provider, root }
+    pub fn new(provider: &'a LlmProvider) -> Self {
+        Self { provider }
     }
 
     pub async fn review(
@@ -223,9 +221,11 @@ Numbers are 0-based indices of the proposed changes."#
 #[derive(Debug)]
 struct MergedReviewResult {
     spec_approved: Vec<usize>,
+    #[allow(dead_code)]
     spec_rejected: Vec<usize>,
     spec_reasons: std::collections::HashMap<usize, String>,
     quality_approved: Vec<usize>,
+    #[allow(dead_code)]
     quality_rejected: Vec<usize>,
     quality_reasons: std::collections::HashMap<usize, String>,
 }

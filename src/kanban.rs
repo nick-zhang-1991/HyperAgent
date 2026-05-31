@@ -166,6 +166,7 @@ impl KanbanBoard {
         ready
     }
 
+    #[allow(dead_code)]
     /// Mark a card as in-progress
     pub async fn start_card(&self, id: &str, agent_id: &str, worktree: PathBuf) -> anyhow::Result<()> {
         let mut cards = self.cards.lock().await;

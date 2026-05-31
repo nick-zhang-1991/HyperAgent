@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use crate::index::FileContext;
 use crate::llm::{LlmProvider, Message};
 use anyhow::Result;
@@ -15,6 +13,7 @@ use anyhow::Result;
 pub struct Plan {
     pub summary: String,
     pub steps: Option<Vec<String>>,
+    #[allow(dead_code)]
     pub reasoning: String,
 }
 
@@ -26,12 +25,11 @@ pub struct Plan {
 /// - Steps reference exact file paths
 pub struct PlanAgent<'a> {
     provider: &'a LlmProvider,
-    root: &'a Path,
 }
 
 impl<'a> PlanAgent<'a> {
-    pub fn new(provider: &'a LlmProvider, root: &'a Path) -> Self {
-        Self { provider, root }
+    pub fn new(provider: &'a LlmProvider) -> Self {
+        Self { provider }
     }
 
     pub async fn create_plan(

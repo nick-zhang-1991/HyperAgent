@@ -30,10 +30,12 @@ pub struct RunResult {
     pub files_modified: usize,
     pub tokens_used: usize,
     pub elapsed: Duration,
+    #[allow(dead_code)]
     pub changes: Vec<FileChange>,
     pub model_name: String,
     pub memories_recorded: usize,
     pub response_text: String,  // The LLM's text response (for conversation history)
+    #[allow(dead_code)]
     pub cost_estimate: f64,     // Estimated USD cost
 }
 
@@ -109,11 +111,13 @@ impl Orchestrator {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_plan_provider(mut self, provider: LlmProvider) -> Self {
         self.plan_provider = Some(provider);
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_review_provider(mut self, provider: LlmProvider) -> Self {
         self.review_provider = Some(provider);
         self
@@ -216,7 +220,7 @@ impl Orchestrator {
         self.fire_hook(HookEvent::PreReview, prompt).await;
         println!("🔎 Reviewing changes...");
         let review_provider = self.review_provider.as_ref().unwrap_or(&self.provider);
-        let review_agent = ReviewAgent::new(review_provider, &self.root);
+        let review_agent = ReviewAgent::new(review_provider);
         let approved = review_agent.review(prompt, &all_changes).await?;
 
         if approved.is_empty() {
@@ -615,7 +619,7 @@ impl Orchestrator {
                 println!("   🔄 Retrying plan creation (attempt {attempt}/{max_attempts})...");
             }
             let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
-            let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider, &self.root);
+            let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
             match plan_agent.create_plan(prompt, files).await {
                 Ok(plan) => {
                     if plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false) {
@@ -629,7 +633,7 @@ impl Orchestrator {
             }
         }
         // Last attempt: return whatever we got, even if empty
-        let plan_agent = crate::agent::plan_agent::PlanAgent::new(&self.provider, &self.root);
+        let plan_agent = crate::agent::plan_agent::PlanAgent::new(&self.provider);
         plan_agent.create_plan(prompt, files).await
     }
 

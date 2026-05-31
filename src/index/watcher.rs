@@ -17,6 +17,7 @@ pub struct FileWatcher {
 }
 
 impl FileWatcher {
+    #[allow(dead_code)]
     /// Create a new file watcher
     pub fn new(_root: &Path, callback: impl Fn(Vec<String>) + Send + 'static) -> Result<Self> {
         let (tx, rx) = mpsc::channel::<Event>();

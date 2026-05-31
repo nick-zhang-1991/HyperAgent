@@ -123,6 +123,7 @@ impl HookRegistry {
         }
     }
 
+    #[allow(dead_code)]
     /// Load hooks from config
     pub fn load_from_config(&mut self, hooks: Vec<Hook>) {
         self.hooks = hooks;

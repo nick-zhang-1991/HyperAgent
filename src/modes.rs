@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 /// Built-in and custom agent modes
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
 pub enum ModeKind {
     /// Default — write production code, run tests, edit files
     Code,
@@ -195,11 +196,13 @@ impl ModeRegistry {
         self.modes.values().collect()
     }
 
+    #[allow(dead_code)]
     /// Add or override a custom mode
     pub fn register(&mut self, name: String, config: ModeConfig) {
         self.modes.insert(name, config);
     }
 
+    #[allow(dead_code)]
     /// Load custom modes from config.toml `[modes.*]` sections
     pub fn load_from_config(&mut self, config_modes: HashMap<String, ModeConfig>) {
         for (name, config) in config_modes {
@@ -207,6 +210,7 @@ impl ModeRegistry {
         }
     }
 
+    #[allow(dead_code)]
     /// Get the system prompt for a mode, combined with base context
     pub fn build_prompt(&self, mode: &str, base_instructions: Option<&str>) -> String {
         let mode_cfg = self.modes.get(mode)

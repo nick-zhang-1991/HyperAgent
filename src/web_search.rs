@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 /// Search result item
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct SearchResult {
     title: String,
     link: String,

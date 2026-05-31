@@ -7,12 +7,14 @@ use std::time::Duration;
 
 /// A simple terminal spinner that runs on a background thread.
 /// Drop the handle to stop the spinner.
+#[allow(dead_code)]
 pub struct Spinner {
     running: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
 impl Spinner {
+    #[allow(dead_code)]
     /// Start a new spinner with the given message
     pub fn start(message: impl Into<String>) -> Self {
         let running = Arc::new(AtomicBool::new(true));

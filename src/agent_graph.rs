@@ -47,6 +47,7 @@ pub struct AgentNode {
 
 /// Edge connecting parent → child
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct SpawnEdge {
     pub parent_id: AgentId,
     pub child_id: AgentId,
@@ -340,6 +341,7 @@ impl WorktreeManager {
         }
     }
 
+    #[allow(dead_code)]
     /// Create an isolated worktree for a sub-agent
     pub fn create_worktree(&self, node: &AgentNode) -> anyhow::Result<PathBuf> {
         let worktree_dir = self.project_root.join(".hyper").join("worktrees").join(&node.id);
@@ -443,6 +445,7 @@ impl WorktreeManager {
     }
 }
 
+#[allow(dead_code)]
 fn copy_dir(src: &Path, dst: &Path) -> anyhow::Result<()> {
     for entry in walkdir::WalkDir::new(src)
         .into_iter()

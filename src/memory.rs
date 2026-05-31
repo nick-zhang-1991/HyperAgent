@@ -449,6 +449,7 @@ impl MemoryManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_session(mut self, session_id: String) -> Self {
         self.session_id = Some(session_id);
         self

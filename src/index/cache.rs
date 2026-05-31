@@ -195,11 +195,13 @@ impl IndexCache {
     }
 
     /// Get the path to the cache database file (for watcher invalidation)
+    #[allow(dead_code)]
     pub fn db_path(&self) -> PathBuf {
         self.db_path.clone()
     }
 }
 
+#[allow(dead_code)]
 pub fn symbol_kind_from_str(s: &str) -> super::SymbolKind {
     match s {
         "function" => super::SymbolKind::Function,

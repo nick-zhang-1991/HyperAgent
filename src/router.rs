@@ -304,6 +304,7 @@ impl ModelRouter {
         self.agents.iter().collect()
     }
 
+    #[allow(dead_code)]
     /// Export config as TOML string
     pub fn export_config(&self) -> String {
         let config = RouterConfig {

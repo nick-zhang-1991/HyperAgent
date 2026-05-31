@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub struct DocChunk {
     pub file: PathBuf,
     pub content: String,
+    #[allow(dead_code)]
     pub chunk_index: usize,
     pub score: f64,
 }

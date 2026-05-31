@@ -51,6 +51,7 @@ impl StreamingResponse {
         Self { rx }
     }
 
+    #[allow(dead_code)]
     /// Collect all streamed content into a single string
     pub async fn collect_string(self) -> String {
         let mut result = String::new();
@@ -68,6 +69,7 @@ impl StreamingResponse {
 }
 
 /// A stream wrapper for async iteration
+#[allow(dead_code)]
 pub struct TextStream {
     rx: mpsc::Receiver<String>,
 }

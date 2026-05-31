@@ -64,6 +64,7 @@ pub struct ChatResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatChoice {
     pub message: ChatResponseMessage,
+    #[allow(dead_code)]
     pub finish_reason: Option<String>,
 }
 
@@ -71,6 +72,7 @@ pub struct ChatChoice {
 pub struct ChatResponseMessage {
     pub content: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub tool_calls: Vec<ToolCall>,
 }
 
@@ -87,23 +89,27 @@ fn adaptive_max_tokens(messages: &[Message]) -> u32 {
     estimated as u32
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ChatChunk {
     choices: Vec<Choice>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Choice {
     delta: Delta,
     finish_reason: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Default)]
 struct Delta {
     #[serde(default)]
     content: Option<String>,
 }
 
+#[allow(dead_code)]
 /// Retry with exponential backoff for transient LLM API errors
 async fn retry_chat<F, Fut>(f: F, max_retries: u32) -> Result<String>
 where

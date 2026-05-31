@@ -3,7 +3,7 @@ use petgraph::graph::{NodeIndex, UnGraph};
 use petgraph::visit::EdgeRef;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-// 
+
 use super::{FileSymbols, Symbol, SymbolKind};
 
 /// The symbol graph for PageRank-based file relevance
@@ -34,6 +34,7 @@ pub(crate) struct FileEntry {
     pub(crate) rel_path: String,
     pub(crate) language: String,
     pub(crate) symbols: Vec<Symbol>,
+    #[allow(dead_code)]
     size: usize,
 }
 

@@ -205,6 +205,7 @@ impl McpRegistry {
         all
     }
 
+    #[allow(dead_code)]
     /// Convert MCP tools to OpenAI-compatible ToolDefinitions
     pub async fn to_tool_definitions(&self) -> Vec<crate::llm::provider::ToolDefinition> {
         let tools = self.get_all_tools().await;
@@ -281,7 +282,8 @@ impl McpRegistry {
             println!("  🔌 Disconnected from {count} MCP server(s)");
         }
     }
-
+    #[allow(dead_code)]
+    /// List connected servers with tool counts
     pub async fn list_connections(&self) -> Vec<String> {
         let connections = self.connections.lock().await;
         connections.iter()
