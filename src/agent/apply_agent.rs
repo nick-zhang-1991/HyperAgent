@@ -80,40 +80,82 @@ impl<'a> ApplyAgent<'a> {
             // SECURITY: file size limit
             check_file_size(&change.file)?;
 
-            // Show diff preview
+            // Show diff preview with enhanced interactive controls
             if self.confirm {
-                println!("\n📝 Proposed change for: {}", change.file.display());
-                println!("   Type: {}", change.change_type);
+                use std::io::{self, Write};
+                let rel_path = change.file.strip_prefix(self.root).unwrap_or(&change.file);
+                println!("\n📝 {} {}:", change.change_type.to_uppercase(), rel_path.display());
 
+                // Show diff content
                 if let (Some(old), Some(new)) = (&change.old_content, &change.new_content) {
-                    // Show simple diff
                     let old_lines: Vec<&str> = old.lines().collect();
                     let new_lines: Vec<&str> = new.lines().collect();
                     let max = old_lines.len().max(new_lines.len());
+                    let mut diff_lines = Vec::new();
 
                     for i in 0..max {
                         let old_line = old_lines.get(i).unwrap_or(&"");
                         let new_line = new_lines.get(i).unwrap_or(&"");
                         if old_line != new_line {
                             if i < old_lines.len() {
-                                println!("   - {}", old_line);
+                                diff_lines.push(format!("  \x1b[31m- {}\x1b[0m", old_line));
                             }
                             if i < new_lines.len() {
-                                println!("   + {}", new_line);
+                                diff_lines.push(format!("  \x1b[32m+ {}\x1b[0m", new_line));
                             }
                         }
                     }
+
+                    // Show first 10 diff lines
+                    for line in diff_lines.iter().take(10) {
+                        println!("{line}");
+                    }
+                    if diff_lines.len() > 10 {
+                        println!("  ... and {} more lines", diff_lines.len() - 10);
+                    }
+                } else if let Some(content) = &change.new_content {
+                    println!("   (full file, {} chars)", content.len());
                 }
 
-                print!("   Apply this change? [Y/n] ");
-                use std::io::{self, Write};
+                println!("   [Y]es  [n]o  [s]kip  [a]pply all  [v]iew full diff");
+                print!("   └─ ");
                 let _ = io::stdout().flush();
                 let mut input = String::new();
                 io::stdin().read_line(&mut input).ok();
                 let input = input.trim().to_lowercase();
-                if input == "n" || input == "no" {
-                    messages.push(format!("Skipped: {}", change.file.display()));
-                    continue;
+
+                match input.as_str() {
+                    "n" | "no" => {
+                        messages.push(format!("Rejected: {}", change.file.display()));
+                        continue;
+                    }
+                    "s" | "skip" => {
+                        messages.push(format!("Skipped: {}", change.file.display()));
+                        continue;
+                    }
+                    "a" | "all" => {
+                        messages.push(format!("   ✅ Auto-approved remaining changes"));
+                        // Don't continue — fall through to apply
+                    }
+                    "v" | "view" => {
+                        // Show full file diff
+                        if let Some(content) = &change.new_content {
+                            println!("   ┌─ Full content of {} ", change.file.display());
+                            for line in content.lines() {
+                                println!("   │ {line}");
+                            }
+                            println!("   └─ End of file");
+                        }
+                        print!("   Apply this change? [Y/n] ");
+                        let _ = io::stdout().flush();
+                        let mut confirm = String::new();
+                        io::stdin().read_line(&mut confirm).ok();
+                        if confirm.trim().to_lowercase() == "n" {
+                            messages.push(format!("Rejected: {}", change.file.display()));
+                            continue;
+                        }
+                    }
+                    _ => {} // default: apply
                 }
             }
 
