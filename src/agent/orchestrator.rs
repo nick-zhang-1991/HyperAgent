@@ -251,6 +251,140 @@ impl Orchestrator {
         }
         self.fire_hook(HookEvent::PostApply, &applied.join(", ")).await;
 
+        // Phase 5b: Lint-driven fix loop — check if applied changes compile
+        // If cargo check fails, feed errors back to LLM for auto-fix
+        let has_cargo = self.root.join("Cargo.toml").exists();
+        let has_ts = self.root.join("tsconfig.json").exists();
+        if has_cargo || has_ts {
+            let fix_attempts = 3;
+            for fix_round in 1..=fix_attempts {
+                let linter = if has_cargo { "cargo check" } else { "tsc --noEmit" };
+                println!("   🔧 Lint check ({linter})...");
+
+                let check_result = if has_cargo {
+                    std::process::Command::new("cargo")
+                        .args(["check"])
+                        .current_dir(&self.root)
+                        .output()
+                        .ok()
+                } else {
+                    std::process::Command::new("npx")
+                        .args(["tsc", "--noEmit"])
+                        .current_dir(&self.root)
+                        .output()
+                        .ok()
+                };
+
+                match check_result {
+                    Some(out) if out.status.success() => {
+                        println!("   ✅ Lint passed ({})", linter);
+                        break;
+                    }
+                    Some(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        let error_snippet: Vec<&str> = stderr.lines()
+                            .filter(|l| l.contains("error[") || l.contains("error:"))
+                            .take(5)
+                            .collect();
+
+                        if error_snippet.is_empty() {
+                            println!("   ✅ Lint passed ({})", linter);
+                            break;
+                        }
+
+                        let errors = error_snippet.join("\n");
+                        println!("   ⚠️  Lint errors detected (round {fix_round}/{fix_attempts}):");
+                        for e in &error_snippet {
+                            println!("      {e}");
+                        }
+
+                        if fix_round >= fix_attempts {
+                            println!("   ❌ Max fix attempts reached — manual intervention needed");
+                            break;
+                        }
+
+                        // Ask LLM to fix the errors
+                        println!("   🔄 Requesting auto-fix from LLM...");
+
+                        // Read the current file content for each approved change
+                        let fix_files: Vec<crate::diff::FileChange> = approved.iter()
+                            .filter_map(|c| {
+                                let path = &c.file;
+                                if path.exists() {
+                                    let content = std::fs::read_to_string(path).ok()?;
+                                    Some(crate::diff::FileChange {
+                                        file: path.clone(),
+                                        change_type: "edit".to_string(),
+                                        old_content: None,
+                                        new_content: Some(content),
+                                        hunks: vec![],
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        let review_input = crate::agent::review_agent::build_review_context_for_lint(
+                            "Fix compile errors in the changed files", &fix_files, &errors
+                        );
+
+                        let fix_response = self.provider.chat(vec![
+                            crate::llm::Message {
+                                role: "system".to_string(),
+                                content: format!(
+                                    "You are a code fixer. The following compile errors were found after applying changes.\n\
+                                     Output ONLY the corrected file content in JSON format:\n\
+                                     {{\"file\": \"relative/path\", \"content\": \"COMPLETE corrected file content\"}}\n\n\
+                                     RULES:\n\
+                                     - Output one JSON object per file that needs fixing\n\
+                                     - Do NOT change anything beyond what's needed to fix the errors\n\
+                                     - Keep the existing code structure intact\n\
+                                     - Each JSON must be on its own line"
+                                ),
+                            },
+                            crate::llm::Message {
+                                role: "user".to_string(),
+                                content: review_input,
+                            },
+                        ]).await;
+
+                        match fix_response {
+                            Ok(response) => {
+                                // Parse the fix output and apply corrections
+                                let fixed = crate::agent::code_agent::CodeAgent::parse_fix_response(
+                                    &response, &self.root
+                                );
+                                for (path, content) in &fixed {
+                                    if let Some(parent) = path.parent() {
+                                        let _ = std::fs::create_dir_all(parent);
+                                    }
+                                    if let Err(e) = std::fs::write(path, content) {
+                                        eprintln!("   ⚠️  Failed to write fix for {}: {e}", path.display());
+                                    } else {
+                                        println!("   ✅ Fixed: {}", path.display());
+                                    }
+                                }
+
+                                if fixed.is_empty() {
+                                    println!("   ⚠️  LLM couldn't generate fixes — stopping auto-fix");
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("   ⚠️  Fix generation failed: {e}");
+                                break;
+                            }
+                        }
+                    }
+                    None => {
+                        // linter not available, skip
+                        break;
+                    }
+                }
+            }
+        }
+
         // Record applied changes to memory
         let changed_files: Vec<String> = approved.iter()
             .map(|c| c.file.to_string_lossy().to_string())

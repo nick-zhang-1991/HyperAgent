@@ -203,3 +203,28 @@ Rules:
         changes
     }
 }
+
+/// Parse LLM fix response — returns (path, content) pairs
+impl<'a> CodeAgent<'a> {
+    pub fn parse_fix_response(response: &str, root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
+        let mut fixed = Vec::new();
+        let mut start = 0;
+        while let Some(json_start) = response[start..].find('{') {
+            let actual_start = start + json_start;
+            if let Some(json_end) = response[actual_start..].find('}') {
+                let candidate = &response[actual_start..=actual_start + json_end];
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(candidate) {
+                    let file = parsed["file"].as_str().unwrap_or("");
+                    let content = parsed["content"].as_str().unwrap_or("");
+                    if !file.is_empty() && !content.is_empty() {
+                        fixed.push((root.join(file), content.to_string()));
+                    }
+                }
+                start = actual_start + json_end + 1;
+            } else {
+                break;
+            }
+        }
+        fixed
+    }
+}

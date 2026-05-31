@@ -218,6 +218,22 @@ Numbers are 0-based indices of the proposed changes."#
     }
 }
 
+/// Build review context for lint errors — used by orchestrator lint fix loop
+pub fn build_review_context_for_lint(task: &str, changes: &[FileChange], errors: &str) -> String {
+    let mut ctx = format!("Task: {task}\n\nCompile errors:\n```\n{errors}\n```\n\nAffected files:\n");
+
+    for change in changes {
+        ctx.push_str(&format!(
+            "\n--- {} ---\n",
+            change.file.display()
+        ));
+        if let Some(content) = &change.new_content {
+            ctx.push_str(&format!("CURRENT CONTENT:\n```\n{content}\n```\n"));
+        }
+    }
+    ctx
+}
+
 #[derive(Debug)]
 struct MergedReviewResult {
     spec_approved: Vec<usize>,
