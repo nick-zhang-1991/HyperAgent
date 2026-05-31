@@ -836,10 +836,11 @@ impl Orchestrator {
                 let p = augmented_prompt.to_string();
                 let files = relevant_files.to_vec();
                 let chunk_steps = chunk.steps.clone();
+                let agent_name = chunk.name.clone();
 
                 tokio::spawn(async move {
                     let agent = crate::agent::code_agent::CodeAgent::new(&provider, &root);
-                    let changes = agent.execute(&p, &chunk_steps, &files).await;
+                    let changes = agent.execute_stream(&agent_name, &p, &chunk_steps, &files).await;
                     let _ = tx.send((i, changes)).await;
                 });
             }

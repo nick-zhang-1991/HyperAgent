@@ -25,76 +25,8 @@ impl<'a> CodeAgent<'a> {
         steps: &[String],
         files: &[FileContext],
     ) -> Vec<FileChange> {
-        if steps.is_empty() {
-            return vec![];
-        }
-
-        let system_prompt = r#"You are HyperAgent's CodeAgent. You write precise, surgical code changes.
-
-=== KARPATHY GUIDELINES — YOU MUST FOLLOW THESE ===
-
-1. THINK BEFORE CODING
-- First analyze the existing code structure and patterns
-- Surface assumptions about what needs to change
-
-2. SIMPLICITY FIRST
-- Minimum code that solves exactly the problem, nothing more
-- No abstractions for single-use code
-- NO speculative code — only what directly serves the plan step
-
-3. SURGICAL CHANGES
-- Touch ONLY the files and lines needed for this task
-- Do NOT "improve" adjacent code, formatting, or comments
-- Match existing code style exactly
-- Every changed line must trace directly to the user's request
-
-4. REMOVE ORPHANS
-- When your changes make something unused, remove it
-
-5. VERIFY YOUR OUTPUT
-- Ensure no syntax errors in the generated code
-- Verify the change actually solves the intended step
-=== END KARPATHY GUIDELINES ===
-
-Output format — output one JSON object per line with either FULL-FILE or DIFF mode:
-
-FULL-FILE mode (for creates and deletes):
-{"file": "relative/path/to/file", "change_type": "create|delete", "content": "COMPLETE file content"}
-
-DIFF mode (for edits — PREFERRED, saves tokens):
-{"file": "relative/path/to/file", "change_type": "edit", "diff": "@@ -line,count +line,count @@\n context line\n-old line\n+new line\n..."}
-
-Rules:
-- For CREATE and DELETE: use FULL-FILE mode (content field)
-- For EDIT: use DIFF mode (diff field) — output ONLY the changed lines as a unified diff
-- The diff format uses `@@ -old_start,old_count +new_start,new_count @@` headers
-- Lines starting with space are context, `-` is removed, `+` is added
-- Output ONLY valid JSON objects, one per line
-- No extra text, no markdown outside JSON
-"#;
-
-        let file_context = self.build_file_context(files);
-
-        let user_message = format!(
-            "Plan steps to execute:\n{}\n\nRelevant files (symbols only):\n{}\n\nGenerate the necessary code changes. For edits, use DIFF format. For new files, use full content.",
-            steps.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n"),
-            file_context,
-        );
-
-        match self
-            .provider
-            .chat(vec![
-                Message { 
-                    role: "system".to_string(),
-                    content: system_prompt.to_string(),
-                },
-                Message { 
-                    role: "user".to_string(),
-                    content: user_message,
-                },
-            ])
-            .await
-        {
+        let (messages, _) = self.build_messages(steps, files);
+        match self.provider.chat(messages).await {
             Ok(response) => self.parse_changes(&response),
             Err(e) => {
                 eprintln!("   CodeAgent error: {e}");
@@ -103,8 +35,94 @@ Rules:
         }
     }
 
-    /// Build condensed file context: only file info, symbols, and first 3 lines as style preview.
-    /// No full-file dumps — saves ~80% input tokens.
+    /// Execute with streaming output — prints LLM response as it arrives
+    pub async fn execute_stream(
+        &self,
+        agent_name: &str,
+        _prompt: &str,
+        steps: &[String],
+        files: &[FileContext],
+    ) -> Vec<FileChange> {
+        let (messages, _) = self.build_messages(steps, files);
+
+        match self.provider.chat_stream(messages.clone()).await {
+            Ok(stream) => {
+                let mut rx = stream.into_receiver();
+                let mut full_response = String::new();
+                print!("   💻 {}: ", agent_name);
+                use std::io::{Write, stdout};
+                stdout().flush().ok();
+
+                while let Some(chunk) = rx.recv().await {
+                    print!("{chunk}");
+                    stdout().flush().ok();
+                    full_response.push_str(&chunk);
+                }
+                println!();
+                self.parse_changes(&full_response)
+            }
+            Err(_) => {
+                match self.provider.chat(messages).await {
+                    Ok(response) => self.parse_changes(&response),
+                    Err(e) => {
+                        eprintln!("   CodeAgent error: {e}");
+                        vec![]
+                    }
+                }
+            }
+        }
+    }
+
+    /// Build messages for the LLM call
+    fn build_messages(&self, steps: &[String], files: &[FileContext]) -> (Vec<Message>, String) {
+        if steps.is_empty() {
+            return (vec![], String::new());
+        }
+
+        let system_prompt = r#"You are HyperAgent's CodeAgent. You write precise, surgical code changes.
+
+=== KARPATHY GUIDELINES — YOU MUST FOLLOW THESE ===
+
+1. THINK BEFORE CODING
+2. SIMPLICITY FIRST
+3. SURGICAL CHANGES
+4. REMOVE ORPHANS
+5. VERIFY YOUR OUTPUT
+=== END KARPATHY GUIDELINES ===
+
+Output format — JSON objects:
+
+FULL-FILE (create|delete): {"file": "path", "change_type": "create|delete", "content": "..."}
+DIFF (edit — PREFERRED):   {"file": "path", "change_type": "edit", "diff": "@@ -1,3 +1,4 @@..."}
+
+Rules:
+- For EDIT use DIFF mode — output ONLY the changed lines
+- For CREATE/DELETE use FULL-FILE mode
+- Output ONLY valid JSON, one per line
+- No extra text outside JSON
+"#;
+
+        let file_context = self.build_file_context(files);
+        let user_message = format!(
+            "Plan steps:\n{}\n\nRelevant files:\n{}\n\nGenerate code changes with DIFF format for edits.",
+            steps.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n"),
+            file_context,
+        );
+
+        let messages = vec![
+            Message {
+                role: "system".to_string(),
+                content: system_prompt.to_string(),
+            },
+            Message {
+                role: "user".to_string(),
+                content: user_message,
+            },
+        ];
+        (messages, file_context)
+    }
+
+    /// Build condensed file context: file info, symbols, and first 3 lines as style preview.
     fn build_file_context(&self, files: &[FileContext]) -> String {
         let mut ctx = String::new();
         for file in files {
@@ -115,7 +133,6 @@ Rules:
                 file.score
             ));
 
-            // Show first 3 lines as style preview
             let preview: Vec<&str> = file.content.lines().take(3).collect();
             if !preview.is_empty() {
                 ctx.push_str("  Style preview:\n  ```\n");
@@ -154,7 +171,6 @@ Rules:
                                     None
                                 };
 
-                                // Support both diff mode and full-content mode for edits
                                 if let Some(diff_text) = parsed["diff"].as_str() {
                                     let hunks = text_to_hunks(diff_text);
                                     changes.push(FileChange {
@@ -165,7 +181,6 @@ Rules:
                                         hunks,
                                     });
                                 } else if let Some(content) = parsed["content"].as_str() {
-                                    // Fallback: full-file mode
                                     changes.push(FileChange {
                                         file: path,
                                         change_type: "edit".to_string(),
@@ -199,7 +214,6 @@ Rules:
                 break;
             }
         }
-
         changes
     }
 }
