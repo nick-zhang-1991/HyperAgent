@@ -199,7 +199,7 @@ impl Orchestrator {
 
         // Phase 1: Get relevant files from PageRank index
         println!("🔍 Scanning codebase with PageRank...");
-        let relevant_files = self.index.get_relevant_files(prompt, 15, 4000);
+        let mut relevant_files = self.index.get_relevant_files(prompt, 15, 4000);
         println!("   Found {} relevant files\n", relevant_files.len());
 
         // Record file discovery to memory
@@ -240,6 +240,11 @@ impl Orchestrator {
         total_memories += 1;
 
         self.fire_hook(HookEvent::PostPlan, &plan.summary).await;
+
+        // Phase 2b: Apply context budget to fit token window
+        let mut budget = ContextBudget::new(&augmented_prompt, &self.conversation_history, self.project_context.as_deref());
+        budget.truncate_files(&mut relevant_files, 15);
+        println!("   {}", budget.summary());
 
         // Phase 3: Parallel code execution
         self.fire_hook(HookEvent::PreCode, prompt).await;
@@ -1127,6 +1132,114 @@ impl Orchestrator {
 pub struct WorkChunk {
     pub name: String,
     pub steps: Vec<String>,
+}
+
+/// Token budget manager — keeps LLM context windows from overflowing
+///
+/// In a large codebase, 15 files × 4000 chars = 60K chars (~15K tokens)
+/// can easily blow past the model's context limit. ContextBudget tracks
+/// fixed overhead (system prompt, history, project context) and allocates
+/// remaining budget to files by relevance.
+const MAX_INPUT_TOKENS: usize = 32_000;
+const MAX_OUTPUT_TOKENS: usize = 8_192;
+const TOKEN_RATIO: usize = 4;
+
+fn _estimate_chars_to_tokens(s: &str) -> usize {
+    s.len() / TOKEN_RATIO
+}
+
+pub struct ContextBudget {
+    pub fixed_tokens: usize,
+    pub available_for_files: usize,
+    pub full_files: usize,
+    pub truncated_files: usize,
+    pub total_files: usize,
+}
+
+impl ContextBudget {
+    /// Calculate budget given fixed overhead (system prompt, history, project ctx)
+    pub fn new(fixed_overhead: &str, conversation: &[(String, String)], project_context: Option<&str>) -> Self {
+        let mut fixed = _estimate_chars_to_tokens(fixed_overhead);
+
+        // Conversation history overhead
+        for (user, asst) in conversation {
+            fixed += _estimate_chars_to_tokens(user) + _estimate_chars_to_tokens(asst) + 10;
+        }
+
+        // Project context (AGENTS.md etc.)
+        if let Some(ctx) = project_context {
+            fixed += _estimate_chars_to_tokens(ctx);
+        }
+
+        let available = if MAX_INPUT_TOKENS > fixed {
+            MAX_INPUT_TOKENS - fixed
+        } else {
+            4_000
+        };
+
+        Self {
+            fixed_tokens: fixed,
+            available_for_files: available,
+            full_files: 0,
+            truncated_files: 0,
+            total_files: 0,
+        }
+    }
+
+    /// Truncate file contents to fit within the token budget.
+    /// Keeps high-relevance files fully, truncates lower-relevance to preview.
+    pub fn truncate_files(&mut self, files: &mut [crate::index::FileContext], max_files: usize) {
+        let total = files.len().min(max_files);
+        self.total_files = total;
+
+        // Sort by score descending
+        files.sort_by(|a, b| {
+            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        if total == 0 || self.available_for_files == 0 {
+            for file in files.iter_mut().take(total) {
+                file.content.clear();
+            }
+            return;
+        }
+
+        let per_file_budget = (self.available_for_files / total).min(2_000).max(100);
+
+        for (i, file) in files.iter_mut().enumerate().take(total) {
+            let file_tokens = _estimate_chars_to_tokens(&file.content);
+
+            if file_tokens > per_file_budget {
+                let truncate_len = per_file_budget * TOKEN_RATIO;
+                let truncated: String = file.content.chars().take(truncate_len).collect();
+                file.content = format!(
+                    "{}...\n// [truncated: {file_tokens}→{per_file_budget}t, score:{:.2}]",
+                    truncated, file.score
+                );
+                self.truncated_files += 1;
+            } else {
+                self.full_files += 1;
+            }
+        }
+
+        // Clear files beyond the limit
+        for file in files.iter_mut().skip(total) {
+            file.content.clear();
+        }
+    }
+
+    /// Display a summary of the budget utilization
+    pub fn summary(&self) -> String {
+        format!(
+            "Budget: {:.1}K fixed + {:.1}K files = {:.1}K / {:.1}K tokens ({} full, {} truncated)",
+            self.fixed_tokens as f64 / 1000.0,
+            (MAX_INPUT_TOKENS - self.available_for_files) as f64 / 1000.0,
+            (MAX_INPUT_TOKENS - self.available_for_files + self.fixed_tokens) as f64 / 1000.0,
+            (self.fixed_tokens + MAX_INPUT_TOKENS - self.available_for_files) as f64 / 1000.0,
+            self.full_files,
+            self.truncated_files,
+        )
+    }
 }
 
 #[cfg(test)]
