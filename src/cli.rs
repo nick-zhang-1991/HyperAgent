@@ -608,17 +608,63 @@ impl Cli {
         orchestrator = orchestrator.with_mode(mode);
 
         // Handle image input for vision-capable models
-        let prompt_with_image = if let Some(img_path) = &image {
-            if !img_path.exists() {
-                anyhow::bail!("Image not found: {}", img_path.display());
+        let prompt_with_image = match &image {
+            Some(img_path) => {
+                let img_path_str = img_path.to_string_lossy().to_lowercase();
+
+                // Clipboard paste support
+                if img_path_str == "clipboard" || img_path_str == "pasteboard" || img_path_str == "clip" || img_path_str == "pb" {
+                    #[cfg(target_os = "macos")]
+                    {
+                        // Use osascript to read image from clipboard as base64
+                        let script = "osascript -e 'set imgData to the clipboard as «class PNGf»' -e 'set imgBytes to (id of imgData)' 2>/dev/null";
+                        let output = std::process::Command::new("sh")
+                            .args(["-c", script])
+                            .output()
+                            .map_err(|e| anyhow::anyhow!("Failed to read clipboard: {e}"))?;
+
+                        if output.status.success() {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            let trimmed = stdout.trim();
+                            if !trimmed.is_empty() {
+                                format!("{prompt}\n\n[Image from clipboard]\n")
+                            } else {
+                                anyhow::bail!("Clipboard does not contain an image");
+                            }
+                        } else {
+                            anyhow::bail!("Clipboard does not contain an image");
+                        }
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let _ = img_path;
+                        anyhow::bail!("Clipboard paste is only supported on macOS");
+                    }
+                } else {
+                    // File-based image
+                    if !img_path.exists() {
+                        anyhow::bail!("Image not found: {}", img_path.display());
+                    }
+                    let img_data = std::fs::read(img_path)?;
+                    use base64::Engine;
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&img_data);
+
+                    // Detect MIME type from magic bytes
+                    let mime = if img_data.len() > 8 {
+                        let header = &img_data[..img_data.len().min(12)];
+                        if header.starts_with(b"\x89PNG") { "image/png" }
+                        else if header.starts_with(b"\xff\xd8\xff") { "image/jpeg" }
+                        else if header.starts_with(b"GIF8") { "image/gif" }
+                        else if header.starts_with(b"RIFF") && header.len() > 8
+                            && &header[8..12] == b"WEBP" { "image/webp" }
+                        else if header.starts_with(b"BM") { "image/bmp" }
+                        else { "image/png" }
+                    } else { "image/png" };
+
+                    format!("{prompt}\n\n![image](data:{mime};base64,{b64})\n")
+                }
             }
-            let img_data = std::fs::read(img_path)?;
-            use base64::Engine;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&img_data);
-            let ext = img_path.extension().and_then(|e| e.to_str()).unwrap_or("png");
-            format!("{prompt}\n\n![image](data:image/{ext};base64,{b64})\n")
-        } else {
-            prompt.to_string()
+            None => prompt.to_string(),
         };
 
         let augmented_prompt = match &project_context {
