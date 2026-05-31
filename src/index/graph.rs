@@ -106,44 +106,75 @@ impl SymbolGraph {
         for file_idx in 0..self.files.len() {
             let file = &self.files[file_idx];
 
-            // Find all import symbols
-            let imports: Vec<&str> = file
+            // Find all import symbols with their signatures
+            let imports: Vec<(String, String)> = file
                 .symbols
                 .iter()
                 .filter(|s| s.kind == SymbolKind::Import)
-                .map(|s| s.name.as_str())
+                .map(|s| (s.name.clone(), s.signature.clone()))
                 .collect();
 
-            for import in imports {
-                // Try to resolve imports to files
-                if let Some(targets) = self.symbol_definitions.get(import) {
+            for (import_name, signature) in &imports {
+
+                // Strategy 1: Try exact match against symbol definitions
+                if let Some(targets) = self.symbol_definitions.get(import_name) {
                     for &target_idx in targets {
-                        if file_idx != target_idx {
-                            let n1 = NodeIndex::new(file_idx);
-                            let n2 = NodeIndex::new(target_idx);
-                            if !self.graph.contains_edge(n1, n2) {
-                                self.graph.add_edge(n1, n2, 1.0);
-                            } else if let Some(edge) = self.graph.find_edge(n1, n2) {
-                                // Increase weight
-                                if let Some(w) = self.graph.edge_weight_mut(edge) {
-                                    *w += 1.0;
+                        Self::add_edge_weighted(&mut self.graph, file_idx, target_idx, 1.0);
+                    }
+                }
+
+                // Strategy 2: Try last-segment match (e.g., "crate::utils::helpers" → "helpers")
+                let last_segment = import_name.split("::").last()
+                    .or_else(|| import_name.split('/').last())
+                    .unwrap_or(import_name);
+                if last_segment != import_name {
+                    if let Some(targets) = self.symbol_definitions.get(last_segment) {
+                        for &target_idx in targets {
+                            Self::add_edge_weighted(&mut self.graph, file_idx, target_idx, 0.8);
+                        }
+                    }
+                }
+
+                // Strategy 3: Match import path to file paths
+                // "crate::utils::helpers" → look for files with "utils/helpers" in path
+                let path_candidates: Vec<String> = import_name
+                    .split("::")
+                    .filter(|s| !s.is_empty() && *s != "crate" && *s != "self" && *s != "super")
+                    .map(|s| s.to_string())
+                    .collect();
+
+                if !path_candidates.is_empty() {
+
+                    for (j, other_file) in self.files.iter().enumerate() {
+                        if j != file_idx {
+                            let rel_lower = other_file.rel_path.to_lowercase();
+                            let rel_no_ext = rel_lower
+                                .trim_end_matches(".rs")
+                                .trim_end_matches(".py")
+                                .trim_end_matches(".ts")
+                                .trim_end_matches(".js");
+                            let rel_as_path = rel_no_ext.replace('/', "::").replace('\\', "::");
+
+                            // Check if the import path appears in this file's module path
+                            for seg in &path_candidates {
+                                if rel_as_path.contains(&seg.to_lowercase()) {
+                                    Self::add_edge_weighted(&mut self.graph, file_idx, j, 0.5);
+                                    break;
                                 }
                             }
                         }
                     }
                 }
 
-                // Also connect files that share the same module prefix
-                // (e.g., "utils/helpers" is connected to "utils/parsers")
-                let import_mod = import.split("::").next().unwrap_or(import);
-                for (j, other_file) in self.files.iter().enumerate() {
-                    if j != file_idx {
-                        let other_mod = other_file.rel_path.split('/').next().unwrap_or("");
-                        if import_mod == other_mod {
-                            let n1 = NodeIndex::new(file_idx);
-                            let n2 = NodeIndex::new(j);
-                            if !self.graph.contains_edge(n1, n2) {
-                                self.graph.add_edge(n1, n2, 0.5);
+                // Strategy 4: Parse the full signature line for Rust-style `use` statements
+                // e.g. "use crate::module::StructName" - try matching StructName
+                if signature.starts_with("use ") {
+                    for seg in import_name.split("::") {
+                        if let Some(targets) = self.symbol_definitions.get(seg) {
+                            for &target_idx in targets {
+                                if file_idx != target_idx {
+                                    Self::add_edge_weighted(&mut self.graph, file_idx, target_idx, 0.3);
+                                }
                             }
                         }
                     }
@@ -152,6 +183,19 @@ impl SymbolGraph {
         }
 
         Ok(())
+    }
+
+    /// Add an edge between two nodes, incrementing weight if edge already exists
+    fn add_edge_weighted(graph: &mut UnGraph<usize, f64>, from: usize, to: usize, weight: f64) {
+        let n1 = NodeIndex::new(from);
+        let n2 = NodeIndex::new(to);
+        if !graph.contains_edge(n1, n2) {
+            graph.add_edge(n1, n2, weight);
+        } else if let Some(edge) = graph.find_edge(n1, n2) {
+            if let Some(w) = graph.edge_weight_mut(edge) {
+                *w += weight;
+            }
+        }
     }
 
     /// Compute PageRank scores for all files
