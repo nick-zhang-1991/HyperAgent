@@ -976,3 +976,165 @@ pub struct WorkChunk {
     pub name: String,
     pub steps: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::HyperIndex;
+    use std::path::Path;
+
+    /// Create a minimal Rust project for testing
+    fn create_test_project(dir: &Path) {
+        std::fs::create_dir_all(dir.join("src")).ok();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            r#"[package]
+name = "hyperagent-test"
+version = "0.1.0"
+edition = "2021"
+"#,
+        ).ok();
+        std::fs::write(
+            dir.join("src").join("lib.rs"),
+            r#"pub fn greet() -> &'static str { "hello" }
+"#,
+        ).ok();
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        create_test_project(&root);
+
+        let mut index = HyperIndex::new(&root).unwrap();
+        index.build().unwrap();
+
+        let provider = LlmProvider::new(
+            "test-model".to_string(),
+            "http://localhost:9999/v1".to_string(),
+            "test-key".to_string(),
+        ).unwrap();
+
+        let orch = Orchestrator::new(index, provider, root, 2, true);
+        assert_eq!(orch.parallel_agents, 2);
+        assert!(orch.confirm);
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_chunking() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        create_test_project(&root);
+
+        let mut index = HyperIndex::new(&root).unwrap();
+        index.build().unwrap();
+
+        let provider = LlmProvider::new(
+            "test-model".to_string(),
+            "http://localhost:9999/v1".to_string(),
+            "test-key".to_string(),
+        ).unwrap();
+
+        let mut orch = Orchestrator::new(index, provider, root, 3, true);
+        let steps = vec![
+            "Step 1".to_string(),
+            "Step 2".to_string(),
+            "Step 3".to_string(),
+            "Step 4".to_string(),
+            "Step 5".to_string(),
+        ];
+
+        let chunks = orch.smart_split(&steps, &[], 3);
+        assert_eq!(chunks.len(), 3, "5 steps with 3 agents = 3 chunks");
+        assert_eq!(chunks[0].steps.len(), 2, "first chunk should have 2 steps");
+        assert_eq!(chunks[1].steps.len(), 2, "second chunk should have 2 steps");
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_chunking_single() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        create_test_project(&root);
+
+        let mut index = HyperIndex::new(&root).unwrap();
+        index.build().unwrap();
+
+        let provider = LlmProvider::new(
+            "test-model".to_string(),
+            "http://localhost:9999/v1".to_string(),
+            "test-key".to_string(),
+        ).unwrap();
+
+        let mut orch = Orchestrator::new(index, provider, root, 1, true);
+        let steps = vec!["Only step".to_string()];
+        let chunks = orch.smart_split(&steps, &[], 1);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].name, "agent-1");
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_cost_estimate() {
+        let cost = Orchestrator::estimate_cost(100_000, 0.15);
+        // 60k input tokens * $0.15/1M + 40k output tokens * $0.60/1M
+        // = 0.009 + 0.024 = 0.033
+        assert!((cost - 0.033).abs() < 0.001, "cost should be ~$0.033, got {cost}");
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_budget_check() {
+        assert!(!Orchestrator::would_exceed_budget(100_000, 0.15, 0.0), "no budget = always allowed");
+        assert!(!Orchestrator::would_exceed_budget(100_000, 0.15, 1.0), "1.0 budget > 0.033 cost");
+        assert!(Orchestrator::would_exceed_budget(100_000_000, 0.15, 1.0), "huge token count should exceed");
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_mode_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        create_test_project(&root);
+
+        let mut index = HyperIndex::new(&root).unwrap();
+        index.build().unwrap();
+
+        let provider = LlmProvider::new(
+            "test-model".to_string(),
+            "http://localhost:9999/v1".to_string(),
+            "test-key".to_string(),
+        ).unwrap();
+
+        let orch = Orchestrator::new(index, provider, root.clone(), 2, true)
+            .with_mode("ask");
+        assert_eq!(orch.mode, "ask");
+
+        let orch2 = Orchestrator::new(
+            HyperIndex::new(&root).unwrap(),
+            LlmProvider::new("test".to_string(), "http://localhost:9999/v1".to_string(), "test-key".to_string()).unwrap(),
+            root, 2, true,
+        ).with_mode("code");
+        assert_eq!(orch2.mode, "code");
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_builder_methods() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        create_test_project(&root);
+
+        let mut index = HyperIndex::new(&root).unwrap();
+        index.build().unwrap();
+
+        let provider = LlmProvider::new(
+            "test-model".to_string(),
+            "http://localhost:9999/v1".to_string(),
+            "test-key".to_string(),
+        ).unwrap();
+
+        let orch = Orchestrator::new(index, provider, root, 2, true)
+            .with_project_context("test context".to_string())
+            .with_conversation_history(vec![("hello".into(), "hi".into())]);
+
+        assert!(orch.project_context.is_some());
+        assert_eq!(orch.conversation_history.len(), 1);
+    }
+}
