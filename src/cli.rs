@@ -307,6 +307,37 @@ pub enum Commands {
         #[arg(long, short, default_value = ".")]
         dir: PathBuf,
     },
+
+    /// Find references to a symbol across the codebase
+    FindRefs {
+        /// Symbol name to search for
+        symbol: String,
+
+        /// Project root directory
+        #[arg(long, short, default_value = ".")]
+        dir: PathBuf,
+
+        /// Show context lines around matches
+        #[arg(long, default_value_t = 0)]
+        context: usize,
+    },
+
+    /// Rename a symbol across all files (cross-file refactoring)
+    Rename {
+        /// Current symbol name
+        old: String,
+
+        /// New symbol name
+        new: String,
+
+        /// Project root directory
+        #[arg(long, short, default_value = ".")]
+        dir: PathBuf,
+
+        /// Dry-run: show what would change without applying
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -581,6 +612,32 @@ impl Cli {
                 crate::test_runner::display_report(&report);
                 if report.failed > 0 {
                     std::process::exit(1);
+                }
+                Ok(())
+            }
+
+            Some(Commands::FindRefs { symbol, dir, context: _ }) => {
+                let excludes = ["target", ".git", "node_modules", ".hyper"];
+                let refs = crate::refactor::find_references(dir, symbol, &excludes)?;
+                let total: usize = refs.iter().map(|(_, l)| l.len()).sum();
+                println!("🔍 References for '{symbol}': found {total} in {} files\n", refs.len());
+                for (path, lines) in &refs {
+                    let relative = path.strip_prefix(dir).unwrap_or(path);
+                    let content = std::fs::read_to_string(path).unwrap_or_default();
+                    for line_num in lines {
+                        if let Some(line) = content.lines().nth(line_num - 1) {
+                            println!("   {}:{}  {}", relative.display(), line_num, line.trim());
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            Some(Commands::Rename { old, new, dir, dry_run }) => {
+                let excludes = ["target", ".git", "node_modules", ".hyper"];
+                let result = crate::refactor::apply_rename(dir, old, new, &excludes, *dry_run)?;
+                if result.files_modified.is_empty() && !dry_run {
+                    println!("   ℹ️  No files were modified.");
                 }
                 Ok(())
             }

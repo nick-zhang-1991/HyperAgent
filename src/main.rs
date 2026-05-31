@@ -23,6 +23,7 @@ mod llm;
 mod mcp;
 mod memory;
 mod modes;
+mod refactor;
 mod repl;
 mod router;
 mod scaffold;
