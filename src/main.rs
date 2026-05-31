@@ -13,6 +13,7 @@ mod cli;
 mod dep_graph;
 mod diff;
 mod diff_view;
+mod eval;
 mod git;
 mod hooks;
 mod index;

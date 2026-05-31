@@ -249,6 +249,17 @@ pub enum Commands {
         dir: PathBuf,
     },
 
+    /// Run benchmark evaluations
+    Eval {
+        /// Specific task name to run (runs all if not specified)
+        #[arg(long)]
+        task: Option<String>,
+
+        /// List available tasks
+        #[arg(long)]
+        list: bool,
+    },
+
     /// Build/query knowledge base (RAG)
     Knowledge {
         /// Action: build | search
@@ -472,6 +483,29 @@ impl Cli {
             Some(Commands::Completions { shell }) => {
                 generate_completions(shell);
                 Ok(())
+            }
+
+            Some(Commands::Eval { task, list }) => {
+                if *list {
+                    crate::eval::list_tasks(&crate::eval::builtin_tasks());
+                    Ok(())
+                } else if let Some(task_name) = task {
+                    let tasks: Vec<crate::eval::EvalTask> = crate::eval::builtin_tasks()
+                        .into_iter()
+                        .filter(|t| t.name == *task_name)
+                        .collect();
+                    if tasks.is_empty() {
+                        anyhow::bail!("Unknown task '{task_name}'. Use --list to see available tasks.");
+                    }
+                    let binary = std::env::current_exe()?;
+                    crate::eval::run_all_benchmarks(&tasks, &binary)?;
+                    Ok(())
+                } else {
+                    let tasks = crate::eval::builtin_tasks();
+                    let binary = std::env::current_exe()?;
+                    crate::eval::run_all_benchmarks(&tasks, &binary)?;
+                    Ok(())
+                }
             }
 
             Some(Commands::Agents { name, message, dir }) => {
