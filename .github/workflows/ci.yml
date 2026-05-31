@@ -12,10 +12,12 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    name: Check (${{ matrix.os }} / ${{ matrix.toolchain }})
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        toolchain: [stable, 1.78.0]  # MSRV check
+        os: [ubuntu-latest, macos-13]  # Linux + macOS for cross-platform validation
+        toolchain: [stable, 1.78.0]   # MSRV check
 
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +44,7 @@ jobs:
         run: cargo test --all-targets
 
   build:
+    name: Build (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
