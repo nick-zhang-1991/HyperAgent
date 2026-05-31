@@ -164,6 +164,9 @@ pub enum Commands {
         shell: String,
     },
 
+    /// Interactive setup wizard (first-time configuration)
+    Setup,
+
     /// List and run available agents
     Agents {
         /// Agent name to run (lists all if not provided)
@@ -506,6 +509,11 @@ impl Cli {
                     crate::eval::run_all_benchmarks(&tasks, &binary)?;
                     Ok(())
                 }
+            }
+
+            Some(Commands::Setup) => {
+                run_setup();
+                Ok(())
             }
 
             Some(Commands::Agents { name, message, dir }) => {
@@ -1729,7 +1737,7 @@ impl Cli {
 
         // Ask to append
         print!("   Append to file? [Y/n] ");
-        use std::io::{Write, stdin};
+        use std::io::{stdout, stdin, Write};
         std::io::stdout().flush().ok();
         let mut input = String::new();
         stdin().read_line(&mut input).ok();
@@ -1770,4 +1778,158 @@ fn generate_completions(shell_name: &str) {
         Shell::Fish => eprintln!("Save and source:\n  hyper completions fish > ~/.config/fish/completions/hyper.fish"),
         _ => {}
     }
+}
+
+/// Interactive setup wizard — guides first-time configuration
+fn run_setup() {
+    use std::io::{stdout, stdin, Write};
+
+    println!();
+    println!("╔══════════════════════════════════════════╗");
+    println!("║      HyperAgent Setup Wizard             ║");
+    println!("╚══════════════════════════════════════════╝");
+    println!();
+
+    // Step 1: Provider selection
+    println!("{0:─^40}", " Step 1: LLM Provider ");
+    println!("Choose your LLM provider:");
+    println!("  1) DeepSeek (default, ~$0.15/1M tokens)");
+    println!("  2) OpenAI   (~$2.50/1M tokens, GPT-4o)");
+    println!("  3) Custom   (any OpenAI-compatible API)");
+    println!("  4) Skip     (set up manually later)");
+    print!("\nChoice [1-4]: ");
+    stdout().flush().ok();
+
+    let mut choice = String::new();
+    stdin().read_line(&mut choice).ok();
+    let provider_index = choice.trim().parse::<u32>().unwrap_or(1);
+
+    // Step 2: API key
+    let (provider_name, base_url, default_model, default_key) = match provider_index {
+        2 => ("openai", "https://api.openai.com/v1", "gpt-4o", "OPENAI_API_KEY"),
+        3 => ("custom", "", "", "HYPER_LLM_API_KEY"),
+        _ => ("deepseek", "https://api.deepseek.com/v1", "deepseek-v4-flash", "DEEPSEEK_API_KEY"),
+    };
+
+    println!();
+    println!("{0:─^40}", " Step 2: API Key ");
+    if provider_index == 3 {
+        print!("Base URL: ");
+        stdout().flush().ok();
+        let mut url = String::new();
+        stdin().read_line(&mut url).ok();
+        let _custom_url = url.trim().to_string();
+
+        print!("Model name: ");
+        stdout().flush().ok();
+        let mut model = String::new();
+        stdin().read_line(&mut model).ok();
+        let _custom_model = model.trim().to_string();
+    }
+
+    // Try env var first, then ask
+    let api_key = std::env::var(default_key).ok();
+    if let Some(ref key) = api_key {
+        println!("   Using {} from environment", default_key);
+    } else {
+        println!("   Enter your {} API key (or leave empty to use env var later):", provider_name);
+        print!("   API Key: ");
+        stdout().flush().ok();
+        let mut key = String::new();
+        stdin().read_line(&mut key).ok();
+        let _key = key.trim().to_string();
+    }
+
+    // Step 3: Config generation
+    println!();
+    println!("{0:─^40}", " Step 3: Configuration ");
+    let config_path = dirs_next::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("hyper")
+        .join("config.toml");
+
+    if config_path.exists() {
+        println!("   Config already exists at: {}", config_path.display());
+        print!("   Overwrite? [y/N]: ");
+        stdout().flush().ok();
+        let mut overwrite = String::new();
+        stdin().read_line(&mut overwrite).ok();
+        if !overwrite.trim().to_lowercase().starts_with('y') {
+            println!("   Keeping existing config.");
+            println!();
+            println!("   {0:─^40}", " Setup Complete ");
+            println!("   Run 'hyper doctor' to verify your setup.");
+            println!("   Run 'hyper run \"hello\" --mode ask' to test.");
+            return;
+        }
+    }
+
+    // Write config
+    let api_key_val = api_key.unwrap_or_default();
+    let config_content = format!(
+        r#"[[providers]]
+name = "{name}"
+api_key = "{key}"
+base_url = "{url}"
+default_model = "{model}"
+models = ["{model}"]
+
+[[agents]]
+name = "build"
+mode = "Primary"
+model = "{model}"
+temperature = 0.1
+description = "Execute code modifications"
+[agents.permissions]
+edit = "Allow"
+bash = "Allow"
+read = "Allow"
+network = "Deny"
+"#,
+        name = provider_name,
+        key = api_key_val,
+        url = base_url,
+        model = default_model,
+    );
+
+    std::fs::create_dir_all(config_path.parent().unwrap()).ok();
+    match std::fs::write(&config_path, &config_content) {
+        Ok(_) => println!("   ✅ Config created: {}", config_path.display()),
+        Err(e) => eprintln!("   ⚠️  Failed to write config: {e}"),
+    }
+
+    // Step 4: Shell completions
+    println!();
+    println!("{0:─^40}", " Step 4: Shell Completions (optional) ");
+    let current_shell = std::env::var("SHELL").unwrap_or_default();
+    if current_shell.contains("zsh") {
+        println!("   Detected: zsh");
+        print!("   Install completions? [Y/n]: ");
+        stdout().flush().ok();
+        let mut install = String::new();
+        stdin().read_line(&mut install).ok();
+        if !install.trim().to_lowercase().starts_with('n') {
+            println!("   Run: hyper completions zsh > /usr/local/share/zsh/site-functions/_hyper");
+        }
+    } else if current_shell.contains("bash") {
+        println!("   Detected: bash");
+        print!("   Install completions? [Y/n]: ");
+        stdout().flush().ok();
+        let mut install = String::new();
+        stdin().read_line(&mut install).ok();
+        if !install.trim().to_lowercase().starts_with('n') {
+            println!("   Run: hyper completions bash > /usr/local/etc/bash_completion.d/hyper");
+        }
+    }
+
+    println!();
+    println!("{0:─^40}", " Setup Complete ");
+    println!("   ✅ HyperAgent is ready to use!");
+    println!();
+    println!("   Next steps:");
+    println!("     cd your-project");
+    println!("     hyper init              # Build code index");
+    println!("     hyper doctor            # Verify setup");
+    println!("     hyper run \"explain this\" --mode ask");
+    println!();
 }
