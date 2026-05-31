@@ -20,8 +20,78 @@ use crate::router::ModelRouter;
 use std::path::Path;
 use std::time::Instant;
 
-use rustyline::DefaultEditor;
+use rustyline::Editor;
 use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::completion::{Completer, Pair};
+use rustyline::Context;
+use rustyline::Helper;
+
+/// REPL command completer — provides tab completion for /commands
+struct ReplCompleter;
+
+impl Helper for ReplCompleter {}
+
+impl Highlighter for ReplCompleter {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> std::borrow::Cow<'l, str> {
+        std::borrow::Cow::Borrowed(line)
+    }
+    fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
+        false
+    }
+}
+
+impl Hinter for ReplCompleter {
+    type Hint = String;
+    fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<String> {
+        None
+    }
+}
+
+impl Validator for ReplCompleter {
+    fn validate(&self, _ctx: &mut rustyline::validate::ValidationContext) -> rustyline::Result<rustyline::validate::ValidationResult> {
+        Ok(rustyline::validate::ValidationResult::Valid(None))
+    }
+    fn validate_while_typing(&self) -> bool {
+        false
+    }
+}
+
+impl Completer for ReplCompleter {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let prefix = &line[..pos];
+        let commands = vec![
+            "/exit", "/quit",
+            "/mode", "/clear", "/cls",
+            "/help", "/stats", "/memory",
+            "/reindex", "/refresh",
+        ];
+
+        let candidates: Vec<Pair> = if prefix.starts_with('/') {
+            commands
+                .into_iter()
+                .filter(|cmd| cmd.starts_with(prefix))
+                .map(|cmd| Pair {
+                    display: cmd.to_string(),
+                    replacement: cmd.to_string(),
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        Ok((pos, candidates))
+    }
+}
 
 /// Run the interactive REPL session
 pub async fn run_repl() -> anyhow::Result<()> {
@@ -66,7 +136,8 @@ pub async fn run_repl() -> anyhow::Result<()> {
 
     // Setup rustyline with persistent history
     let history_path = dir.join(".hyper").join("history.txt");
-    let mut rl = DefaultEditor::new()?;
+    let mut rl = Editor::<ReplCompleter, rustyline::history::FileHistory>::new()?;
+    rl.set_helper(Some(ReplCompleter));
     if history_path.exists() {
         let _ = rl.load_history(&history_path);
     }

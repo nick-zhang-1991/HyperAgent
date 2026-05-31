@@ -10,7 +10,9 @@
 //!   hyper agents           - List/run agents
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, CommandFactory};
+use clap_complete::{Generator, Shell};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::agent::orchestrator::Orchestrator;
@@ -154,6 +156,12 @@ pub enum Commands {
         /// Show all config including defaults
         #[arg(long)]
         verbose: bool,
+    },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for (bash, zsh, fish, powershell, elvish)
+        shell: String,
     },
 
     /// List and run available agents
@@ -460,6 +468,11 @@ impl Cli {
             Some(Commands::Doctor) => self.run_doctor().await,
 
             Some(Commands::Config { verbose }) => self.show_config(*verbose),
+
+            Some(Commands::Completions { shell }) => {
+                generate_completions(shell);
+                Ok(())
+            }
 
             Some(Commands::Agents { name, message, dir }) => {
                 self.list_agents(name, message, dir).await
@@ -1692,5 +1705,35 @@ impl Cli {
         }
 
         Ok(())
+    }
+}
+
+/// Generate shell completions for the hyper command
+fn generate_completions(shell_name: &str) {
+    let shell = match shell_name.to_lowercase().as_str() {
+        "bash" => Shell::Bash,
+        "zsh" => Shell::Zsh,
+        "fish" => Shell::Fish,
+        "powershell" | "ps" => Shell::PowerShell,
+        "elvish" => Shell::Elvish,
+        other => {
+            eprintln!("Unsupported shell: {other}");
+            eprintln!("Supported: bash, zsh, fish, powershell, elvish");
+            return;
+        }
+    };
+
+    let mut cmd = Cli::command();
+    let name = cmd.get_name().to_string();
+
+    clap_complete::generate(shell, &mut cmd, &name, &mut std::io::stdout());
+
+    // Print install instructions
+    eprintln!("\n---");
+    match shell {
+        Shell::Bash => eprintln!("Save and source:\n  hyper completions bash > /usr/local/etc/bash_completion.d/hyper"),
+        Shell::Zsh => eprintln!("Save and source:\n  hyper completions zsh > /usr/local/share/zsh/site-functions/_hyper"),
+        Shell::Fish => eprintln!("Save and source:\n  hyper completions fish > ~/.config/fish/completions/hyper.fish"),
+        _ => {}
     }
 }
