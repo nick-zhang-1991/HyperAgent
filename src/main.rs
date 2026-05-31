@@ -25,6 +25,7 @@ mod modes;
 mod repl;
 mod router;
 mod scaffold;
+mod security;
 mod session;
 mod spinner;
 mod test_gen;

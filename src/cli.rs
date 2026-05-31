@@ -1442,6 +1442,14 @@ impl Cli {
             anyhow::bail!("No Dockerfile found in {}", dir.display());
         }
 
+        // Security check: verify docker command
+        let docker_cmd = format!("docker build -t {tag} .");
+        let policy = crate::security::SecurityPolicy::default();
+        let safety = crate::security::check_command_safety(&docker_cmd, &policy);
+        if !crate::security::confirm_dangerous_action(&safety, false) {
+            anyhow::bail!("Deploy aborted by security policy");
+        }
+
         // Build Docker image
         let status = std::process::Command::new("docker")
             .args(["build", "-t", tag, "."])
