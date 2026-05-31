@@ -232,6 +232,10 @@ pub enum Commands {
         #[arg(short, long)]
         staged: bool,
 
+        /// Show side-by-side diff view
+        #[arg(long)]
+        side_by_side: bool,
+
         /// Project root directory
         #[arg(long, short, default_value = ".")]
         dir: PathBuf,
@@ -487,8 +491,12 @@ impl Cli {
                 self.deploy_project(tag, dir).await
             }
 
-            Some(Commands::Diff { against, staged, dir }) => {
-                self.show_diff(against, *staged, dir).await
+            Some(Commands::Diff { against, staged, side_by_side, dir }) => {
+                if *side_by_side {
+                    self.show_diff_side_by_side(against, *staged, dir).await
+                } else {
+                    self.show_diff(against, *staged, dir).await
+                }
             }
 
             Some(Commands::Knowledge { action, query, dir }) => {
@@ -1487,6 +1495,20 @@ impl Cli {
             let diff = diff_view::get_diff(dir, against)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             diff_view::show_diff(&diff);
+        }
+        Ok(())
+    }
+
+    /// Show diff in side-by-side view
+    async fn show_diff_side_by_side(&self, against: &str, staged: bool, dir: &Path) -> Result<()> {
+        use crate::diff_view;
+        if staged {
+            diff_view::show_staged_diff_side_by_side(dir)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        } else {
+            let diff = diff_view::get_diff(dir, against)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            diff_view::show_side_by_side_diff(&diff);
         }
         Ok(())
     }
