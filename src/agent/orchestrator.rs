@@ -54,6 +54,7 @@ pub struct Orchestrator {
     memory: Option<MemoryManager>,
     hooks: Option<HookRegistry>,
     mcp: Option<crate::mcp::McpRegistry>,
+    mode_registry: Option<crate::modes::ModeRegistry>,
 }
 
 impl Orchestrator {
@@ -76,6 +77,7 @@ impl Orchestrator {
             memory: None,
             hooks: None,
             mcp: None,
+            mode_registry: None,
             plan_provider: None,
             review_provider: None,
         }
@@ -108,6 +110,11 @@ impl Orchestrator {
 
     pub fn with_mcp(mut self, mcp: crate::mcp::McpRegistry) -> Self {
         self.mcp = Some(mcp);
+        self
+    }
+
+    pub fn with_mode_registry(mut self, registry: crate::modes::ModeRegistry) -> Self {
+        self.mode_registry = Some(registry);
         self
     }
 
@@ -721,12 +728,15 @@ impl Orchestrator {
             }
         }
 
-        // Add mode-specific instructions
-        let mode_prompt = match self.mode.as_str() {
-            "architect" => "\n\nMODE: ARCHITECT — design systems, output plans. Do NOT implement code.".to_string(),
-            "ask" => "\n\nMODE: ASK — answer questions only. Do NOT modify files.".to_string(),
-            "debug" => "\n\nMODE: DEBUG — focus on root-cause analysis. Add minimal logging. Verify fixes.".to_string(),
-            _ => String::new(),
+        // Add mode-specific instructions from ModeRegistry
+        let mode_prompt = match &self.mode_registry {
+            Some(registry) => registry.build_prompt(&self.mode, None),
+            None => match self.mode.as_str() {
+                "architect" => "\n\nMODE: ARCHITECT — design systems, output plans. Do NOT implement code.".to_string(),
+                "ask" => "\n\nMODE: ASK — answer questions only. Do NOT modify files.".to_string(),
+                "debug" => "\n\nMODE: DEBUG — focus on root-cause analysis. Add minimal logging. Verify fixes.".to_string(),
+                _ => String::new(),
+            },
         };
         if !mode_prompt.is_empty() {
             parts.push(mode_prompt);
