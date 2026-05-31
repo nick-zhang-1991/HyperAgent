@@ -11,8 +11,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 /// Watches the filesystem for changes and triggers re-indexing
+#[allow(dead_code)]
 pub struct FileWatcher {
+    #[allow(dead_code)]
     watcher: RecommendedWatcher,
+    #[allow(dead_code)]
     running: Arc<AtomicBool>,
 }
 
@@ -74,7 +77,9 @@ impl FileWatcher {
         })
     }
 
-    /// Start watching a directory
+    #[allow(dead_code)]
+    #[allow(dead_code)]
+    /// Start watching
     pub fn watch(&mut self, path: &Path) -> Result<()> {
         self.watcher
             .watch(path, notify::RecursiveMode::Recursive)?;

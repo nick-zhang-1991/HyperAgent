@@ -129,6 +129,7 @@ impl HookRegistry {
         self.hooks = hooks;
     }
 
+    #[allow(dead_code)]
     /// Register a single hook
     pub fn register(&mut self, hook: Hook) {
         // Remove existing hooks with same event+action combination (dedup)

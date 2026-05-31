@@ -88,6 +88,7 @@ impl Default for MemoryQuery {
     }
 }
 
+#[allow(dead_code)]
 /// Memory Store trait — abstract over storage backend
 pub trait MemoryStore: Send + Sync {
     /// Insert a new memory (add-only, never overwrites)
@@ -498,6 +499,7 @@ impl MemoryManager {
         self.store.query(&q)
     }
 
+    #[allow(dead_code)]
     /// Recall by entity (project/library/tool name)
     pub fn recall_by_entity(&self, entity: &str, limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
         self.store.query_by_entity(entity, limit)

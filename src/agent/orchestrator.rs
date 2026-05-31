@@ -662,11 +662,12 @@ impl Orchestrator {
             }
 
             let chunks = self.smart_split(&steps, relevant_files, self.parallel_agents);
+            let total_agents = chunks.len();
 
             // Use channel to collect results progressively
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, Vec<FileChange>)>(chunks.len());
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, Vec<FileChange>)>(total_agents);
 
-            let mut handles = Vec::new();
+            let code_start = Instant::now();
             for (i, chunk) in chunks.iter().enumerate() {
                 let tx = tx.clone();
                 let root = self.root.clone();
@@ -675,26 +676,38 @@ impl Orchestrator {
                 let files = relevant_files.to_vec();
                 let chunk_steps = chunk.steps.clone();
 
-                let handle = tokio::spawn(async move {
+                tokio::spawn(async move {
                     let agent = crate::agent::code_agent::CodeAgent::new(&provider, &root);
                     let changes = agent.execute(&p, &chunk_steps, &files).await;
                     let _ = tx.send((i, changes)).await;
                 });
-                handles.push(handle);
             }
             drop(tx); // Close sender so rx can terminate
 
-            // Collect results as they arrive — enables pipeline overlap
+            // Collect results progressively — show live progress
+            let mut completed = 0usize;
+            use std::io::{Write, stdout};
             while let Some((i, changes)) = rx.recv().await {
-                if !changes.is_empty() || attempt == max_attempts {
-                    println!("   ✅ Agent '{}' — {} changes", chunks[i].name, changes.len());
-                }
-                all_changes.extend(changes);
+                completed += 1;
+                let elapsed = code_start.elapsed();
+                let file_count = changes.len();
 
-                // Pipeline: if this is the first agent to return results,
-                // we could start review here while other agents still run
-                // (future optimization: progressive review)
+                if file_count > 0 || attempt == max_attempts {
+                    print!("\r   ✅ Agent '{}' — {} changes [{completed}/{total_agents} done, {:.1}s]    \n",
+                        chunks[i].name, file_count, elapsed.as_secs_f64());
+                    stdout().flush().ok();
+                } else {
+                    // Show progress even for empty agents
+                    print!("\r   ⏳ Agent '{}' — no changes [{completed}/{total_agents} done, {:.1}s]    \n",
+                        chunks[i].name, elapsed.as_secs_f64());
+                    stdout().flush().ok();
+                }
+
+                all_changes.extend(changes);
             }
+
+            // Print summary line after all agents complete
+            println!("   📦 {total_agents} agents completed in {:.1}s", code_start.elapsed().as_secs_f64());
 
             if !all_changes.is_empty() {
                 break; // Got changes, no retry needed

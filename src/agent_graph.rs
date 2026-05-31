@@ -55,6 +55,7 @@ pub struct SpawnEdge {
     pub created_at: DateTime<Utc>,
 }
 
+#[allow(dead_code)]
 /// Trait for storage backend
 pub trait AgentGraph: Send + Sync {
     /// Add or update a parent/child edge
@@ -329,7 +330,9 @@ impl AgentGraph for SqliteAgentGraph {
 // ═══════════════════════════════════════════════
 
 pub struct WorktreeManager {
+    #[allow(dead_code)]
     project_root: PathBuf,
+    #[allow(dead_code)]
     agent_graph: Arc<dyn AgentGraph>,
 }
 
@@ -373,6 +376,7 @@ impl WorktreeManager {
         Ok(worktree_dir)
     }
 
+    #[allow(dead_code)]
     /// Clean up a worktree after agent completes
     pub fn remove_worktree(&self, id: &AgentId) -> anyhow::Result<()> {
         let worktree_dir = self.project_root.join(".hyper").join("worktrees").join(id);
@@ -394,6 +398,7 @@ impl WorktreeManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     /// Merge changes from a worktree back to main
     pub fn merge_worktree(&self, node: &AgentNode) -> anyhow::Result<Vec<String>> {
         let worktree = match &node.worktree {

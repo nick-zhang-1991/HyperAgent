@@ -59,6 +59,7 @@ struct McpConnection {
 /// MCP Registry — manages all MCP server connections
 pub struct McpRegistry {
     connections: Arc<Mutex<Vec<McpConnection>>>,
+    #[allow(dead_code)]
     project_root: PathBuf,
 }
 

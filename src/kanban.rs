@@ -77,6 +77,7 @@ pub struct KanbanBoard {
     /// Order of card IDs (for display)
     card_order: Arc<Mutex<Vec<String>>>,
     /// Project root
+    #[allow(dead_code)]
     project_root: PathBuf,
     /// Max parallel agents
     pub max_concurrency: usize,
@@ -181,6 +182,7 @@ impl KanbanBoard {
         }
     }
 
+    #[allow(dead_code)]
     /// Mark a card as done
     pub async fn complete_card(&self, id: &str, result: CardResult) -> anyhow::Result<()> {
         let mut cards = self.cards.lock().await;
