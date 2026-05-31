@@ -229,7 +229,10 @@ impl<'a> CodeAgent<'a> {
                 let candidate = &response[actual_start..=actual_start + json_end];
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(candidate) {
                     let file = parsed["file"].as_str().unwrap_or("");
-                    let content = parsed["content"].as_str().unwrap_or("");
+                    // Support both "content" (full-file) and "diff" (surgical) modes
+                    let content = parsed["content"].as_str()
+                        .or_else(|| parsed["diff"].as_str())
+                        .unwrap_or("");
                     if !file.is_empty() && !content.is_empty() {
                         fixed.push((root.join(file), content.to_string()));
                     }
@@ -240,5 +243,88 @@ impl<'a> CodeAgent<'a> {
             }
         }
         fixed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_parse_fix_response_edit_diff() {
+        // Simple JSON with diff
+        let response = r#"{"file": "src/main.rs", "change_type": "edit", "diff": "@@ -1,3 +1,4 @@"}"#;
+        // Verify the response is valid JSON first
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(response);
+        assert!(parsed.is_ok(), "response should be valid JSON: {:?}", parsed.err());
+        let _v = parsed.unwrap();
+        // Now test parse_fix_response
+        let root = Path::new("/tmp");
+        let results = CodeAgent::parse_fix_response(response, root);
+        assert_eq!(results.len(), 1, "should parse one JSON object");
+        let (path, content) = &results[0];
+        assert!(path.ends_with("src/main.rs"));
+        assert_eq!(content, "@@ -1,3 +1,4 @@");
+    }
+
+    #[test]
+    fn test_parse_fix_response_create() {
+        let response = r#"{"file": "src/lib.rs", "change_type": "create", "content": "pub fn hello()"}"#;
+        let root = Path::new("/tmp");
+        let results = CodeAgent::parse_fix_response(response, root);
+        assert_eq!(results.len(), 1);
+        let (path, content) = &results[0];
+        assert!(path.ends_with("src/lib.rs"));
+        assert_eq!(content, "pub fn hello()");
+    }
+
+    #[test]
+    fn test_parse_fix_response_multiple_json() {
+        let response = r#"leading text {"file":"a.rs","change_type":"create","content":"fn a()"} middle {"file":"b.rs","change_type":"create","content":"fn b()"} trailing"#;
+        let root = Path::new("/tmp");
+        let results = CodeAgent::parse_fix_response(response, root);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_fix_response_empty() {
+        let root = Path::new("/tmp");
+        let results = CodeAgent::parse_fix_response("", root);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_parse_fix_response_non_json() {
+        let root = Path::new("/tmp");
+        let results = CodeAgent::parse_fix_response("just some random text with no JSON", root);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_parse_fix_response_edit_with_newlines() {
+        // Test with actual JSON that has a diff containing newlines
+        let response = "{\"file\": \"src/main.rs\", \"change_type\": \"edit\", \"diff\": \"@@ -1,3 +1,4 @@\\n-old line\\n+new line\\n context\"}";
+        let root = Path::new("/tmp");
+        let results = CodeAgent::parse_fix_response(response, root);
+        assert_eq!(results.len(), 1);
+        let (_path, content) = &results[0];
+        assert!(content.contains("@@"));
+    }
+
+    #[test]
+    fn test_code_agent_new_with_root() {
+        // Test the constructor
+        use std::path::PathBuf;
+        let root = PathBuf::from("/tmp/test-project");
+        let provider = crate::llm::LlmProvider::new(
+            "test".to_string(),
+            "http://localhost:9999".to_string(),
+            "test-key".to_string(),
+        );
+        // Just verify we can create an instance — parse_fix_response is tested above
+        if let Ok(provider) = provider {
+            let _agent = CodeAgent::new(&provider, &root);
+        }
     }
 }

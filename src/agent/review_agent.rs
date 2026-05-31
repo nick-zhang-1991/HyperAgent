@@ -258,3 +258,48 @@ impl MergedReviewResult {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use crate::diff::FileChange;
+    use super::*;
+
+    #[test]
+    fn test_build_review_context_full() {
+        let ctx = build_review_context_for_lint(
+            "fix type error",
+            &[],
+            "error[E0308]: mismatched types\n  --> src/main.rs:10:5",
+        );
+        assert!(ctx.contains("fix type error"));
+        assert!(ctx.contains("E0308"));
+        assert!(ctx.contains("mismatched types"));
+    }
+
+    #[test]
+    fn test_build_review_context_with_changes() {
+        let changes = vec![FileChange {
+            file: PathBuf::from("src/main.rs"),
+            change_type: "edit".to_string(),
+            old_content: None,
+            new_content: Some("fn main() {}".to_string()),
+            hunks: vec![],
+        }];
+        let ctx = build_review_context_for_lint(
+            "refactor",
+            &changes,
+            "error: unused variable",
+        );
+        assert!(ctx.contains("src/main.rs"));
+        assert!(ctx.contains("fn main()"));
+        assert!(ctx.contains("unused variable"));
+    }
+
+    #[test]
+    fn test_build_review_context_empty_errors() {
+        let ctx = build_review_context_for_lint("add tests", &[], "");
+        assert!(ctx.contains("add tests"));
+        assert!(ctx.contains("Compile errors:"));
+    }
+}
