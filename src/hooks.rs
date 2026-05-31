@@ -172,6 +172,18 @@ impl HookRegistry {
     fn execute_hook(&self, hook: &Hook, event: &HookEvent) -> anyhow::Result<()> {
         match &hook.action {
             HookAction::Command { command, required, timeout: _ } => {
+                // Security check before executing command
+                let policy = crate::security::SecurityPolicy::default();
+                let safety = crate::security::check_command_safety(command, &policy);
+                if !crate::security::confirm_dangerous_action(&safety, false) {
+                    let msg = format!("Hook '{}' blocked by security policy", hook.description.as_deref().unwrap_or(command));
+                    if *required == Some(true) {
+                        anyhow::bail!("{msg}");
+                    } else {
+                        eprintln!("  ⚠️  {msg}");
+                        return Ok(());
+                    }
+                }
                 let output = Command::new("sh")
                     .args(["-c", command])
                     .current_dir(&self.project_root)
