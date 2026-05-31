@@ -537,23 +537,20 @@ impl Orchestrator {
             if mem_context.is_empty() { "None".to_string() } else { mem_context }
         );
 
-        // Add MCP tools context if available (can be called via JSON function format)
-        let mcp_tools_available = if let Some(ref mcp) = self.mcp {
-            let tools = mcp.get_all_tools().await;
-            if !tools.is_empty() {
-                system_prompt.push_str("\n\n--- MCP Tools Available ---\n");
-                system_prompt.push_str("You can call MCP tools by outputting a JSON block with:\n");
-                system_prompt.push_str("  {\"tool_call\": {\"name\": \"tool_name\", \"arguments\": {...}}}\n");
-                system_prompt.push_str("When you receive the result, incorporate it into your response.\n\n");
-                for t in &tools {
-                    let desc = if t.description.len() > 80 {
-                        format!("{}...", &t.description[..77])
+        // Add MCP tools context if available — use native OpenAI function calling
+        let mcp_tool_defs: Vec<crate::llm::provider::ToolDefinition> = if let Some(ref mcp) = self.mcp {
+            let defs = mcp.to_tool_definitions().await;
+            if !defs.is_empty() {
+                system_prompt.push_str("\n\nYou have access to MCP tools listed below. Use them when needed to gather information or perform actions.");
+                for def in &defs {
+                    let desc = if def.function.description.len() > 80 {
+                        format!("{}...", &def.function.description[..77])
                     } else {
-                        t.description.clone()
+                        def.function.description.clone()
                     };
-                    system_prompt.push_str(&format!("  - {}.{}: {desc}\n", t.server, t.name));
+                    system_prompt.push_str(&format!("\n  - {}: {desc}", def.function.name));
                 }
-                tools
+                defs
             } else {
                 Vec::new()
             }
@@ -586,79 +583,148 @@ impl Orchestrator {
             content: prompt.to_string(),
         });
 
-        // Max 3 tool call rounds
-        let max_rounds = if mcp_tools_available.is_empty() { 1 } else { 3 };
+        // Max 3 tool call rounds — use native OpenAI function calling when tools exist
+        let max_rounds = if mcp_tool_defs.is_empty() { 1 } else { 3 };
+        let has_tools = !mcp_tool_defs.is_empty();
         let mut response_text = String::new();
 
         for round in 0..max_rounds {
             print!("   📝 (round {}/{}) ", round + 1, max_rounds);
             std::io::Write::flush(&mut std::io::stdout()).ok();
 
-            let result = match self.chat_with_failover(messages.clone()).await {
-                Ok(r) => {
-                    print!("{r}");
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
-                    r
-                },
-                Err(e) => {
-                    if round == 0 {
-                        // Try streaming on first round
-                        if let Ok(stream) = self.chat_stream_with_failover(messages.clone()).await {
-                            let mut rx = stream.into_receiver();
-                            let mut full = String::new();
-                            while let Some(chunk) = rx.recv().await {
-                                print!("{chunk}");
+            // Use native function calling with tools, or fallback to plain chat
+            let response_msg = if has_tools {
+                match self.provider.chat_with_tools(
+                    messages.clone(),
+                    Some(mcp_tool_defs.clone()),
+                ).await {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        // Fallback: try plain chat
+                        match self.chat_with_failover(messages.clone()).await {
+                            Ok(r) => {
+                                print!("{r}");
                                 std::io::Write::flush(&mut std::io::stdout()).ok();
-                                full.push_str(&chunk);
+                                crate::llm::provider::ChatResponseMessage {
+                                    content: Some(r),
+                                    tool_calls: vec![],
+                                }
                             }
-                            println!();
-                            full
+                            Err(e2) => {
+                                if round == 0 {
+                                    // Try streaming as last resort
+                                    if let Ok(stream) = self.chat_stream_with_failover(messages.clone()).await {
+                                        let mut rx = stream.into_receiver();
+                                        let mut full = String::new();
+                                        while let Some(chunk) = rx.recv().await {
+                                            print!("{chunk}");
+                                            std::io::Write::flush(&mut std::io::stdout()).ok();
+                                            full.push_str(&chunk);
+                                        }
+                                        println!();
+                                        crate::llm::provider::ChatResponseMessage {
+                                            content: Some(full),
+                                            tool_calls: vec![],
+                                        }
+                                    } else {
+                                        eprintln!("\n   Error: {e2}");
+                                        crate::llm::provider::ChatResponseMessage {
+                                            content: None,
+                                            tool_calls: vec![],
+                                        }
+                                    }
+                                } else {
+                                    eprintln!("\n   Error: {e2}");
+                                    crate::llm::provider::ChatResponseMessage {
+                                        content: None,
+                                        tool_calls: vec![],
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                match self.chat_with_failover(messages.clone()).await {
+                    Ok(r) => {
+                        print!("{r}");
+                        std::io::Write::flush(&mut std::io::stdout()).ok();
+                        crate::llm::provider::ChatResponseMessage {
+                            content: Some(r),
+                            tool_calls: vec![],
+                        }
+                    },
+                    Err(e) => {
+                        if round == 0 {
+                            if let Ok(stream) = self.chat_stream_with_failover(messages.clone()).await {
+                                let mut rx = stream.into_receiver();
+                                let mut full = String::new();
+                                while let Some(chunk) = rx.recv().await {
+                                    print!("{chunk}");
+                                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                                    full.push_str(&chunk);
+                                }
+                                println!();
+                                crate::llm::provider::ChatResponseMessage {
+                                    content: Some(full),
+                                    tool_calls: vec![],
+                                }
+                            } else {
+                                eprintln!("\n   Error: {e}");
+                                crate::llm::provider::ChatResponseMessage {
+                                    content: None,
+                                    tool_calls: vec![],
+                                }
+                            }
                         } else {
                             eprintln!("\n   Error: {e}");
-                            String::new()
+                            crate::llm::provider::ChatResponseMessage {
+                                content: None,
+                                tool_calls: vec![],
+                            }
                         }
-                    } else {
-                        eprintln!("\n   Error: {e}");
-                        String::new()
                     }
                 }
             };
 
-            if result.is_empty() {
-                break;
-            }
+            // Process native tool calls
+            if !response_msg.tool_calls.is_empty() {
+                for tool_call in &response_msg.tool_calls {
+                    // Parse the tool name: "server.tool_name" → tool_name
+                    let tool_name = tool_call.function.name.clone();
+                    let args: serde_json::Value = match serde_json::from_str(&tool_call.function.arguments) {
+                        Ok(v) => v,
+                        Err(_) => serde_json::json!({}),
+                    };
 
-            // Check if the LLM wants to call an MCP tool
-            if let Some(tool_call) = self.parse_mcp_tool_call(&result) {
-                let tool_result = match &self.mcp {
-                    Some(mcp) => mcp.call_tool(&tool_call.0, tool_call.1).await,
-                    None => Err(anyhow::anyhow!("MCP not available")),
-                };
+                    let result_value = match &self.mcp {
+                        Some(mcp) => mcp.call_tool(&tool_name, args).await,
+                        None => Err(anyhow::anyhow!("MCP not available")),
+                    };
 
-                match tool_result {
-                    Ok(value) => {
-                        let result_str = serde_json::to_string_pretty(&value)
-                            .unwrap_or_else(|_| "{}".to_string());
-                        messages.push(Message { 
-                            role: "user".to_string(),
-                            content: format!(
-                                "Tool '{}' returned:\n```json\n{}\n```\nPlease incorporate this into your response.",
-                                tool_call.0, result_str
-                            ),
-                        });
-                        println!("   🔧 Called MCP tool '{}'", tool_call.0);
-                    }
-                    Err(e) => {
-                        messages.push(Message { 
-                            role: "user".to_string(),
-                            content: format!("Tool '{}' failed: {e}", tool_call.0),
-                        });
-                        eprintln!("   ⚠️  MCP tool '{}' failed: {e}", tool_call.0);
+                    match result_value {
+                        Ok(value) => {
+                            let result_str = serde_json::to_string_pretty(&value)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            messages.push(Message {
+                                role: "tool".to_string(),
+                                content: result_str,
+                            });
+                            println!("   🔧 Called MCP tool '{}'", tool_name);
+                        }
+                        Err(e) => {
+                            messages.push(Message {
+                                role: "tool".to_string(),
+                                content: format!("Error: {e}"),
+                            });
+                            eprintln!("   ⚠️  MCP tool '{tool_name}' failed: {e}");
+                        }
                     }
                 }
+                // Continue loop for next round with tool results
             } else {
-                // No tool call — this is the final response
-                response_text = result;
+                // No tool calls — this is the final response
+                response_text = response_msg.content.unwrap_or_default();
                 break;
             }
         }
