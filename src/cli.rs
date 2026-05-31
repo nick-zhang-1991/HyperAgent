@@ -338,6 +338,43 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Show the last agent run log (timing, changes, errors)
+    Log {
+        /// Project root directory
+        #[arg(long, short, default_value = ".")]
+        dir: PathBuf,
+
+        /// Show full log instead of summary
+        #[arg(long)]
+        verbose: bool,
+    },
+
+    /// Undo the last agent run — revert all changes via git checkout
+    Undo {
+        /// Project root directory
+        #[arg(long, short, default_value = ".")]
+        dir: PathBuf,
+
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Auto-generate CHANGELOG.md from conventional commits
+    Changelog {
+        /// Output file path (default: CHANGELOG.md)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Project root directory
+        #[arg(long, short, default_value = ".")]
+        dir: PathBuf,
+
+        /// Number of recent commits to include (default: all)
+        #[arg(long)]
+        commits: Option<usize>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -638,6 +675,186 @@ impl Cli {
                 let result = crate::refactor::apply_rename(dir, old, new, &excludes, *dry_run)?;
                 if result.files_modified.is_empty() && !dry_run {
                     println!("   ℹ️  No files were modified.");
+                }
+                Ok(())
+            }
+
+            Some(Commands::Log { dir, verbose }) => {
+                let git_log_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+                let last_log = std::process::Command::new("git")
+                    .args(["log", "-1", "--stat", "--pretty=format:%H|%an|%ar|%s"])
+                    .current_dir(&git_log_dir)
+                    .output()
+                    .ok();
+                match last_log {
+                    Some(out) if out.status.success() => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        let parts: Vec<&str> = stdout.split('|').collect();
+                        if parts.len() >= 4 {
+                            println!("\n📋 Last Git Commit");
+                            println!("   Hash:   {}", parts[0].chars().take(12).collect::<String>());
+                            println!("   Author: {}", parts[1]);
+                            println!("   When:   {}", parts[2]);
+                            println!("   Message: {}", parts[3]);
+                        }
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        // Show the stat lines (file changes)
+                        for line in stderr.lines() {
+                            if line.contains("changed") || line.contains("file") {
+                                println!("   Files:  {}", line.trim());
+                            }
+                        }
+                        if *verbose {
+                            println!("\nFull diff:");
+                            let _ = std::process::Command::new("git")
+                                .args(["diff", "HEAD~1..HEAD", "--stat"])
+                                .current_dir(&git_log_dir)
+                                .status();
+                        }
+                    }
+                    None | Some(_) => {
+                        println!("   ℹ️  No git history found — run `hyper run` first");
+                    }
+                }
+                Ok(())
+            }
+
+            Some(Commands::Undo { dir, yes }) => {
+                let confirm = !yes;
+                if confirm {
+                    print!("   ⚠️  Revert all changes from last commit? [y/N] ");
+                    use std::io::{self, Write};
+                    let _ = io::stdout().flush();
+                    let mut input = String::new();
+                    io::stdin().read_line(&mut input).ok();
+                    if input.trim().to_lowercase() != "y" {
+                        println!("   Cancelled");
+                        return Ok(());
+                    }
+                }
+                let status = std::process::Command::new("git")
+                    .args(["checkout", "HEAD", "--", "."])
+                    .current_dir(dir)
+                    .status()
+                    .ok();
+                match status {
+                    Some(s) if s.success() => {
+                        println!("   ✅ Reverted all changes to HEAD");
+                        // Also unstage
+                        let _ = std::process::Command::new("git")
+                            .args(["reset", "HEAD"])
+                            .current_dir(dir)
+                            .status();
+                        println!("   ✅ Unstaged all changes");
+                    }
+                    _ => {
+                        println!("   ⚠️  Failed to undo — not in a git repo?");
+                    }
+                }
+                Ok(())
+            }
+
+            Some(Commands::Changelog { output, dir, commits }) => {
+                let output_path = output.clone().unwrap_or_else(|| dir.join("CHANGELOG.md"));
+                let max_count = commits.unwrap_or(100);
+                let output = std::process::Command::new("git")
+                    .args(["log", "--oneline", "--no-decorate", &format!("-{max_count}")])
+                    .current_dir(dir)
+                    .output()
+                    .ok();
+                match output {
+                    Some(out) if out.status.success() => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        let mut changelog = String::from(
+                            "# Changelog\n\nAll notable changes to this project will be documented in this file.\n\n"
+                        );
+
+                        // Parse conventional commits and group by type
+                        let mut features = Vec::new();
+                        let mut fixes = Vec::new();
+                        let mut perf = Vec::new();
+                        let mut docs = Vec::new();
+                        let mut refactors = Vec::new();
+                        let mut other = Vec::new();
+                        let mut date = String::new();
+
+                        // Get the date of the first commit
+                        if let Some(first_line) = stdout.lines().last() {
+                            if let Some(hash) = first_line.split_whitespace().next() {
+                                let date_output = std::process::Command::new("git")
+                                    .args(["log", "--format=%as", "-1", hash])
+                                    .current_dir(dir)
+                                    .output()
+                                    .ok();
+                                if let Some(d) = date_output {
+                                    date = String::from_utf8_lossy(&d.stdout).trim().to_string();
+                                }
+                            }
+                        }
+
+                        for line in stdout.lines() {
+                            let msg = line.trim();
+                            if msg.starts_with("feat:") || msg.starts_with("feat(") {
+                                features.push(msg.to_string());
+                            } else if msg.starts_with("fix:") || msg.starts_with("fix(") {
+                                fixes.push(msg.to_string());
+                            } else if msg.starts_with("perf:") || msg.starts_with("perf(") {
+                                perf.push(msg.to_string());
+                            } else if msg.starts_with("docs:") || msg.starts_with("docs(") {
+                                docs.push(msg.to_string());
+                            } else if msg.starts_with("refactor:") || msg.starts_with("refactor(") || msg.starts_with("refact:") {
+                                refactors.push(msg.to_string());
+                            } else if !msg.is_empty() {
+                                other.push(msg.to_string());
+                            }
+                        }
+
+                        let date_str = if date.is_empty() { "Unreleased".to_string() } else { date };
+                        changelog.push_str(&format!("## [{date_str}]\n\n"));
+
+                        if !features.is_empty() {
+                            changelog.push_str("### 🚀 Features\n\n");
+                            for f in &features { changelog.push_str(&format!("- {f}\n")); }
+                            changelog.push('\n');
+                        }
+                        if !fixes.is_empty() {
+                            changelog.push_str("### 🐛 Bug Fixes\n\n");
+                            for f in &fixes { changelog.push_str(&format!("- {f}\n")); }
+                            changelog.push('\n');
+                        }
+                        if !perf.is_empty() {
+                            changelog.push_str("### ⚡ Performance\n\n");
+                            for p in &perf { changelog.push_str(&format!("- {p}\n")); }
+                            changelog.push('\n');
+                        }
+                        if !docs.is_empty() {
+                            changelog.push_str("### 📚 Documentation\n\n");
+                            for d in &docs { changelog.push_str(&format!("- {d}\n")); }
+                            changelog.push('\n');
+                        }
+                        if !refactors.is_empty() {
+                            changelog.push_str("### 🔧 Refactoring\n\n");
+                            for r in &refactors { changelog.push_str(&format!("- {r}\n")); }
+                            changelog.push('\n');
+                        }
+                        if !other.is_empty() {
+                            changelog.push_str("### Others\n\n");
+                            for o in &other { changelog.push_str(&format!("- {o}\n")); }
+                            changelog.push('\n');
+                        }
+
+                        if let Err(e) = std::fs::write(&output_path, &changelog) {
+                            eprintln!("   ⚠️  Failed to write {}: {e}", output_path.display());
+                        } else {
+                            println!("   ✅ Changelog generated: {}", output_path.display());
+                            println!("   📊 {} commits parsed ({} feat, {} fix, {} perf, {} docs, {} refactor)",
+                                stdout.lines().count(), features.len(), fixes.len(),
+                                perf.len(), docs.len(), refactors.len());
+                        }
+                    }
+                    _ => {
+                        println!("   ⚠️  Failed to generate changelog — not a git repo?");
+                    }
                 }
                 Ok(())
             }
