@@ -37,6 +37,51 @@ impl<'a> PlanAgent<'a> {
         prompt: &str,
         relevant_files: &[FileContext],
     ) -> Result<Plan> {
+        let (messages, _file_context) = self.build_plan_messages(prompt, relevant_files);
+        let response = self.provider.chat(messages).await?;
+        let plan = self.parse_plan_response(&response);
+        Ok(plan)
+    }
+
+    /// Create a plan with streaming output — prints LLM response as it arrives
+    pub async fn create_plan_stream(
+        &self,
+        agent_name: &str,
+        prompt: &str,
+        relevant_files: &[FileContext],
+    ) -> Result<Plan> {
+        let (messages, _file_context) = self.build_plan_messages(prompt, relevant_files);
+
+        match self.provider.chat_stream(messages.clone()).await {
+            Ok(stream) => {
+                let mut rx = stream.into_receiver();
+                let mut full_response = String::new();
+                if !agent_name.is_empty() {
+                    print!("   📋 {}: ", agent_name);
+                }
+                use std::io::{Write, stdout};
+                stdout().flush().ok();
+
+                while let Some(chunk) = rx.recv().await {
+                    print!("{chunk}");
+                    stdout().flush().ok();
+                    full_response.push_str(&chunk);
+                }
+                println!();
+                let plan = self.parse_plan_response(&full_response);
+                Ok(plan)
+            }
+            Err(_) => {
+                // Fallback to batch
+                let response = self.provider.chat(messages).await?;
+                let plan = self.parse_plan_response(&response);
+                Ok(plan)
+            }
+        }
+    }
+
+    /// Build messages for the LLM plan call
+    fn build_plan_messages(&self, prompt: &str, relevant_files: &[FileContext]) -> (Vec<Message>, String) {
         let file_context = self.build_file_context(relevant_files);
 
         let system_prompt = r#"You are HyperAgent's PlanAgent. Create precise, actionable execution plans.
@@ -85,22 +130,17 @@ Rules:
             prompt, file_context
         );
 
-        let response = self
-            .provider
-            .chat(vec![
-                Message { 
-                    role: "system".to_string(),
-                    content: system_prompt.to_string(),
-                },
-                Message { 
-                    role: "user".to_string(),
-                    content: user_message,
-                },
-            ])
-            .await?;
-
-        let plan = self.parse_plan_response(&response);
-        Ok(plan)
+        let messages = vec![
+            Message { 
+                role: "system".to_string(),
+                content: system_prompt.to_string(),
+            },
+            Message { 
+                role: "user".to_string(),
+                content: user_message,
+            },
+        ];
+        (messages, file_context)
     }
 
     fn build_file_context(&self, files: &[FileContext]) -> String {

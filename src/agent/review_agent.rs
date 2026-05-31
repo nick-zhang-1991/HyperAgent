@@ -42,7 +42,7 @@ impl<'a> ReviewAgent<'a> {
 
         // MERGED REVIEW: one LLM call for both spec + quality
         println!("   🔍 Reviewing changes...");
-        let merged_result = self.merged_review(&review_input, trivial).await?;
+        let merged_result = self.merged_review_stream(&review_input, trivial).await?;
 
         // Parse results
         let mut final_changes: Vec<FileChange> = Vec::new();
@@ -93,6 +93,42 @@ impl<'a> ReviewAgent<'a> {
 
     /// Merged spec + quality review in one LLM call
     async fn merged_review(&self, review_input: &str, trivial: bool) -> Result<MergedReviewResult> {
+        let (messages, _quality_instruction) = self.build_review_messages(review_input, trivial);
+        let response = self.provider.chat(messages).await?;
+        Ok(self.parse_merged_response(&response))
+    }
+
+    /// Streaming review — prints LLM review reasoning as it arrives
+    async fn merged_review_stream(&self, review_input: &str, trivial: bool) -> Result<MergedReviewResult> {
+        use std::io::{Write, stdout};
+
+        let (messages, _quality_instruction) = self.build_review_messages(review_input, trivial);
+
+        match self.provider.chat_stream(messages.clone()).await {
+            Ok(stream) => {
+                let mut rx = stream.into_receiver();
+                let mut full_response = String::new();
+                print!("   🔍 Review reasoning: ");
+                stdout().flush().ok();
+
+                while let Some(chunk) = rx.recv().await {
+                    print!("{chunk}");
+                    stdout().flush().ok();
+                    full_response.push_str(&chunk);
+                }
+                println!();
+                Ok(self.parse_merged_response(&full_response))
+            }
+            Err(_) => {
+                // Fallback to batch
+                let response = self.provider.chat(messages).await?;
+                Ok(self.parse_merged_response(&response))
+            }
+        }
+    }
+
+    /// Build messages for the review LLM call
+    fn build_review_messages(&self, review_input: &str, trivial: bool) -> (Vec<Message>, String) {
         let quality_instruction = if trivial {
             "SKIP quality review — changes are trivial.".to_string()
         } else {
@@ -129,21 +165,17 @@ If SPEC rejects a change, it's rejected regardless of quality.
 Numbers are 0-based indices of the proposed changes."#
         );
 
-        let response = self
-            .provider
-            .chat(vec![
-                Message { 
-                    role: "system".to_string(),
-                    content: system_prompt,
-                },
-                Message { 
-                    role: "user".to_string(),
-                    content: review_input.to_string(),
-                },
-            ])
-            .await?;
-
-        Ok(self.parse_merged_response(&response))
+        let messages = vec![
+            Message { 
+                role: "system".to_string(),
+                content: system_prompt,
+            },
+            Message { 
+                role: "user".to_string(),
+                content: review_input.to_string(),
+            },
+        ];
+        (messages, quality_instruction)
     }
 
     fn build_review_context(&self, task: &str, changes: &[FileChange]) -> String {

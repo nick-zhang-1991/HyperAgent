@@ -880,11 +880,21 @@ impl Orchestrator {
         files: &[FileContext],
         max_attempts: usize,
     ) -> Result<crate::agent::plan_agent::Plan> {
-        let mut _last_error = String::new();
-        for attempt in 1..=max_attempts {
-            if attempt > 1 {
-                println!("   🔄 Retrying plan creation (attempt {attempt}/{max_attempts})...");
+        let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
+        let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
+
+        // First attempt with streaming
+        match plan_agent.create_plan_stream("plan", prompt, files).await {
+            Ok(plan) if plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false) => {
+                return Ok(plan);
             }
+            _ => {}
+        }
+
+        // Retries with batch
+        let mut _last_error = String::new();
+        for attempt in 1..=max_attempts.saturating_sub(1) {
+            println!("   🔄 Retrying plan creation (attempt {attempt}/{max_attempts})...");
             let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
             let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
             match plan_agent.create_plan(prompt, files).await {
