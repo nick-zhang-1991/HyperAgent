@@ -1,3 +1,5 @@
+pub mod worktree;
+
 use anyhow::Result;
 use std::path::Path;
 use std::process::Command;

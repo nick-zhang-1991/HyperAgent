@@ -56,6 +56,7 @@ pub struct Orchestrator {
     hooks: Option<HookRegistry>,
     mcp: Option<crate::mcp::McpRegistry>,
     mode_registry: Option<crate::modes::ModeRegistry>,
+    use_worktree: bool,
 }
 
 impl Orchestrator {
@@ -82,7 +83,13 @@ impl Orchestrator {
             mode_registry: None,
             plan_provider: None,
             review_provider: None,
+            use_worktree: false,
         }
+    }
+
+    pub fn with_worktree(mut self) -> Self {
+        self.use_worktree = true;
+        self
     }
 
     pub fn with_conversation_history(mut self, history: Vec<(String, String)>) -> Self {
@@ -287,10 +294,12 @@ impl Orchestrator {
         println!("   ✅ Approved {} changes\n", approved.len());
         self.fire_hook(HookEvent::PostReview, &format!("{} approved", approved.len())).await;
 
-        // Phase 5: Apply
+        // Phase 5: Apply (optionally in worktree sandbox)
+        let (apply_root, mut _wt_manager) = self.prepare_apply_worktree().await?;
+
         self.fire_hook(HookEvent::PreApply, prompt).await;
         println!("✏️  Applying changes...");
-        let apply_agent = ApplyAgent::new(&self.root, self.confirm);
+        let apply_agent = ApplyAgent::new(&apply_root, self.confirm);
         let applied = apply_agent.apply(&approved).await?;
 
         for msg in &applied {
@@ -430,6 +439,11 @@ impl Orchestrator {
                     }
                 }
             }
+        }
+
+        // Sync worktree changes back to main repo and clean up
+        if let Some(ref mut wt) = _wt_manager {
+            Self::sync_worktree_and_cleanup(wt, &self.root).await;
         }
 
         // Record applied changes to memory
@@ -1045,6 +1059,68 @@ impl Orchestrator {
             }
         }
         total
+    }
+
+    /// Prepare worktree for isolated apply+lint (if enabled), or return self.root.
+    async fn prepare_apply_worktree(&mut self) -> Result<(std::path::PathBuf, Option<crate::git::worktree::WorktreeManager>)> {
+        if !self.use_worktree {
+            return Ok((self.root.clone(), None));
+        }
+        let is_git = self.root.join(".git").exists();
+        if !is_git {
+            println!("   ⚠️  Not a git repo — worktree isolation skipped");
+            return Ok((self.root.clone(), None));
+        }
+        let status = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&self.root).output().ok();
+        if let Some(out) = status {
+            if !String::from_utf8_lossy(&out.stdout).trim().is_empty() {
+                println!("   ⚠️  Uncommitted changes — worktree isolation skipped");
+                return Ok((self.root.clone(), None));
+            }
+        }
+        let mut wt_manager = crate::git::worktree::WorktreeManager::new(&self.root, "hyper-apply");
+        match wt_manager.create_worktrees(1).await {
+            Ok(paths) => {
+                let root = paths[0].clone();
+                println!("   🌳 Apply sandbox: {:?}", root);
+                Ok((root, Some(wt_manager)))
+            }
+            Err(e) => {
+                println!("   ⚠️  Worktree failed: {e} — falling back");
+                Ok((self.root.clone(), None))
+            }
+        }
+    }
+
+    /// Sync worktree changes back to main repo via git diff + apply, then clean up
+    async fn sync_worktree_and_cleanup(wt_manager: &mut crate::git::worktree::WorktreeManager, main_root: &std::path::Path) {
+        let diff = match wt_manager.diff_worktree(0) {
+            Ok(d) => d,
+            Err(e) => { println!("   ⚠️  Worktree diff: {e}"); let _ = wt_manager.cleanup().await; return; }
+        };
+        if diff.is_empty() { let _ = wt_manager.cleanup().await; return; }
+        let patch_file = std::env::temp_dir().join(format!("hyper-patch-{}", std::process::id()));
+        if std::fs::write(&patch_file, &diff).is_err() { let _ = wt_manager.cleanup().await; return; }
+        let check = std::process::Command::new("git")
+            .args(["apply", "--check", patch_file.to_str().unwrap()])
+            .current_dir(main_root).output();
+        match check {
+            Ok(o) if o.status.success() => {
+                let _ = std::process::Command::new("git")
+                    .args(["apply", patch_file.to_str().unwrap()])
+                    .current_dir(main_root).output();
+                println!("   ✅ Changes synced from worktree");
+            }
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                println!("   ⚠️  Sync conflict: {:?} — inspect {:?}", err.lines().next().unwrap_or("?"), patch_file);
+                return;
+            }
+            Err(e) => println!("   ⚠️  git apply failed: {e}"),
+        }
+        let _ = wt_manager.cleanup().await;
     }
 }
 
