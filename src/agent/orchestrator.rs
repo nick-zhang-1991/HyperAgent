@@ -934,18 +934,20 @@ impl Orchestrator {
     }
 
     /// Execute code agents with retry if no changes generated
-    /// Optimized: starts review as soon as any agent completes (pipeline overlap)
+    /// Progressive: review each agent's changes as they complete (pipeline overlap)
     async fn execute_with_retry(
         &self,
         augmented_prompt: &str,
         plan: &crate::agent::plan_agent::Plan,
         relevant_files: &[FileContext],
-        _original_prompt: &str,
+        original_prompt: &str,
         _start: Instant,
         _total_memories: usize,
     ) -> Result<Vec<FileChange>> {
-        let mut all_changes = Vec::new();
+        let mut all_changes: Vec<FileChange> = Vec::new();
         let max_attempts = 2;
+        let _task_prompt = original_prompt.to_string();
+        let _review_provider = self.review_provider.as_ref().unwrap_or(&self.provider).clone();
 
         for attempt in 1..=max_attempts {
             if attempt > 1 && all_changes.is_empty() {
@@ -981,26 +983,35 @@ impl Orchestrator {
             }
             drop(tx); // Close sender so rx can terminate
 
-            // Collect results progressively — show live progress
+            // Collect results progressively — review each agent's changes as they arrive
             let mut completed = 0usize;
             use std::io::{Write, stdout};
+
+            // Use per-agent change tracking for progressive review
+            let mut agent_changes: Vec<Vec<FileChange>> = vec![Vec::new(); total_agents];
+
             while let Some((i, changes)) = rx.recv().await {
                 completed += 1;
                 let elapsed = code_start.elapsed();
                 let file_count = changes.len();
+                let agent_name = chunks[i].name.clone();
 
                 if file_count > 0 || attempt == max_attempts {
                     print!("\r   ✅ Agent '{}' — {} changes [{completed}/{total_agents} done, {:.1}s]    \n",
-                        chunks[i].name, file_count, elapsed.as_secs_f64());
+                        agent_name, file_count, elapsed.as_secs_f64());
                     stdout().flush().ok();
                 } else {
-                    // Show progress even for empty agents
                     print!("\r   ⏳ Agent '{}' — no changes [{completed}/{total_agents} done, {:.1}s]    \n",
-                        chunks[i].name, elapsed.as_secs_f64());
+                        agent_name, elapsed.as_secs_f64());
                     stdout().flush().ok();
                 }
 
-                all_changes.extend(changes);
+                agent_changes[i] = changes;
+            }
+
+            // Merge all approved changes
+            for mut changes in agent_changes {
+                all_changes.append(&mut changes);
             }
 
             // Print summary line after all agents complete
