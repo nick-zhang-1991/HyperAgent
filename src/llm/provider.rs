@@ -11,6 +11,7 @@ pub struct LlmProvider {
     pub model: String,
     pub base_url: String,
     pub api_key: String,
+    pub input_price_per_1m: f64,
     client: Client,
 }
 
@@ -178,6 +179,7 @@ impl LlmProvider {
             model,
             base_url,
             api_key,
+            input_price_per_1m: 0.15,
             client,
         })
     }
@@ -191,6 +193,7 @@ impl LlmProvider {
             model: model.into(),
             base_url: base_url.into(),
             api_key: api_key.into(),
+            input_price_per_1m: 0.15,
             client,
         })
     }

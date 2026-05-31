@@ -18,7 +18,19 @@ pub struct ProviderConfig {
     pub models: Vec<String>,
     pub priority: u32,
     pub weight: f64,
+    /// Input price per 1M tokens (USD)
+    #[serde(default = "default_input_price")]
+    pub input_price_per_1m: f64,
+    /// Output price per 1M tokens (USD)
+    #[serde(default = "default_output_price")]
+    pub output_price_per_1m: f64,
+    /// Max budget per run (USD), 0 = unlimited
+    #[serde(default)]
+    pub max_budget_per_run: f64,
 }
+
+fn default_input_price() -> f64 { 0.15 }
+fn default_output_price() -> f64 { 0.60 }
 
 /// Agent configuration with permissions
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,8 +184,11 @@ impl ModelRouter {
                 models: vec!["deepseek-v4-flash".into(), "deepseek-v4-pro".into()],
                 priority: 1,
                 weight: 1.0,
-            },
-            ProviderConfig {
+                input_price_per_1m: 0.15,
+                output_price_per_1m: 0.60,
+                max_budget_per_run: 0.0,
+                },
+                ProviderConfig {
                 name: "openai".into(),
                 api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
                 base_url: "https://api.openai.com/v1".into(),
@@ -181,6 +196,9 @@ impl ModelRouter {
                 models: vec!["gpt-4o".into(), "gpt-4o-mini".into()],
                 priority: 2,
                 weight: 1.0,
+                input_price_per_1m: 2.50,
+                output_price_per_1m: 10.00,
+                max_budget_per_run: 0.0,
             },
         ]
     }

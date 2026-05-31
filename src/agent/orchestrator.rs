@@ -440,8 +440,25 @@ impl Orchestrator {
             model_name: self.provider.model.clone(),
             memories_recorded: total_memories,
             response_text: String::new(),
-            cost_estimate: (tokens_used as f64 / 1000.0) * 0.15,
+            cost_estimate: (tokens_used as f64 / 1_000_000.0) * 0.15f64.max(self.provider.input_price_per_1m),
         })
+    }
+
+    /// Estimate cost for a run based on token count
+    pub fn estimate_cost(tokens: usize, input_price: f64) -> f64 {
+        // Rough estimate: assume 60% input tokens, 40% output tokens
+        let input_tokens = tokens as f64 * 0.6;
+        let output_tokens = tokens as f64 * 0.4;
+        let output_price = input_price * 4.0; // Output is typically 4x input price
+        (input_tokens / 1_000_000.0 * input_price) + (output_tokens / 1_000_000.0 * output_price)
+    }
+
+    /// Check if the estimated cost would exceed the budget
+    pub fn would_exceed_budget(tokens: usize, input_price: f64, max_budget: f64) -> bool {
+        if max_budget <= 0.0 {
+            return false; // No budget limit
+        }
+        Self::estimate_cost(tokens, input_price) > max_budget
     }
 
     /// Run in ASK mode: direct Q&A with code context, no plan/code/review pipeline
