@@ -101,8 +101,14 @@ impl SymbolGraph {
     }
 
     /// Build the reference graph by connecting files that reference each other
+    /// Uses deterministic import-to-file resolution for accurate cross-file edges.
     pub fn build_reference_graph(&mut self) -> Result<()> {
-        // Connect files via import/reference relationships
+        // Build a lookup: file path → file index for all files
+        let path_to_idx: std::collections::HashMap<&str, usize> = self.files.iter()
+            .enumerate()
+            .map(|(i, f)| (f.rel_path.as_str(), i))
+            .collect();
+
         for file_idx in 0..self.files.len() {
             let file = &self.files[file_idx];
 
@@ -115,66 +121,101 @@ impl SymbolGraph {
                 .collect();
 
             for (import_name, signature) in &imports {
-
-                // Strategy 1: Try exact match against symbol definitions
-                if let Some(targets) = self.symbol_definitions.get(import_name) {
-                    for &target_idx in targets {
-                        Self::add_edge_weighted(&mut self.graph, file_idx, target_idx, 1.0);
-                    }
-                }
-
-                // Strategy 2: Try last-segment match (e.g., "crate::utils::helpers" → "helpers")
-                let last_segment = import_name.split("::").last()
-                    .or_else(|| import_name.split('/').last())
-                    .unwrap_or(import_name);
-                if last_segment != import_name {
-                    if let Some(targets) = self.symbol_definitions.get(last_segment) {
-                        for &target_idx in targets {
-                            Self::add_edge_weighted(&mut self.graph, file_idx, target_idx, 0.8);
-                        }
-                    }
-                }
-
-                // Strategy 3: Match import path to file paths
-                // "crate::utils::helpers" → look for files with "utils/helpers" in path
-                let path_candidates: Vec<String> = import_name
+                // Try deterministic import-to-file resolution
+                // e.g. "crate::utils::helpers::get_config" → ["utils", "helpers", "get_config"]
+                // then try: utils/helpers.rs, utils/helpers/get_config.rs, utils.rs
+                let segments: Vec<&str> = import_name
                     .split("::")
                     .filter(|s| !s.is_empty() && *s != "crate" && *s != "self" && *s != "super")
-                    .map(|s| s.to_string())
                     .collect();
 
-                if !path_candidates.is_empty() {
+                if segments.is_empty() {
+                    continue;
+                }
 
-                    for (j, other_file) in self.files.iter().enumerate() {
-                        if j != file_idx {
-                            let rel_lower = other_file.rel_path.to_lowercase();
-                            let rel_no_ext = rel_lower
-                                .trim_end_matches(".rs")
-                                .trim_end_matches(".py")
-                                .trim_end_matches(".ts")
-                                .trim_end_matches(".js");
-                            let rel_as_path = rel_no_ext.replace('/', "::").replace('\\', "::");
+                let mut resolved = false;
 
-                            // Check if the import path appears in this file's module path
-                            for seg in &path_candidates {
-                                if rel_as_path.contains(&seg.to_lowercase()) {
-                                    Self::add_edge_weighted(&mut self.graph, file_idx, j, 0.5);
-                                    break;
-                                }
+                // Strategy A: Try last segment as the module, remove it to get dir
+                // e.g. "utils::helpers::get_config" → path "utils/helpers" + check for SymbolKind::Function "get_config"
+                if segments.len() >= 2 {
+                    // Try penultimate segment as filename, last as symbol
+                    let base_dir = segments[..segments.len()-1].join("/");
+                    for ext in &["rs", "py", "ts", "js", "go", "java"] {
+                        let candidate = format!("{base_dir}.{ext}");
+                        if let Some(&target_idx) = path_to_idx.get(candidate.as_str()) {
+                            // Check that the target file actually defines the symbol
+                            let target_file = &self.files[target_idx];
+                            let has_symbol = target_file.symbols.iter().any(|s| {
+                                s.name == segments[segments.len()-1]
+                            });
+                            if has_symbol || target_file.rel_path.contains(&segments[segments.len()-1].to_lowercase()) {
+                                Self::add_edge_weighted(&mut self.graph, file_idx, target_idx, 1.0);
+                                resolved = true;
+                                break;
                             }
                         }
                     }
                 }
 
-                // Strategy 4: Parse the full signature line for Rust-style `use` statements
-                // e.g. "use crate::module::StructName" - try matching StructName
-                if signature.starts_with("use ") {
-                    for seg in import_name.split("::") {
-                        if let Some(targets) = self.symbol_definitions.get(seg) {
-                            for &target_idx in targets {
-                                if file_idx != target_idx {
-                                    Self::add_edge_weighted(&mut self.graph, file_idx, target_idx, 0.3);
-                                }
+                if !resolved && segments.len() >= 2 {
+                    // Try N-1 segments as dir, last as filename
+                    // "utils::helpers::get_config" → "utils/helpers/get_config.rs"
+                    let full_path = segments.join("/");
+                    // Only try if the last segment doesn't look like a function (lowercase first letter usually = function)
+                    let last_seg = segments[segments.len()-1];
+                    let last_is_symbol = last_seg.chars().next().map(|c| c.is_uppercase()).unwrap_or(true);
+                    if !last_is_symbol {
+                        // Last segment is likely a file, not a symbol
+                        for ext in &["rs", "py", "ts", "js", "go", "java"] {
+                            let candidate = format!("{full_path}.{ext}");
+                            if let Some(&target_idx) = path_to_idx.get(candidate.as_str()) {
+                                Self::add_edge_weighted(&mut self.graph, file_idx, target_idx, 1.0);
+                                resolved = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if !resolved {
+                    // Strategy B: Try all segments concatenated as path
+                    // "utils::helpers" → "utils/helpers.rs", "utils.rs"
+                    let path = segments.join("/").to_lowercase();
+                    for ext in &["rs", "py", "ts", "js", "go", "java"] {
+                        let candidate = format!("{path}.{ext}");
+                        if let Some(&target_idx) = path_to_idx.get(candidate.as_str()) {
+                            Self::add_edge_weighted(&mut self.graph, file_idx, target_idx, 0.8);
+                            resolved = true;
+                            break;
+                        }
+                    }
+                }
+
+                if !resolved {
+                    // Strategy C: Try matching import path segments against file paths (fuzzy)
+                    for (rel_path, &target_idx) in &path_to_idx {
+                        if file_idx == target_idx {
+                            continue;
+                        }
+                        let rel_lower = rel_path.to_lowercase();
+                        for seg in &segments {
+                            let seg_lower = seg.to_lowercase();
+                            if rel_lower.contains(&seg_lower) {
+                                Self::add_edge_weighted(&mut self.graph, file_idx, target_idx, 0.4);
+                                resolved = true;
+                                break;
+                            }
+                        }
+                        if resolved { break; }
+                    }
+                }
+
+                // Strategy D: Last-segment symbol match against symbol_definitions
+                if let Some(last_seg) = segments.last() {
+                    if let Some(targets) = self.symbol_definitions.get(*last_seg) {
+                        for &target_idx in targets {
+                            if file_idx != target_idx {
+                                Self::add_edge_weighted(&mut self.graph, file_idx, target_idx, 0.5);
                             }
                         }
                     }
@@ -189,6 +230,7 @@ impl SymbolGraph {
     fn add_edge_weighted(graph: &mut UnGraph<usize, f64>, from: usize, to: usize, weight: f64) {
         let n1 = NodeIndex::new(from);
         let n2 = NodeIndex::new(to);
+
         if !graph.contains_edge(n1, n2) {
             graph.add_edge(n1, n2, weight);
         } else if let Some(edge) = graph.find_edge(n1, n2) {
