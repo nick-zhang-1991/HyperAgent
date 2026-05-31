@@ -336,20 +336,86 @@ impl HyperIndex {
     }
 
     /// Start a file watcher to detect codebase changes
-    /// The watcher removes the cache file to force reindex on next use.
-    /// Returns a FileWatcher handle — keep it alive to keep watching.
+    /// Incrementally updates the index for changed files.
+    /// Falls back to full rebuild for edge cases.
     pub fn watch(&self) -> Result<FileWatcher> {
         let root = self.root.clone();
-        let cache_path = self.cache.db_path();
-        let callback = move |_paths: Vec<String>| {
-            tracing::info!("Files changed, invalidating index cache...");
-            // Force reindex by removing the cache file
-            let _ = std::fs::remove_file(&cache_path);
-            tracing::info!("Index cache invalidated — will reindex on next query");
+        let root_for_watch = root.clone();
+        let cache_db_path = self.cache.db_path();
+        let parser = self.parser.clone();
+        let callback = move |paths: Vec<String>| {
+            tracing::info!("Files changed: {} file(s), re-indexing...", paths.len());
+            let mut count = 0usize;
+            let mut had_errors = false;
+
+            // Open a separate DB connection for incremental updates
+            let cache = match IndexCache::new(&root) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("Cannot open cache for incremental update: {e}");
+                    let _ = std::fs::remove_file(&cache_db_path);
+                    return;
+                }
+            };
+
+            for path_str in &paths {
+                let full_path = PathBuf::from(path_str);
+                let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+                // Only process source files
+                let lang = match ext {
+                    "rs" => "rust",
+                    "py" => "python",
+                    "ts" | "tsx" => "typescript",
+                    "js" | "jsx" => "javascript",
+                    "go" => "go",
+                    "java" => "java",
+                    _ => continue,
+                };
+
+                if !full_path.exists() {
+                    // File deleted — remove from cache
+                    let rel = full_path.strip_prefix(&root).unwrap_or(&full_path);
+                    if cache.remove_file(&rel.to_string_lossy()).is_err() {
+                        had_errors = true;
+                    }
+                    count += 1;
+                    tracing::debug!("Removed from index: {}", full_path.display());
+                    continue;
+                }
+
+                // Re-parse and update
+                match parser.parse_file(&full_path, lang) {
+                    Ok(symbols) => {
+                        let rel = full_path.strip_prefix(&root).unwrap_or(&full_path);
+                        let file_sym = FileSymbols {
+                            file_path: full_path.clone(),
+                            rel_path: rel.to_string_lossy().to_string(),
+                            language: lang.to_string(),
+                            symbols,
+                        };
+                        if cache.upsert_file(&file_sym).is_err() {
+                            had_errors = true;
+                        }
+                        count += 1;
+                        tracing::debug!("Re-indexed: {}", full_path.display());
+                    }
+                    Err(e) => {
+                        tracing::debug!("Skipping {}: {e}", full_path.display());
+                    }
+                }
+            }
+
+            if count > 0 && !had_errors {
+                tracing::info!("Incremental index: {count} files re-indexed");
+            } else if had_errors {
+                tracing::warn!("Incremental update had errors — invalidating cache for full rebuild");
+                let _ = std::fs::remove_file(&cache_db_path);
+            }
         };
         let mut watcher = FileWatcher::new(&self.root, callback)?;
-        watcher.watch(&root)?;
-        println!("   👁️  Watching for file changes...");
+        watcher.watch(&root_for_watch)?;
+        println!("   👁️  Watching for file changes (incremental)...");
         Ok(watcher)
     }
 }

@@ -199,6 +199,73 @@ impl IndexCache {
     pub fn db_path(&self) -> PathBuf {
         self.db_path.clone()
     }
+
+    /// Remove a file and its symbols from the cache
+    pub fn remove_file(&self, path: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        // Get file ID
+        let file_id: Option<i64> = conn.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            rusqlite::params![path],
+            |row| row.get(0),
+        ).ok();
+
+        if let Some(fid) = file_id {
+            conn.execute("DELETE FROM symbols WHERE file_id = ?1", rusqlite::params![fid])?;
+            conn.execute("DELETE FROM ref_edges WHERE from_file = ?1 OR to_file = ?1", rusqlite::params![fid])?;
+            conn.execute("DELETE FROM files WHERE id = ?1", rusqlite::params![fid])?;
+        }
+        Ok(())
+    }
+
+    /// Add or update a single file's symbols in the cache
+    pub fn upsert_file(&self, file_sym: &super::FileSymbols) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let path = file_sym.file_path.to_string_lossy();
+        let rel_path = file_sym.rel_path.as_str();
+        let lang = file_sym.language.as_str();
+
+        // Remove old entry if exists
+        let file_id: Option<i64> = conn.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            rusqlite::params![path.as_ref()],
+            |row| row.get(0),
+        ).ok();
+
+        if let Some(fid) = file_id {
+            conn.execute("DELETE FROM symbols WHERE file_id = ?1", rusqlite::params![fid])?;
+            conn.execute("UPDATE files SET rel_path = ?1, language = ?2 WHERE id = ?3",
+                rusqlite::params![rel_path, lang, fid])?;
+            // Insert new symbols
+            for sym in &file_sym.symbols {
+                conn.execute(
+                    "INSERT INTO symbols (file_id, name, kind, start_line, end_line, signature) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![fid, sym.name, format!("{}", sym.kind), sym.start_line as i32, sym.end_line as i32, sym.signature],
+                )?;
+            }
+        } else {
+            // Insert new file + symbols
+            let max_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM files", [], |row| row.get(0)).unwrap_or(0);
+            let new_id = max_id + 1;
+            conn.execute(
+                "INSERT INTO files (id, path, rel_path, language, pagerank) VALUES (?1, ?2, ?3, ?4, 0.0)",
+                rusqlite::params![new_id, path.as_ref(), rel_path, lang],
+            )?;
+            for sym in &file_sym.symbols {
+                conn.execute(
+                    "INSERT INTO symbols (file_id, name, kind, start_line, end_line, signature) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![new_id, sym.name, format!("{}", sym.kind), sym.start_line as i32, sym.end_line as i32, sym.signature],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Invalidate cache by deleting the database — forces full rebuild
+    pub fn invalidate(&self) -> Result<()> {
+        let _ = std::fs::remove_file(&self.db_path);
+        Ok(())
+    }
 }
 
 #[allow(dead_code)]

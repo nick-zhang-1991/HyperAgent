@@ -6,6 +6,7 @@ use std::path::Path;
 use super::{Symbol, SymbolKind};
 
 /// Code parser using regex-based symbol extraction
+#[derive(Clone)]
 pub struct CodeParser {
     patterns: HashMap<String, Vec<(Regex, SymbolKind)>>,
 }
