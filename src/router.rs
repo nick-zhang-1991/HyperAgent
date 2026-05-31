@@ -322,6 +322,11 @@ impl ModelRouter {
         self.agents.iter().collect()
     }
 
+    /// Get all provider configs (for building failover pool)
+    pub fn list_providers(&self) -> &[ProviderConfig] {
+        &self.providers
+    }
+
     #[allow(dead_code)]
     /// Export config as TOML string
     pub fn export_config(&self) -> String {

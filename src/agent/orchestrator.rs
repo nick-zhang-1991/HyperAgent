@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use crate::diff::FileChange;
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::index::{FileContext, HyperIndex};
-use crate::llm::{LlmProvider, Message};
+use crate::llm::{LlmProvider, Message, ProviderPool};
 use crate::memory::{MemoryManager, MemoryType};
 
 use super::apply_agent::ApplyAgent;
@@ -44,6 +44,7 @@ pub struct Orchestrator {
     index: HyperIndex,
     root: PathBuf,
     provider: LlmProvider,
+    provider_pool: Option<ProviderPool>,
     plan_provider: Option<LlmProvider>,
     review_provider: Option<LlmProvider>,
     parallel_agents: usize,
@@ -68,6 +69,7 @@ impl Orchestrator {
         Self {
             index,
             provider,
+            provider_pool: None,
             root,
             parallel_agents,
             confirm,
@@ -116,6 +118,44 @@ impl Orchestrator {
     pub fn with_mode_registry(mut self, registry: crate::modes::ModeRegistry) -> Self {
         self.mode_registry = Some(registry);
         self
+    }
+
+    /// Configure a failover provider pool
+    pub fn with_provider_pool(mut self, pool: ProviderPool) -> Self {
+        self.provider_pool = Some(pool);
+        self
+    }
+
+    /// Chat with automatic failover (pool → individual provider)
+    async fn chat_with_failover(&mut self, messages: Vec<Message>) -> Result<String> {
+        if let Some(pool) = &mut self.provider_pool {
+            pool.chat(messages).await
+        } else {
+            self.provider.chat(messages).await
+        }
+    }
+
+    /// Chat stream with automatic failover
+    async fn chat_stream_with_failover(&mut self, messages: Vec<Message>) -> Result<crate::llm::streaming::StreamingResponse> {
+        if let Some(pool) = &mut self.provider_pool {
+            pool.chat_stream(messages).await
+        } else {
+            self.provider.chat_stream(messages).await
+        }
+    }
+
+    /// Get active model name (from pool or direct provider)
+    fn active_model_name(&self) -> String {
+        self.provider_pool.as_ref()
+            .map(|p| p.active_model().to_string())
+            .unwrap_or_else(|| self.provider.model.clone())
+    }
+
+    /// Get active provider name (for display)
+    fn active_provider_display(&self) -> String {
+        self.provider_pool.as_ref()
+            .map(|p| format!("{} ({})", p.active_provider_name(), p.active_model()))
+            .unwrap_or_else(|| self.provider.model.clone())
     }
 
     #[allow(dead_code)]
@@ -444,10 +484,10 @@ impl Orchestrator {
             tokens_used,
             elapsed,
             changes: all_changes,
-            model_name: self.provider.model.clone(),
+            model_name: self.active_model_name(),
             memories_recorded: total_memories,
             response_text: String::new(),
-            cost_estimate: (tokens_used as f64 / 1_000_000.0) * 0.15f64.max(self.provider.input_price_per_1m),
+            cost_estimate: (tokens_used as f64 / 1_000_000.0) * 0.15f64.max(if let Some(pool) = &self.provider_pool { pool.input_price() } else { self.provider.input_price_per_1m }),
         })
     }
 
@@ -471,7 +511,7 @@ impl Orchestrator {
     /// Run in ASK mode: direct Q&A with code context, no plan/code/review pipeline
     /// Supports MCP tool calling: if MCP tools are available, the LLM can call them
     async fn run_ask_mode(
-        &self,
+        &mut self,
         prompt: &str,
         relevant_files: &[FileContext],
         start: Instant,
@@ -554,7 +594,7 @@ impl Orchestrator {
             print!("   📝 (round {}/{}) ", round + 1, max_rounds);
             std::io::Write::flush(&mut std::io::stdout()).ok();
 
-            let result = match self.provider.chat(messages.clone()).await {
+            let result = match self.chat_with_failover(messages.clone()).await {
                 Ok(r) => {
                     print!("{r}");
                     std::io::Write::flush(&mut std::io::stdout()).ok();
@@ -563,7 +603,7 @@ impl Orchestrator {
                 Err(e) => {
                     if round == 0 {
                         // Try streaming on first round
-                        if let Ok(stream) = self.provider.chat_stream(messages.clone()).await {
+                        if let Ok(stream) = self.chat_stream_with_failover(messages.clone()).await {
                             let mut rx = stream.into_receiver();
                             let mut full = String::new();
                             while let Some(chunk) = rx.recv().await {
@@ -648,7 +688,7 @@ impl Orchestrator {
         Ok(RunResult {
             elapsed: start.elapsed(),
             memories_recorded: total_memories + 1,
-            model_name: self.provider.model.clone(),
+            model_name: self.active_model_name(),
             response_text,
             ..Default::default()
         })

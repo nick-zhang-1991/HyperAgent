@@ -605,6 +605,19 @@ impl Cli {
 
         // Create orchestrator with ALL capabilities
         let mut orchestrator = Orchestrator::new(index, provider, dir.to_path_buf(), agents.max(1), !yes);
+        // Wire up provider pool for automatic failover
+        if let Ok(router) = crate::router::ModelRouter::new() {
+            let configs = router.list_providers();
+            if configs.len() > 1 {
+                if let Ok(pool) = crate::llm::ProviderPool::new(configs) {
+                    let num_providers = pool.provider_count();
+                    if num_providers > 1 {
+                        println!("   🔄 Failover pool: {} providers", num_providers);
+                        orchestrator = orchestrator.with_provider_pool(pool);
+                    }
+                }
+            }
+        }
         orchestrator = orchestrator.with_mode(mode);
 
         // Handle image input for vision-capable models
