@@ -375,6 +375,69 @@ pub enum Commands {
         #[arg(long)]
         commits: Option<usize>,
     },
+
+    /// Create a GitHub PR from current branch with auto-generated description
+    Pr {
+        /// Title (auto-generated from branch name + commits if not provided)
+        #[arg(short, long)]
+        title: Option<String>,
+
+        /// Base branch (default: main)
+        #[arg(short, long, default_value = "main")]
+        base: String,
+
+        /// Project root directory
+        #[arg(long, short, default_value = ".")]
+        dir: PathBuf,
+
+        /// Push before creating PR
+        #[arg(long)]
+        push: bool,
+
+        /// Open PR URL in browser
+        #[arg(long)]
+        open: bool,
+
+        /// Dry-run: show what would be created without submitting
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Watch mode — auto-run agent when files change
+    Watch {
+        /// Prompt to run on each change
+        prompt: Vec<String>,
+
+        /// Project root directory
+        #[arg(long, short, default_value = ".")]
+        dir: PathBuf,
+
+        /// Debounce interval in seconds (default: 2)
+        #[arg(long, default_value_t = 2)]
+        debounce: u64,
+
+        /// File patterns to watch (e.g., '*.rs')
+        #[arg(long)]
+        pattern: Option<String>,
+
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Explain code with LLM — analyze a file or function
+    Explain {
+        /// File path or function name to explain
+        target: String,
+
+        /// Project root directory
+        #[arg(long, short, default_value = ".")]
+        dir: PathBuf,
+
+        /// Model to use
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -856,6 +919,230 @@ impl Cli {
                         println!("   ⚠️  Failed to generate changelog — not a git repo?");
                     }
                 }
+                Ok(())
+            }
+
+            Some(Commands::Pr { title, base, dir, push, open, dry_run }) => {
+                let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+
+                // Get current branch
+                let branch_output = std::process::Command::new("git")
+                    .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                    .current_dir(&canonical_dir)
+                    .output().ok();
+                let branch = branch_output.and_then(|o| {
+                    if o.status.success() {
+                        Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    } else { None }
+                }).unwrap_or_else(|| "current".to_string());
+
+                // Get recent commits for description
+                let log_output = std::process::Command::new("git")
+                    .args(["log", &format!("origin/{}..HEAD", base), "--oneline", "--no-decorate"])
+                    .current_dir(&canonical_dir)
+                    .output().ok();
+
+                // Generate title from branch name if not provided
+                let pr_title = title.clone().unwrap_or_else(|| {
+                    branch.replace('-', " ").replace('_', " ")
+                        .split_whitespace().map(|w| {
+                            let mut c = w.chars();
+                            c.next().map(|f| f.to_uppercase().to_string() + c.as_str()).unwrap_or_default()
+                        }).collect::<Vec<_>>().join(" ")
+                });
+
+                // Build description
+                let mut description = format!("## Summary\n\nAutomated PR from branch `{branch}` → `{base}`.\n\n");
+                if let Some(log_out) = log_output {
+                    let log_text = String::from_utf8_lossy(&log_out.stdout);
+                    if !log_text.trim().is_empty() {
+                        description.push_str("### Commits\n\n```\n");
+                        description.push_str(&log_text);
+                        description.push_str("```\n\n");
+                    }
+                }
+
+                // Get diff stat
+                let diffstat = std::process::Command::new("git")
+                    .args(["diff", &format!("origin/{}..HEAD", base), "--stat"])
+                    .current_dir(&canonical_dir)
+                    .output().ok();
+                if let Some(ds) = diffstat {
+                    let ds_text = String::from_utf8_lossy(&ds.stdout);
+                    if !ds_text.trim().is_empty() {
+                        description.push_str("### Changes\n\n```\n");
+                        description.push_str(&ds_text);
+                        description.push_str("```\n");
+                    }
+                }
+
+                if *dry_run {
+                    println!("\n📋 PR Preview (dry-run):");
+                    println!("   From: {}", branch);
+                    println!("   To:   {}", base);
+                    println!("   Title: {}", pr_title);
+                    println!("\n   Description preview:");
+                    for line in description.lines().take(15) {
+                        println!("   │ {}", line);
+                    }
+                    if description.lines().count() > 15 {
+                        println!("   │ ... and {} more lines", description.lines().count() - 15);
+                    }
+                    return Ok(());
+                }
+
+                // Optionally push
+                if *push {
+                    println!("   📤 Pushing branch '{}'...", branch);
+                    let push_result = std::process::Command::new("git")
+                        .args(["push", "origin", &branch])
+                        .current_dir(&canonical_dir)
+                        .status().ok();
+                    match push_result {
+                        Some(s) if s.success() => println!("   ✅ Push successful"),
+                        _ => println!("   ⚠️  Push failed — PR may still work if branch is already pushed"),
+                    }
+                }
+
+                // Create PR via gh CLI
+                println!("   🔧 Creating PR...");
+                let mut gh_cmd = std::process::Command::new("gh");
+                gh_cmd.args(["pr", "create", "--base", &base, "--title", &pr_title, "--body", &description])
+                    .current_dir(&canonical_dir);
+
+                match gh_cmd.output() {
+                    Ok(out) if out.status.success() => {
+                        let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        println!("   ✅ PR created: {}", url);
+                        if *open {
+                            if let Err(e) = std::process::Command::new("open").arg(&url).status() {
+                                println!("   ⚠️  Could not open browser: {e}");
+                            }
+                        }
+                    }
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        println!("   ⚠️  PR creation failed: {stderr}");
+                        println!("   💡 Make sure `gh` is installed and authenticated: brew install gh && gh auth login");
+                    }
+                    Err(e) => {
+                        println!("   ⚠️  gh CLI not found: {e}");
+                        println!("   💡 Install: brew install gh && gh auth login");
+                    }
+                }
+                Ok(())
+            }
+
+            Some(Commands::Watch { prompt, dir, debounce, pattern, yes }) => {
+                let watch_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+                let prompt_text = if prompt.is_empty() {
+                    "Fix any compilation errors".to_string()
+                } else {
+                    prompt.join(" ")
+                };
+                let _confirm = !yes;
+
+                println!("🔍 Watching {:?} for changes...", watch_dir);
+                println!("   Prompt: {}", prompt_text);
+                println!("   Debounce: {}s", debounce);
+                if let Some(p) = pattern {
+                    println!("   Pattern: {}", p);
+                }
+                println!("   Press Ctrl+C to stop\n");
+
+                // Use notify crate for file watching
+                use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+                use std::sync::mpsc;
+                use std::time::Duration;
+
+                let (tx, rx) = mpsc::channel::<Result<Event, notify::Error>>();
+                let mut watcher = RecommendedWatcher::new(tx, Config::default())
+                    .map_err(|e| anyhow::anyhow!("Watcher creation failed: {e}"))?;
+
+                watcher.watch(&watch_dir, RecursiveMode::Recursive)
+                    .map_err(|e| anyhow::anyhow!("Watch failed: {e}"))?;
+
+                let mut last_event = std::time::Instant::now();
+                loop {
+                    match rx.recv_timeout(Duration::from_secs(1)) {
+                        Ok(Ok(event)) => {
+                            let should_process = match &event.kind {
+                                EventKind::Modify(_) | EventKind::Create(_) => {
+                                    if let Some(p) = pattern {
+                                        event.paths.iter().any(|p2| {
+                                            p2.to_string_lossy().ends_with(p.trim_start_matches('*'))
+                                        })
+                                    } else {
+                                        // Filter out .git, target, node_modules
+                                        !event.paths.iter().any(|p| {
+                                            let s = p.to_string_lossy();
+                                            s.contains("/.git/") || s.contains("/target/") || s.contains("/node_modules/")
+                                        })
+                                    }
+                                }
+                                _ => false,
+                            };
+
+                            if should_process {
+                                let now = std::time::Instant::now();
+                                if now.duration_since(last_event) >= Duration::from_secs(*debounce) {
+                                    last_event = now;
+                                    println!("\n⚡ Change detected! Running agent...\n");
+                                    let _ = self.run_agent(&prompt_text, dir, 2, None, None, None, *yes, false, "code", &None, None).await;
+                                    println!("\n🔍 Watching for more changes... (Ctrl+C to stop)");
+                                }
+                            }
+                        }
+                        Ok(Err(e)) => eprintln!("   ⚠️  Watch error: {e}"),
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            // Normal timeout — continue loop
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            println!("   Watcher disconnected");
+                            break;
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            Some(Commands::Explain { target, dir, model }) => {
+                let provider = crate::llm::LlmProvider::from_env_or(model.clone(), None, None)?;
+                let target_path = dir.join(&target);
+                let content = if target_path.exists() && target_path.is_file() {
+                    std::fs::read_to_string(&target_path)
+                        .map_err(|e| anyhow::anyhow!("Cannot read {}: {e}", target_path.display()))?
+                } else if dir.join(format!("{}.rs", target)).exists() {
+                    std::fs::read_to_string(dir.join(format!("{}.rs", target)))
+                        .map_err(|e| anyhow::anyhow!("Cannot read {}.rs: {e}", target))?
+                } else {
+                    // Try to search for the function
+                    println!("   🔍 Searching for '{}' in codebase...", target);
+                    let excludes = ["target", ".git", "node_modules"];
+                    let refs = crate::refactor::find_references(dir, &target, &excludes)?;
+                    if refs.is_empty() {
+                        anyhow::bail!("No file or symbol '{}' found in project", target);
+                    }
+                    let first_file = &refs[0].0;
+                    std::fs::read_to_string(first_file)
+                        .map_err(|e| anyhow::anyhow!("Cannot read {}: {e}", first_file.display()))?
+                };
+
+                let system_prompt = "You are a code explainer. Explain what the following code does, its architecture, and any potential issues or improvements. Be concise but thorough.";
+                let user_message = format!("Explain this code:\n\n```\n{content}\n```");
+
+                println!("\n📖 Explaining: {}\n", target);
+                let response = provider.chat(vec![
+                    crate::llm::Message {
+                        role: "system".to_string(),
+                        content: system_prompt.to_string(),
+                    },
+                    crate::llm::Message {
+                        role: "user".to_string(),
+                        content: user_message,
+                    },
+                ]).await?;
+                println!("{}", response);
                 Ok(())
             }
 
