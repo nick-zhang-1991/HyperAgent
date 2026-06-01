@@ -213,6 +213,7 @@ impl HyperIndex {
                     score,
                     content,
                     total_lines: lines,
+                    summary: String::new(),
                 }
             })
             .collect()
@@ -427,4 +428,97 @@ pub struct FileContext {
     pub score: f64,
     pub content: String,
     pub total_lines: usize,
+    pub summary: String,
+}
+
+impl FileContext {
+    /// Generate a condensed summary: first 15 lines + symbol list
+    pub fn generate_summary(&mut self) {
+        if self.content.is_empty() {
+            self.summary = String::new();
+            return;
+        }
+        let lines: Vec<&str> = self.content.lines().collect();
+        let mut summary = String::new();
+
+        // First 15 lines as style preview
+        let preview_lines = lines.len().min(15);
+        for line in lines.iter().take(preview_lines) {
+            summary.push_str(line);
+            summary.push('\n');
+        }
+        if preview_lines < lines.len() {
+            summary.push_str(&format!("// ... {}/{} lines shown\n", preview_lines, lines.len()));
+        }
+
+        // Extract key symbols: function names, structs, classes from the content
+        let ext = self.path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let lang = match ext {
+            "rs" => "rust", "py" => "python", "js" | "mjs" => "javascript",
+            "ts" | "tsx" => "typescript", "go" => "go", "java" => "java",
+            _ => "",
+        };
+        if !lang.is_empty() {
+            let parser = crate::index::parser::CodeParser::new();
+            let tmp_dir = std::env::temp_dir().join("hyper-summary");
+            let _ = std::fs::create_dir_all(&tmp_dir);
+            let tmp_path = tmp_dir.join(format!("summary.{}", ext));
+            let _ = std::fs::write(&tmp_path, &self.content);
+            if let Ok(symbols) = parser.parse_file(&tmp_path, lang) {
+                let names: Vec<String> = symbols.iter()
+                    .filter(|s| matches!(s.kind, crate::index::SymbolKind::Function | crate::index::SymbolKind::Struct | crate::index::SymbolKind::Class | crate::index::SymbolKind::Trait | crate::index::SymbolKind::Interface))
+                    .map(|s| s.name.clone())
+                    .collect();
+                if !names.is_empty() {
+                    summary.push_str(&format!("// Key symbols: {}\n", names.join(", ")));
+                }
+            }
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+
+        self.summary = summary;
+    }
+
+    /// Replace content with condensed version for token efficiency
+    pub fn condense(&mut self, max_chars: usize) {
+        if self.content.len() <= max_chars {
+            return;
+        }
+        // Keep first 20% and last 10% of the file
+        let first_part = max_chars * 2 / 3;
+        let last_part = max_chars / 3;
+        let chars: Vec<char> = self.content.chars().collect();
+        let mut condensed = String::with_capacity(max_chars + 50);
+        condensed.extend(chars.iter().take(first_part));
+        condensed.push_str("\n// ... [truncated] ...\n");
+        if chars.len() > last_part {
+            condensed.extend(chars.iter().skip(chars.len() - last_part).take(last_part));
+        }
+        self.content = condensed;
+    }
+
+    /// Return condensed representation for LLM prompts
+    pub fn to_condensed_string(&self) -> String {
+        if !self.summary.is_empty() {
+            format!(
+                "--- {} ({} lines, score: {:.2}) ---\n{}",
+                self.path.display(),
+                self.total_lines,
+                self.score,
+                if self.content.len() > 2000 {
+                    &self.summary
+                } else {
+                    &self.content
+                }
+            )
+        } else {
+            format!(
+                "--- {} ({} lines, score: {:.2}) ---\n{}",
+                self.path.display(),
+                self.total_lines,
+                self.score,
+                self.content
+            )
+        }
+    }
 }
