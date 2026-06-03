@@ -1,0 +1,88 @@
+{
+  "name": "hyperagent-vscode",
+  "displayName": "HyperAgent",
+  "description": "AI coding agent with parallel multi-agent pipeline — right in VS Code",
+  "version": "0.1.0",
+  "publisher": "hyperagent",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nick-zhang-1991/HyperAgent.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Chat",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "coding",
+    "agent",
+    "hyperagent",
+    "code assistant"
+  ],
+  "activationEvents": [
+    "onCommand:hyperagent.openChat",
+    "onCommand:hyperagent.runPrompt",
+    "onCommand:hyperagent.explainCode"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "hyperagent.openChat",
+        "title": "HyperAgent: Open Chat"
+      },
+      {
+        "command": "hyperagent.runPrompt",
+        "title": "HyperAgent: Run Prompt"
+      },
+      {
+        "command": "hyperagent.explainCode",
+        "title": "HyperAgent: Explain Selected Code"
+      },
+      {
+        "command": "hyperagent.fixErrors",
+        "title": "HyperAgent: Fix Errors"
+      },
+      {
+        "command": "hyperagent.generateTests",
+        "title": "HyperAgent: Generate Tests"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "hyperagent.explainCode",
+          "group": "hyperagent"
+        },
+        {
+          "command": "hyperagent.fixErrors",
+          "group": "hyperagent"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "hyperagent.openChat",
+        "key": "ctrl+shift+h",
+        "mac": "cmd+shift+h"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {}
+}
