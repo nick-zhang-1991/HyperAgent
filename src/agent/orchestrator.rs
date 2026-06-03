@@ -311,6 +311,17 @@ impl Orchestrator {
         println!("   ✅ Approved {} changes\n", approved.len());
         self.fire_hook(HookEvent::PostReview, &format!("{} approved", approved.len())).await;
 
+        // Phase 4b: Diff preview — show each change before applying
+        println!("📋 Change preview:");
+        for (i, change) in approved.iter().enumerate() {
+            let diff_text = crate::diff_view::file_change_to_diff_text(change);
+            let line_count = diff_text.lines().count();
+            println!("\n   [{}/{}] {} ({} lines):", i + 1, approved.len(),
+                change.file.display(), line_count);
+            crate::diff_view::show_diff(&diff_text);
+        }
+        println!();
+
         // Phase 5: Apply (optionally in worktree sandbox)
         let (apply_root, mut _wt_manager) = self.prepare_apply_worktree().await?;
 

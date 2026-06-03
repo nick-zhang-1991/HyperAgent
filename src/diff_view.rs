@@ -39,7 +39,48 @@ pub fn show_diff(diff_text: &str) {
     }
 }
 
-/// Display a diff side-by-side
+/// Convert a FileChange to unified diff text suitable for display
+pub fn file_change_to_diff_text(change: &crate::diff::FileChange) -> String {
+    let mut output = String::new();
+    let path = change.file.display();
+
+    match change.change_type.as_str() {
+        "create" => {
+            output.push_str(&format!("--- /dev/null\n+++ b/{path}\n"));
+            if let Some(ref content) = change.new_content {
+                let lines: Vec<&str> = content.lines().collect();
+                output.push_str(&format!("@@ -0,0 +1,{} @@\n", lines.len()));
+                for line in &lines {
+                    output.push_str(&format!("+{line}\n"));
+                }
+            }
+        }
+        "delete" => {
+            output.push_str(&format!("--- a/{path}\n+++ /dev/null\n"));
+            if let Some(ref content) = change.old_content {
+                let lines: Vec<&str> = content.lines().collect();
+                output.push_str(&format!("@@ -1,{} +0,0 @@\n", lines.len()));
+                for line in &lines {
+                    output.push_str(&format!("-{line}\n"));
+                }
+            }
+        }
+        _ => {
+            // edit: reconstruct from hunks
+            output.push_str(&format!("--- a/{path}\n+++ b/{path}\n"));
+            for hunk in &change.hunks {
+                output.push_str(&format!("@@ -{},{} +{},{} @@\n",
+                    hunk.old_start, hunk.old_lines,
+                    hunk.new_start, hunk.new_lines));
+                output.push_str(&hunk.content);
+                if !hunk.content.ends_with('\n') {
+                    output.push('\n');
+                }
+            }
+        }
+    }
+    output
+}
 pub fn show_side_by_side_diff(diff_text: &str) {
     if diff_text.trim().is_empty() {
         println!("   No changes to display.");
