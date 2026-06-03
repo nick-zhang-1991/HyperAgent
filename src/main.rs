@@ -22,6 +22,7 @@ mod kanban;
 mod knowledge;
 mod llm;
 mod mcp;
+mod mcp_server;
 mod memory;
 mod modes;
 mod notify;

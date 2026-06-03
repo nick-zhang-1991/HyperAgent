@@ -192,6 +192,10 @@ pub enum Commands {
         dir: PathBuf,
     },
 
+    /// Run as MCP server (stdin/stdout JSON-RPC transport)
+    /// Other agents can add HyperAgent as an MCP tool server
+    McpServer,
+
     /// Initialize default configuration file
     ConfigInit,
 
@@ -721,6 +725,22 @@ impl Cli {
             Some(Commands::Setup) => {
                 run_setup();
                 Ok(())
+            }
+
+            Some(Commands::McpServer) => {
+                let dir = std::env::current_dir()?;
+                println!("   🔌 Starting HyperAgent MCP Server...");
+                println!("   📁 Project root: {}", dir.display());
+                println!("   📋 Connect by adding to your MCP client config:");
+                println!("      {{
+  \"mcpServers\": {{
+    \"hyperagent\": {{
+      \"command\": \"hyper\",
+      \"args\": [\"mcp-server\"]
+    }}
+  }}
+}}");
+                crate::mcp_server::run_mcp_server(&dir).await
             }
 
             Some(Commands::Agents { name, message, dir }) => {
