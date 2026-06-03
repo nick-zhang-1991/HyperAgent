@@ -13,24 +13,24 @@
 
 class Hyperagent < Formula
   desc "Ultra-fast CLI coding agent with multi-agent pipeline and code understanding"
-  homepage "https://github.com/your-org/hyperagent"
+  homepage "https://github.com/nick-zhang-1991/HyperAgent"
   license "MIT"
   version "0.1.0"
 
   if OS.mac?
     if Hardware::CPU.arm?
-      url "https://github.com/your-org/hyperagent/releases/latest/download/hyperagent-macos-aarch64.tar.gz"
+      url "https://github.com/nick-zhang-1991/HyperAgent/releases/latest/download/hyperagent-macos-aarch64.tar.gz"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000" # Update on release
     else
-      url "https://github.com/your-org/hyperagent/releases/latest/download/hyperagent-macos-x86_64.tar.gz"
+      url "https://github.com/nick-zhang-1991/HyperAgent/releases/latest/download/hyperagent-macos-x86_64.tar.gz"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   elsif OS.linux?
     if Hardware::CPU.arm?
-      url "https://github.com/your-org/hyperagent/releases/latest/download/hyperagent-linux-aarch64.tar.gz"
+      url "https://github.com/nick-zhang-1991/HyperAgent/releases/latest/download/hyperagent-linux-aarch64.tar.gz"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     else
-      url "https://github.com/your-org/hyperagent/releases/latest/download/hyperagent-linux-x86_64.tar.gz"
+      url "https://github.com/nick-zhang-1991/HyperAgent/releases/latest/download/hyperagent-linux-x86_64.tar.gz"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end

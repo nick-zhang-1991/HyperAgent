@@ -139,9 +139,16 @@ if [[ "${INSTALL_MODE}" == "source" ]]; then
     PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd 2>/dev/null || echo "")"
 
     if [[ -z "${PROJECT_DIR}" ]] || [[ ! -f "${PROJECT_DIR}/Cargo.toml" ]]; then
-        echo -e "${RED}❌ Must run install.sh from the hyperagent project root.${NC}"
-        echo "   cd /path/to/hyperagent && ./scripts/install.sh"
-        exit 1
+        echo -e "${YELLOW}   ⚠️  Not in project directory. Cloning from GitHub...${NC}"
+        TMP_SRC=$(mktemp -d)
+        cd "${TMP_SRC}"
+        echo "   Cloning HyperAgent..."
+        git clone --depth 1 "https://github.com/${OWNER}/${REPO}.git" . 2>/dev/null || {
+            echo -e "${RED}❌ Failed to clone repository.${NC}"
+            echo "   Make sure git is installed."
+            exit 1
+        }
+        PROJECT_DIR="${TMP_SRC}"
     fi
 
     cd "${PROJECT_DIR}"
