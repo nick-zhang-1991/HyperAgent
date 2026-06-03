@@ -57,6 +57,7 @@ term_size = "0.3.2"
 tempfile = "3.12"
 toml = "0.8.19"
 base64 = "0.22"
+cron = "0.16"
 ratatui = { version = "0.28", optional = true }
 crossterm = { version = "0.28", optional = true }
 

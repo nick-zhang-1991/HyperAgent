@@ -30,6 +30,7 @@ mod repl;
 mod router;
 mod rules;
 mod scaffold;
+mod scheduler;
 mod security;
 mod session;
 mod spinner;
