@@ -218,13 +218,20 @@ impl Orchestrator {
 
         // Plan with retry (up to 2 attempts)
         let plan = self.create_plan_with_retry(&augmented_prompt, &relevant_files, 2).await?;
-        println!("   Plan: {}", plan.summary);
-        if let Some(ref steps) = plan.steps {
-            for (i, step) in steps.iter().enumerate() {
-                println!("   {}. {}", i + 1, step);
+
+        // Intelligent intent detection: empty steps = Q&A, non-empty = action
+        let has_actions = plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+
+        if has_actions {
+            // Show the plan for action requests
+            println!("   Plan: {}", plan.summary);
+            if let Some(ref steps) = plan.steps {
+                for (i, step) in steps.iter().enumerate() {
+                    println!("   {}. {}", i + 1, step);
+                }
             }
+            println!();
         }
-        println!();
 
         // Record plan to memory
         let steps_count = plan.steps.as_ref().map(|s| s.len()).unwrap_or(0);
@@ -236,18 +243,10 @@ impl Orchestrator {
 
         self.fire_hook(HookEvent::PostPlan, &plan.summary).await;
 
-        // Intelligent intent detection: empty steps = Q&A, non-empty = action
-        let has_actions = plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
-
         if !has_actions {
-            // Q&A mode: use plan.summary as the answer, skip code/review/apply
-            let response_text = if plan.summary.starts_with('{') || plan.summary.is_empty() {
-                // PlanAgent returned JSON or empty — ask the model directly for a proper answer
-                self.run_ask_mode_direct(prompt, &relevant_files).await?
-            } else {
-                // PlanAgent already answered in the summary field
-                plan.summary.clone()
-            };
+            // Q&A: skip plan streaming, do direct Q&A with streaming
+            println!();
+            let response_text = self.run_ask_mode_direct(prompt, &relevant_files).await?;
 
             self.record_memory(
                 &format!("Answered '{}'", prompt),
@@ -1006,26 +1005,26 @@ impl Orchestrator {
         let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
         let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
 
-        // First attempt with streaming
-        match plan_agent.create_plan_stream("plan", prompt, files).await {
-            Ok(plan) if plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false) => {
+        // First attempt: batch (no streaming — avoid raw JSON in terminal)
+        match plan_agent.create_plan(prompt, files).await {
+            Ok(plan) if !plan.summary.is_empty() => {
                 return Ok(plan);
             }
             _ => {}
         }
 
-        // Retries with batch
+        // Retries with batch (only if first attempt truly failed)
         let mut _last_error = String::new();
         for attempt in 1..=max_attempts.saturating_sub(1) {
             println!("   🔄 Retrying plan creation (attempt {attempt}/{max_attempts})...");
             let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
             let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
             match plan_agent.create_plan(prompt, files).await {
-                Ok(plan) => {
-                    if plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false) {
-                        return Ok(plan);
-                    }
-                    _last_error = "Empty plan (no steps)".to_string();
+                Ok(plan) if !plan.summary.is_empty() => {
+                    return Ok(plan);
+                }
+                Ok(_) => {
+                    _last_error = "Empty plan".to_string();
                 }
                 Err(e) => {
                     _last_error = format!("{e}");
