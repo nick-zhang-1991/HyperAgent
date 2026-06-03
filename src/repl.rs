@@ -71,9 +71,9 @@ impl Completer for ReplCompleter {
         let prefix = &line[..pos];
         let commands = vec![
             "/exit", "/quit",
-            "/mode", "/clear", "/cls",
+            "/clear", "/cls",
             "/help", "/stats", "/memory",
-            "/reindex", "/refresh",
+            "/reindex", "/refresh", "/budget",
         ];
 
         let candidates: Vec<Pair> = if prefix.starts_with('/') {
@@ -137,7 +137,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex");
+    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget");
     println!();
 
     // REPL loop
@@ -188,6 +188,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  /stats             Show project index stats");
                     println!("  /memory            Show memory stats");
                     println!("  /reindex           Force-rebuild the code index");
+                    println!("  /budget            Show session budget status");
                     println!("  ───────────────────────────────────────");
                     println!("  ↑↓ arrow keys      Browse command history");
                     println!("  Ctrl+C             Cancel current input");
@@ -254,6 +255,17 @@ pub async fn run_repl() -> anyhow::Result<()> {
                             Err(e) => println!("  ⚠️  {e}"),
                         },
                         Err(e) => println!("  ⚠️  {e}"),
+                    }
+                }
+                "/budget" => {
+                    let budget_path = dir.join(".hyper").join("budget.json");
+                    if let Some(tracker) = crate::budget_tracker::BudgetTracker::load(&budget_path) {
+                        println!("  Budget status: {}", tracker.status_display());
+                        println!("  Calls: {}", tracker.call_count);
+                        println!("  Input:  {} tokens", tracker.total_input_tokens);
+                        println!("  Output: {} tokens", tracker.total_output_tokens);
+                    } else {
+                        println!("  No budget tracker found. Budget is unlimited.");
                     }
                 }
                 _ => {

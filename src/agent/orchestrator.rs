@@ -501,9 +501,22 @@ impl Orchestrator {
         let elapsed = start.elapsed();
         let tokens_used = Self::estimate_tokens(prompt, &all_changes);
 
-        println!("\n✅ Done — {} files in {:.1}s",
-            changed_files.len(),
-            elapsed.as_secs_f64());
+        // Build and render context dashboard
+        let max_ctx = crate::agent::orchestrator::MAX_INPUT_TOKENS;
+        let mut dashboard = crate::context_dashboard::ContextDashboard::new(max_ctx);
+        dashboard.set_files(budget.full_files, budget.truncated_files, budget.total_files);
+        dashboard.set_elapsed(elapsed);
+        let input_price = if let Some(ref pool) = self.provider_pool {
+            pool.input_price()
+        } else {
+            self.provider.input_price_per_1m
+        };
+        let cost = (tokens_used as f64 / 1_000_000.0) * input_price;
+        dashboard.set_cost(cost);
+        let dashboard_text = dashboard.render();
+        for line in dashboard_text.lines() {
+            println!("{line}");
+        }
 
         // Auto-prune memory to max 100 entries
         if let Some(ref mem) = self.memory {

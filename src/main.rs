@@ -10,8 +10,10 @@
 mod agent;
 mod agent_graph;
 mod auth;
+mod budget_tracker;
 mod checkpoint;
 mod cli;
+mod context_dashboard;
 mod dep_graph;
 mod diff;
 mod diff_view;
