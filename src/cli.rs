@@ -39,8 +39,8 @@ pub struct Cli {
 pub enum Commands {
     /// Run a coding task with the agent
     Run {
-        /// The prompt or task description
-        prompt: String,
+        /// The prompt or task description (reads from stdin if not provided)
+        prompt: Option<String>,
 
         /// Path to an image file (for vision-capable models)
         #[arg(short, long)]
@@ -70,9 +70,21 @@ pub enum Commands {
         #[arg(long, env = "HYPER_LLM_API_KEY")]
         api_key: Option<String>,
 
+        /// Alias for --yes
+        #[arg(long)]
+        yolo: bool,
+
         /// Skip confirmation before applying changes
         #[arg(long)]
         yes: bool,
+
+        /// Output NDJSON events (for CI/pipe consumption)
+        #[arg(long)]
+        json: bool,
+
+        /// Don't persist session or memory to disk
+        #[arg(long)]
+        ephemeral: bool,
 
         /// Rebuild index from scratch
         #[arg(long)]
@@ -577,15 +589,38 @@ impl Cli {
                 model,
                 base_url,
                 api_key,
+                yolo,
                 yes,
+                json,
+                ephemeral,
                 reindex,
-                session: _session_id,
+                session,
                 mode,
                 image,
             }) => {
+                // Resolve prompt: CLI arg > stdin pipe
+                let resolved_prompt = match prompt {
+                    Some(p) => p.clone(),
+                    None => {
+                        // Try reading from stdin pipe
+                        use std::io::{self, Read};
+                        let mut buf = String::new();
+                        let stdin = io::stdin();
+                        let mut handle = stdin.lock();
+                        match handle.read_to_string(&mut buf) {
+                            Ok(n) if n > 0 => buf.trim().to_string(),
+                            _ => anyhow::bail!(
+                                "No prompt provided. Usage: hyper run \"your task\" | cat file | hyper run"
+                            ),
+                        }
+                    }
+                };
+                let auto_approve = *yes || *yolo;
                 let image_clone = image.clone();
-                self.run_agent(prompt, dir, *agents, model.clone(), base_url.clone(),
-                    api_key.clone(), *yes, *reindex, mode, _session_id, image_clone).await
+                self.run_agent(
+                    &resolved_prompt, dir, *agents, model.clone(), base_url.clone(),
+                    api_key.clone(), auto_approve, *json, *ephemeral, *reindex, mode, session, image_clone
+                ).await
             }
 
             Some(Commands::Review { against, dir, model }) => {
@@ -1088,7 +1123,7 @@ impl Cli {
                                 if now.duration_since(last_event) >= Duration::from_secs(*debounce) {
                                     last_event = now;
                                     println!("\n⚡ Change detected! Running agent...\n");
-                                    let _ = self.run_agent(&prompt_text, dir, 2, None, None, None, *yes, false, "code", &None, None).await;
+                                    let _ = self.run_agent(&prompt_text, dir, 2, None, None, None, *yes, false, false, false, "code", &None, None).await;
                                     println!("\n🔍 Watching for more changes... (Ctrl+C to stop)");
                                 }
                             }
@@ -1161,17 +1196,35 @@ impl Cli {
         base_url: Option<String>,
         api_key: Option<String>,
         yes: bool,
+        json_output: bool,
+        ephemeral: bool,
         reindex: bool,
         mode: &str,
         _session_id: &Option<String>,
         image: Option<PathBuf>,
     ) -> Result<()> {
+        // NDJSON event emission helper (must be defined early for use throughout)
+        macro_rules! emit_json {
+            ($event:expr, $($key:ident: $val:expr),*) => {
+                if json_output {
+                    let mut map = serde_json::Map::new();
+                    map.insert("event".to_string(), serde_json::Value::String($event.to_string()));
+                    $(
+                        map.insert(stringify!($key).to_string(), serde_json::json!($val));
+                    )*
+                    println!("{}", serde_json::Value::Object(map));
+                }
+            };
+        }
+
         // Check for AGENTS.md project context
         let agents_md = dir.join("AGENTS.md");
         let project_context = if agents_md.exists() {
             match std::fs::read_to_string(&agents_md) {
                 Ok(content) => {
-                    println!("📄 Loaded AGENTS.md project context");
+                    if !json_output {
+                        println!("📄 Loaded AGENTS.md project context");
+                    }
                     Some(content)
                 }
                 Err(_) => None,
@@ -1180,8 +1233,17 @@ impl Cli {
             None
         };
 
+        // Emit run_start event for CI consumption
+        emit_json!("run_start",
+            mode: mode,
+            agents: agents,
+            prompt: prompt.chars().take(200).collect::<String>()
+        );
+
         // Build or load index
-        println!("📚 Indexing codebase...");
+        if !json_output {
+            println!("📚 Indexing codebase...");
+        }
         let index = if reindex {
             let mut idx = HyperIndex::new(dir)?;
             idx.build()?;
@@ -1329,36 +1391,51 @@ impl Cli {
         }
 
         // Run the agent pipeline
+        let start_time = std::time::Instant::now();
         let result = orchestrator.run(&augmented_prompt).await?;
+        let elapsed = start_time.elapsed();
 
-        // Save session automatically
-        if let Ok(sm) = SessionManager::new() {
-            let mut session = Session::new(
-                dir.to_string_lossy().as_ref(),
-                prompt,
-                &result.model_name,
-            );
-            session.summary = format!(
-                "Modified {} files in {:.1}s using {} tokens | {} memories | mode: {}",
-                result.files_modified,
-                result.elapsed.as_secs_f64(),
-                result.tokens_used,
-                result.memories_recorded,
-                mode
-            );
-            let _ = sm.save(&session);
+        emit_json!("run_complete",
+            files_modified: result.files_modified,
+            tokens_used: result.tokens_used,
+            elapsed_secs: elapsed.as_secs_f64(),
+            memories_recorded: result.memories_recorded,
+            model: result.model_name,
+            mode: mode
+        );
+
+        // Save session (skip in ephemeral mode)
+        if !ephemeral {
+            if let Ok(sm) = SessionManager::new() {
+                let mut session = Session::new(
+                    dir.to_string_lossy().as_ref(),
+                    prompt,
+                    &result.model_name,
+                );
+                session.summary = format!(
+                    "Modified {} files in {:.1}s using {} tokens | {} memories | mode: {}",
+                    result.files_modified,
+                    result.elapsed.as_secs_f64(),
+                    result.tokens_used,
+                    result.memories_recorded,
+                    mode
+                );
+                let _ = sm.save(&session);
+            }
         }
 
-        // Print complete results
-        println!();
-        println!("─── Summary ────────────────────────────────────────");
-        println!("  Files modified: {}", result.files_modified);
-        println!("  Tokens:         ~{}", result.tokens_used);
-        println!("  Wall time:      {:.1}s", result.elapsed.as_secs_f64());
-        println!("  Memories saved: {}", result.memories_recorded);
-        println!("  Model:          {}", result.model_name);
-        println!("  Mode:           {mode}");
-        println!("────────────────────────────────────────────────────");
+        // Print results (skip human-readable in JSON mode)
+        if !json_output {
+            println!();
+            println!("─── Summary ────────────────────────────────────────");
+            println!("  Files modified: {}", result.files_modified);
+            println!("  Tokens:         ~{}", result.tokens_used);
+            println!("  Wall time:      {:.1}s", result.elapsed.as_secs_f64());
+            println!("  Memories saved: {}", result.memories_recorded);
+            println!("  Model:          {}", result.model_name);
+            println!("  Mode:           {mode}");
+            println!("────────────────────────────────────────────────────");
+        }
 
         // Cost tracking
         let cost_per_1k = 0.15; // ~$0.15/M tokens for deepseek-v4-flash
