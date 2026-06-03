@@ -298,6 +298,8 @@ pub async fn run_repl() -> anyhow::Result<()> {
             &mut index,
             &conversation_history,
         ).await {
+            // Display the agent's response to the user
+            println!("{}", response_text);
             conversation_history.push((trimmed.clone(), response_text));
             if conversation_history.len() > 10 {
                 conversation_history.remove(0);
