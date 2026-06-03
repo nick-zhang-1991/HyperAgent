@@ -33,8 +33,18 @@ impl StreamingResponse {
                                 }
                                 // Try to parse JSON chunk
                                 if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data) {
-                                    if let Some(content) = chunk["choices"][0]["delta"]["content"].as_str() {
-                                        let _ = tx.send(content.to_string()).await;
+                                    let delta = &chunk["choices"][0]["delta"];
+                                    // DeepSeek reasoning models send thinking in reasoning_content
+                                    if let Some(content) = delta["reasoning_content"].as_str() {
+                                        if !content.is_empty() {
+                                            let _ = tx.send(content.to_string()).await;
+                                        }
+                                    }
+                                    // Normal content
+                                    if let Some(content) = delta["content"].as_str() {
+                                        if !content.is_empty() {
+                                            let _ = tx.send(content.to_string()).await;
+                                        }
                                     }
                                 }
                             }

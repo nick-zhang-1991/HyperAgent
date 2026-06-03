@@ -35,7 +35,7 @@ impl<'a> CodeAgent<'a> {
         }
     }
 
-    /// Execute with streaming output — prints LLM response as it arrives
+    /// Execute with streaming output — collects chunks silently, then displays parsed changes
     pub async fn execute_stream(
         &self,
         agent_name: &str,
@@ -49,17 +49,31 @@ impl<'a> CodeAgent<'a> {
             Ok(stream) => {
                 let mut rx = stream.into_receiver();
                 let mut full_response = String::new();
-                print!("   💻 {}: ", agent_name);
+                print!("\r   💻 {}: generating...", agent_name);
                 use std::io::{Write, stdout};
                 stdout().flush().ok();
 
                 while let Some(chunk) = rx.recv().await {
-                    print!("{chunk}");
-                    stdout().flush().ok();
                     full_response.push_str(&chunk);
+                    // Show progress without printing raw content
+                    let line_count = full_response.lines().count();
+                    print!("\r   💻 {}: {} lines...  ", agent_name, line_count);
+                    stdout().flush().ok();
                 }
-                println!();
-                self.parse_changes(&full_response)
+                println!("\r   💻 {}: parsing changes...", agent_name);
+
+                let changes = self.parse_changes(&full_response);
+                if !changes.is_empty() {
+                    // Show each change as a clean diff preview
+                    for change in &changes {
+                        let lines: usize = change.hunks.iter().map(|h| {
+                            h.content.lines().filter(|l| l.starts_with('+') || l.starts_with('-')).count()
+                        }).sum();
+                        println!("   📄 {} — {} ({} lines changed, {} hunks)",
+                            change.file.display(), change.change_type, lines, change.hunks.len());
+                    }
+                }
+                changes
             }
             Err(_) => {
                 match self.provider.chat(messages).await {

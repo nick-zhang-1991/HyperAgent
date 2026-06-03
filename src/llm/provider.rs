@@ -228,6 +228,7 @@ impl LlmProvider {
 
         let resp = req
             .json(&body)
+            .timeout(std::time::Duration::from_secs(120))
             .send()
             .await
             .context("LLM request failed")?;
@@ -278,6 +279,7 @@ impl LlmProvider {
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&body)
+            .timeout(std::time::Duration::from_secs(180))
             .send()
             .await
             .context("LLM streaming request failed")?;

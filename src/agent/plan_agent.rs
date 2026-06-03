@@ -43,12 +43,13 @@ impl<'a> PlanAgent<'a> {
         Ok(plan)
     }
 
-    /// Create a plan with streaming output — prints LLM response as it arrives
+    /// Create a plan with streaming output — collects chunks silently, parses progress
     pub async fn create_plan_stream(
         &self,
-        agent_name: &str,
+        _agent_name: &str,
         prompt: &str,
         relevant_files: &[FileContext],
+        spinner: Option<&indicatif::ProgressBar>,
     ) -> Result<Plan> {
         let (messages, _file_context) = self.build_plan_messages(prompt, relevant_files);
 
@@ -56,18 +57,16 @@ impl<'a> PlanAgent<'a> {
             Ok(stream) => {
                 let mut rx = stream.into_receiver();
                 let mut full_response = String::new();
-                if !agent_name.is_empty() {
-                    print!("   📋 {}: ", agent_name);
-                }
-                use std::io::{Write, stdout};
-                stdout().flush().ok();
 
+                // Collect silently — no raw JSON in terminal
                 while let Some(chunk) = rx.recv().await {
-                    print!("{chunk}");
-                    stdout().flush().ok();
                     full_response.push_str(&chunk);
+                    // Update spinner if provided
+                    if let Some(sp) = spinner {
+                        let len = full_response.len();
+                        sp.set_message(format!("planning... ({} chars)", len));
+                    }
                 }
-                println!();
                 let plan = self.parse_plan_response(&full_response);
                 Ok(plan)
             }
@@ -184,9 +183,26 @@ Rules:
     }
 
     fn parse_plan_response(&self, response: &str) -> Plan {
-        let json_str = if let Some(start) = response.find('{') {
-            if let Some(end) = response.rfind('}') {
-                &response[start..=end]
+        // Strip markdown code fences (```json / ```) that reasoning models often add
+        let cleaned = response
+            .trim()
+            .trim_start_matches(|c: char| c == '`' || c.is_whitespace() || c == '\n' || c == '\r')
+            .trim_end_matches(|c: char| c == '`' || c.is_whitespace() || c == '\n' || c == '\r')
+            .to_string();
+
+        // Remove ```json prefix if present
+        let cleaned = if let Some(rest) = cleaned.strip_prefix("```json") {
+            rest.trim()
+        } else if let Some(rest) = cleaned.strip_prefix("```") {
+            rest.trim()
+        } else {
+            &cleaned
+        };
+
+        // Try to extract JSON between first { and last }
+        let json_str = if let Some(start) = cleaned.find('{') {
+            if let Some(end) = cleaned.rfind('}') {
+                &cleaned[start..=end]
             } else {
                 ""
             }
@@ -196,14 +212,27 @@ Rules:
 
         if json_str.is_empty() {
             return Plan {
-                summary: response.lines().next().unwrap_or("No plan generated").to_string(),
+                summary: "No plan generated".to_string(),
                 steps: None,
                 reasoning: response.to_string(),
             };
         }
 
-        match serde_json::from_str::<serde_json::Value>(json_str) {
-            Ok(parsed) => {
+        // Try parsing the JSON — if it fails, try to fix common issues
+        let parsed = serde_json::from_str::<serde_json::Value>(json_str)
+            .or_else(|_| {
+                // Try replacing single quotes with double quotes (common LLM mistake)
+                let fixed = json_str
+                    .replace('\'', "\"")
+                    .replace("None", "null")
+                    .replace("True", "true")
+                    .replace("False", "false");
+                serde_json::from_str(&fixed)
+            })
+            .ok();
+
+        match parsed {
+            Some(parsed) => {
                 let summary = parsed["summary"]
                     .as_str()
                     .unwrap_or("Task execution")
@@ -215,17 +244,88 @@ Rules:
                         .collect()
                 });
 
-                Plan {
+                let affected_files = parsed["affected_files"].as_array().map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                });
+
+                // If we have steps, make sure plan.steps is Some (even if empty vec)
+                let plan = Plan {
                     summary,
-                    steps,
+                    steps: steps.or(Some(vec![])),
                     reasoning: response.to_string(),
+                };
+
+                // Log affected_files for debugging if present
+                if let Some(files) = affected_files {
+                    if !files.is_empty() {
+                        tracing::debug!("Affected files: {:?}", files);
+                    }
                 }
+
+                plan
             }
-            Err(_) => Plan {
-                summary: "Task execution".to_string(),
+            None => Plan {
+                summary: "No plan generated".to_string(),
                 steps: None,
                 reasoning: response.to_string(),
             },
         }
+    }
+
+    /// Build a plan prompt that explicitly tells the LLM to return JSON
+    /// without reasoning/prelude text — optimized for DeepSeek reasoning models.
+    fn build_action_plan_messages(&self, prompt: &str, relevant_files: &[FileContext]) -> (Vec<Message>, String) {
+        let file_context = self.build_file_context(relevant_files);
+
+        let system_prompt = r#"You are HyperAgent's PlanAgent. Return ONLY valid JSON, no preamble, no thinking.
+
+IMPORTANT: Do NOT include any text before or after the JSON. No markdown, no backticks, no explanation.
+Just raw JSON starting with { and ending with }.
+
+=== FOR ANSWERS (no code changes needed, Q&A) ===
+{"summary": "Your full answer here.", "steps": [], "affected_files": []}
+
+=== FOR ACTIONS (code changes needed) ===
+{"summary": "Brief summary (1-2 sentences)", "steps": ["Step 1: description with file path", "Step 2: description with file path"], "affected_files": ["path/to/file1.rs", "path/to/file2.rs"]}
+
+Rules:
+- steps should be 0-6 items maximum
+- If steps is empty [] → just answering a question
+- If steps has items → each step modifies ONE file
+- Each step must reference exact file paths
+- Steps are ordered by dependency
+- Do NOT include verification commands in steps"#;
+
+        let user_message = format!(
+            "Task: {}\n\nRelevant files:\n{}\n\nReturn ONLY valid JSON — no thinking, no markdown, no code fences.",
+            prompt, file_context
+        );
+
+        let messages = vec![
+            Message { 
+                role: "system".to_string(),
+                content: system_prompt.to_string(),
+            },
+            Message { 
+                role: "user".to_string(),
+                content: user_message,
+            },
+        ];
+        (messages, file_context)
+    }
+
+    /// Create a plan with explicit action-focused prompt — no json-in-markdown, no thinking.
+    /// Used as a retry strategy when the standard prompt fails.
+    pub async fn create_action_plan(
+        &self,
+        prompt: &str,
+        relevant_files: &[FileContext],
+    ) -> Result<Plan> {
+        let (messages, _file_context) = self.build_action_plan_messages(prompt, relevant_files);
+        let response = self.provider.chat(messages).await?;
+        let plan = self.parse_plan_response(&response);
+        Ok(plan)
     }
 }

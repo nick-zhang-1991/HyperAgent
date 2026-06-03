@@ -214,7 +214,8 @@ impl Orchestrator {
 
         // Phase 2: Planning
         self.fire_hook(HookEvent::PrePlan, prompt).await;
-        println!("📋 Planning...");
+        print!("📋 Planning... ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
 
         // Plan with retry (up to 2 attempts)
         let plan = self.create_plan_with_retry(&augmented_prompt, &relevant_files, 2).await?;
@@ -244,24 +245,12 @@ impl Orchestrator {
         self.fire_hook(HookEvent::PostPlan, &plan.summary).await;
 
         if !has_actions {
-            // Q&A: skip plan streaming, do direct Q&A with streaming
-            println!();
-            let response_text = self.run_ask_mode_direct(prompt, &relevant_files).await?;
+            // Q&A mode: use run_ask_mode (with MCP tools) for direct answering
+            println!(); // Finish "📋 Planning... " line
+            let ask_result = self.run_ask_mode(prompt, &relevant_files, start, total_memories).await?;
 
-            self.record_memory(
-                &format!("Answered '{}'", prompt),
-                MemoryType::Decision,
-            ).await;
-            total_memories += 1;
-
-            self.fire_hook(HookEvent::PostRun, &response_text).await;
-            return Ok(RunResult {
-                elapsed: start.elapsed(),
-                model_name: self.active_model_name(),
-                memories_recorded: total_memories,
-                response_text,
-                ..Default::default()
-            });
+            self.fire_hook(HookEvent::PostRun, &ask_result.response_text).await;
+            return Ok(ask_result);
         }
 
         // Phase 2b: Apply context budget to fit token window
@@ -996,6 +985,7 @@ impl Orchestrator {
     }
 
     /// Create plan with retry on empty/failed plan
+    /// Uses progressive prompting: standard → action-focused → raw retry
     async fn create_plan_with_retry(
         &self,
         prompt: &str,
@@ -1005,22 +995,31 @@ impl Orchestrator {
         let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
         let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
 
-        // First attempt: batch (no streaming — avoid raw JSON in terminal)
+        // First attempt: standard batch
         match plan_agent.create_plan(prompt, files).await {
-            Ok(plan) if !plan.summary.is_empty() => {
+            Ok(plan) if plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false) => {
                 return Ok(plan);
+            }
+            Ok(plan) if plan.steps.is_none() || plan.steps.as_ref().map(|s| s.is_empty()).unwrap_or(true) => {
+                // Plan didn't generate actionable steps — will retry
             }
             _ => {}
         }
 
-        // Retries with batch (only if first attempt truly failed)
+        // Retries with progressively more explicit prompting
         let mut _last_error = String::new();
+        let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
+        let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
+
         for attempt in 1..=max_attempts.saturating_sub(1) {
             println!("   🔄 Retrying plan creation (attempt {attempt}/{max_attempts})...");
-            let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
-            let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
-            match plan_agent.create_plan(prompt, files).await {
-                Ok(plan) if !plan.summary.is_empty() => {
+            // Second+ attempt: use action-focused prompt to force JSON output
+            match plan_agent.create_action_plan(prompt, files).await {
+                Ok(plan) if plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false) => {
+                    return Ok(plan);
+                }
+                Ok(plan) if plan.steps.is_some() => {
+                    // Steps array exists but is empty → Q&A, return as-is
                     return Ok(plan);
                 }
                 Ok(_) => {
@@ -1031,9 +1030,9 @@ impl Orchestrator {
                 }
             }
         }
-        // Last attempt: return whatever we got, even if empty
-        let plan_agent = crate::agent::plan_agent::PlanAgent::new(&self.provider);
-        plan_agent.create_plan(prompt, files).await
+
+        // Last resort: return whatever we got
+        plan_agent.create_action_plan(prompt, files).await
     }
 
     /// Execute code agents with retry if no changes generated
