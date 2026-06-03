@@ -726,11 +726,14 @@ impl Cli {
             }
 
             Some(Commands::Eval { task, list }) => {
+                let mut all_tasks = crate::eval::builtin_tasks();
+                all_tasks.extend(crate::swe_bench::swe_bench_tasks());
+
                 if *list {
-                    crate::eval::list_tasks(&crate::eval::builtin_tasks());
+                    crate::eval::list_tasks(&all_tasks);
                     Ok(())
                 } else if let Some(task_name) = task {
-                    let tasks: Vec<crate::eval::EvalTask> = crate::eval::builtin_tasks()
+                    let tasks: Vec<crate::eval::EvalTask> = all_tasks
                         .into_iter()
                         .filter(|t| t.name == *task_name)
                         .collect();
@@ -741,9 +744,8 @@ impl Cli {
                     crate::eval::run_all_benchmarks(&tasks, &binary)?;
                     Ok(())
                 } else {
-                    let tasks = crate::eval::builtin_tasks();
                     let binary = std::env::current_exe()?;
-                    crate::eval::run_all_benchmarks(&tasks, &binary)?;
+                    crate::eval::run_all_benchmarks(&all_tasks, &binary)?;
                     Ok(())
                 }
             }

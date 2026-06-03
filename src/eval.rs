@@ -344,11 +344,48 @@ fn run_single_task(task: &EvalTask, temp_dir: &Path, hyper_binary: &Path) -> Eva
     }
 
     // Run HyperAgent on the task
-    let agent_output = std::process::Command::new(hyper_binary)
-        .args(["run", "--yes", "--mode", "code", &task.prompt])
-        .current_dir(temp_dir)
-        .output()
-        .map_err(|e| format!("Agent execution failed: {e}"));
+    let mut agent_cmd = std::process::Command::new(hyper_binary);
+    agent_cmd
+        .args(["run", "--yes", &task.prompt])
+        .current_dir(temp_dir);
+
+    let agent_output = if task.timeout_secs > 0 {
+        // Use a thread-based timeout
+        let child = agent_cmd.spawn();
+        match child {
+            Ok(mut child) => {
+                let start = Instant::now();
+                let timeout = std::time::Duration::from_secs(task.timeout_secs);
+                loop {
+                    if start.elapsed() > timeout {
+                        let _ = child.kill();
+                        errors.push(format!("Agent timed out after {}s", task.timeout_secs));
+                        break;
+                    }
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            // Got output
+                            break;
+                        }
+                        Ok(None) => {
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
+                        Err(e) => {
+                            errors.push(format!("Agent wait error: {e}"));
+                            break;
+                        }
+                    }
+                }
+                child.wait_with_output().ok()
+            }
+            Err(e) => {
+                errors.push(format!("Agent spawn failed: {e}"));
+                None
+            }
+        }
+    } else {
+        agent_cmd.output().ok()
+    };
 
     let elapsed = start.elapsed();
 

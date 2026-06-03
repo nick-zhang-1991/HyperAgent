@@ -36,6 +36,7 @@ mod scheduler;
 mod security;
 mod session;
 mod spinner;
+mod swe_bench;
 mod test_gen;
 mod test_runner;
 #[cfg(feature = "tui")]
