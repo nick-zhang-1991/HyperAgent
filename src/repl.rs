@@ -98,24 +98,6 @@ pub async fn run_repl() -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let dir = cwd.clone();
 
-    // Build or load index once — persists across turns in the REPL
-    print!("📚 Indexing codebase... ");
-    std::io::Write::flush(&mut std::io::stdout())?;
-    let mut index = match HyperIndex::new_or_load(&dir) {
-        Ok(mut idx) => {
-            if !idx.has_cache() {
-                idx.build()?;
-            }
-            let stats = idx.stats()?;
-            println!("done ({} files, {} symbols)", stats.files, stats.symbols);
-            Some(idx)
-        }
-        Err(e) => {
-            println!("⚠️  could not build index: {e}");
-            None
-        }
-    };
-
     // Memory path — create once, reuse across turns
     let memory_path = dir.join(".hyper").join("memory.db");
     std::fs::create_dir_all(dir.join(".hyper")).ok();
@@ -130,6 +112,9 @@ pub async fn run_repl() -> anyhow::Result<()> {
 
     // Get provider from config
     let provider = get_provider_from_config();
+
+    // Index is lazily built on first prompt or via /reindex
+    let mut index: Option<HyperIndex> = None;
 
     // Current mode
     let mut current_mode = "ask".to_string();
