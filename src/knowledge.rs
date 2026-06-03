@@ -38,7 +38,8 @@ impl KnowledgeBase {
                 file TEXT NOT NULL,
                 chunk_index INTEGER NOT NULL,
                 content TEXT NOT NULL,
-                words TEXT NOT NULL DEFAULT ''
+                words TEXT NOT NULL DEFAULT '',
+                symbols TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_chunks_content ON chunks(content);
             DELETE FROM chunks;"
@@ -68,16 +69,18 @@ impl KnowledgeBase {
                 continue; // Skip files over 100KB
             }
 
-            let chunks = Self::chunk_text(&content, 1000);
+            let chunks = Self::chunk_code(&content, 1000, path);
             for (i, chunk) in chunks.iter().enumerate() {
                 let words = Self::extract_keywords(chunk, 20).join(" ");
+                let symbols = Self::extract_symbols_from_chunk(chunk);
                 conn.execute(
-                    "INSERT INTO chunks (file, chunk_index, content, words) VALUES (?1, ?2, ?3, ?4)",
+                    "INSERT INTO chunks (file, chunk_index, content, words, symbols) VALUES (?1, ?2, ?3, ?4, ?5)",
                     rusqlite::params![
                         path.strip_prefix(root).unwrap_or(path).to_string_lossy().as_ref(),
                         i,
                         chunk,
                         words,
+                        symbols,
                     ],
                 )?;
                 total += 1;
@@ -176,6 +179,77 @@ impl KnowledgeBase {
         matches!(path.extension().and_then(|e| e.to_str()), Some("md" | "txt" | "rs" | "py" | "ts" | "js" | "toml" | "yaml" | "yml" | "json"))
     }
 
+    /// Code-aware chunking: split by function/class boundaries for code files,
+    /// fall back to line-based for text files
+    fn chunk_code(text: &str, max_chars: usize, path: &Path) -> Vec<String> {
+        // Check if this is a code file
+        let is_code = matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("rs" | "py" | "js" | "ts" | "tsx" | "go" | "java" | "c" | "cpp" | "h" | "hpp")
+        );
+
+        if !is_code {
+            return Self::chunk_text(text, max_chars);
+        }
+
+        // Code-aware chunking: split by function/class boundaries
+        let function_patterns = [
+            r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+\s*[<(]",                          // Rust/JS functions
+            r"^\s*(?:pub\s+)?(?:unsafe\s+)?(?:async\s+)?fn\s+\w+\s*[<(]",             // Rust unsafe fn
+            r"^\s*(?:pub\s+)?struct\s+\w+",                                            // Rust struct
+            r"^\s*(?:pub\s+)?trait\s+\w+",                                             // Rust trait
+            r"^\s*(?:pub\s+)?enum\s+\w+",                                              // Rust enum
+            r"^\s*(?:pub\s+)?impl\s+",                                                 // Rust impl
+            r"^\s*def\s+\w+\s*\(",                                                     // Python function
+            r"^\s*(?:async\s+)?def\s+\w+\s*\(",                                        // Python async function
+            r"^\s*class\s+\w+",                                                        // Python/JS class
+            r"^\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\(",                     // JS function
+            r"^\s*(?:export\s+)?class\s+\w+",                                          // JS class
+            r"^\s*func\s+\w+\s*\(",                                                    // Go function
+            r"^\s*type\s+\w+\s+struct",                                                // Go struct
+        ];
+
+        let mut chunks = Vec::new();
+        let mut current = String::new();
+        let lines: Vec<&str> = text.lines().collect();
+        let mut i = 0;
+
+        while i < lines.len() {
+            let line = lines[i];
+
+            // Check if this line starts a new function/type boundary
+            let is_boundary = function_patterns.iter().any(|p| {
+                let re = regex::Regex::new(p).ok();
+                re.map_or(false, |r| r.is_match(line))
+            });
+
+            if is_boundary && !current.is_empty() && current.len() > max_chars / 2 {
+                chunks.push(current);
+                current = String::new();
+            }
+
+            current.push_str(line);
+            current.push('\n');
+            i += 1;
+
+            // Hard cap at max_chars
+            if current.len() >= max_chars {
+                chunks.push(current);
+                current = String::new();
+            }
+        }
+
+        if !current.is_empty() {
+            chunks.push(current);
+        }
+
+        if chunks.is_empty() {
+            chunks.push(text.to_string());
+        }
+
+        chunks
+    }
+
     fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
         let mut chunks = Vec::new();
         let mut current = String::new();
@@ -192,6 +266,35 @@ impl KnowledgeBase {
             chunks.push(current);
         }
         chunks
+    }
+
+    /// Extract code symbol names from a chunk (function names, class names)
+    fn extract_symbols_from_chunk(text: &str) -> String {
+        let symbol_patterns = [
+            (r"(?:pub\s+)?(?:async\s+)?fn\s+(\w+)", "fn"),
+            (r"(?:pub\s+)?struct\s+(\w+)", "struct"),
+            (r"(?:pub\s+)?trait\s+(\w+)", "trait"),
+            (r"(?:pub\s+)?enum\s+(\w+)", "enum"),
+            (r"(?:pub\s+)?type\s+(\w+)", "type"),
+            (r"(?:pub\s+)?mod\s+(\w+)", "mod"),
+            (r"class\s+(\w+)", "class"),
+            (r"(?:export\s+)?interface\s+(\w+)", "interface"),
+            (r"def\s+(\w+)\s*\(", "def"),
+            (r"func\s+(\w+)\s*\(", "func"),
+        ];
+
+        let mut symbols = Vec::new();
+        for (pattern, kind) in &symbol_patterns {
+            if let Ok(re) = regex::Regex::new(pattern) {
+                for cap in re.captures_iter(text) {
+                    if let Some(name) = cap.get(1) {
+                        symbols.push(format!("{kind}:{}", name.as_str()));
+                    }
+                }
+            }
+        }
+
+        symbols.join(" ")
     }
 
     fn extract_keywords(text: &str, max: usize) -> Vec<String> {
