@@ -116,9 +116,6 @@ pub async fn run_repl() -> anyhow::Result<()> {
     // Index is lazily built on first prompt or via /reindex
     let mut index: Option<HyperIndex> = None;
 
-    // Current mode
-    let mut current_mode = "ask".to_string();
-
     // Setup rustyline with persistent history
     let history_path = dir.join(".hyper").join("history.txt");
     let mut rl = Editor::<ReplCompleter, rustyline::history::FileHistory>::new()?;
@@ -136,12 +133,11 @@ pub async fn run_repl() -> anyhow::Result<()> {
     println!("╚══════════════════════════════════════════════╝");
     println!();
     println!("  Directory: {}", dir.display());
-    println!("  Mode:      {} (use /mode to change)", current_mode);
     println!("  Provider:  {} / {}", provider.model, provider.base_url);
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Commands:  /exit  /mode <ask|code|debug|architect>  /help  /clear");
+    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex");
     println!();
 
     // REPL loop
@@ -187,8 +183,6 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  Commands:");
                     println!("  ───────────────────────────────────────");
                     println!("  /exit, /quit       Exit the REPL");
-                    println!("  /mode <mode>       Switch mode (ask/code/debug/architect)");
-                    println!("  /mode              Show current mode");
                     println!("  /clear, /cls       Clear screen");
                     println!("  /help              Show this help");
                     println!("  /stats             Show project index stats");
@@ -204,9 +198,6 @@ pub async fn run_repl() -> anyhow::Result<()> {
                 "/clear" | "/cls" => {
                     print!("\x1B[2J\x1B[H");
                     std::io::Write::flush(&mut std::io::stdout())?;
-                }
-                "/mode" => {
-                    println!("  Current mode: {}", current_mode);
                 }
                 "/stats" => {
                     if let Some(ref idx) = index {
@@ -252,21 +243,6 @@ pub async fn run_repl() -> anyhow::Result<()> {
                         }
                     }
                 }
-                cmd if cmd.starts_with("/mode ") => {
-                    let new_mode = cmd[6..].trim().to_lowercase();
-                    match new_mode.as_str() {
-                        "ask" | "code" | "debug" | "architect" => {
-                            current_mode = new_mode;
-                            println!("  ✅ Mode switched to: {}", current_mode);
-                        }
-                        _ => {
-                            println!(
-                                "  ⚠️  Unknown mode: {}. Use: ask, code, debug, architect",
-                                new_mode
-                            );
-                        }
-                    }
-                }
                 "/reindex" => {
                     println!("  Rebuilding index...");
                     match HyperIndex::new(&dir) {
@@ -291,7 +267,6 @@ pub async fn run_repl() -> anyhow::Result<()> {
         if let Some(response_text) = run_prompt(
             &trimmed,
             &dir,
-            &current_mode,
             &provider,
             &memory_path,
             &memory_store,
@@ -319,7 +294,6 @@ pub async fn run_repl() -> anyhow::Result<()> {
 async fn run_prompt(
     prompt: &str,
     dir: &Path,
-    mode: &str,
     provider: &LlmProvider,
     _memory_path: &Path,
     _memory_store: &Option<SqliteMemoryStore>,
@@ -361,7 +335,6 @@ async fn run_prompt(
             3,
             false,
         )
-        .with_mode(mode)
         .with_conversation_history(conversation_history.to_vec());
 
         if let Some(mem) = memory {

@@ -195,7 +195,7 @@ impl Orchestrator {
             println!("   🧠 Memory context: {} past learnings loaded",
                 mem_context.matches('\n').count());
         }
-        println!("   🎭 Mode: {}\n", self.mode);
+        println!();
 
         // Phase 1: Get relevant files from PageRank index
         println!("🔍 Scanning codebase with PageRank...");
@@ -216,11 +216,6 @@ impl Orchestrator {
         self.fire_hook(HookEvent::PrePlan, prompt).await;
         println!("📋 Planning...");
 
-        // ASK mode: skip plan/code/review pipeline, do direct Q&A
-        if self.mode == "ask" {
-            return self.run_ask_mode(prompt, &relevant_files, start, total_memories).await;
-        }
-
         // Plan with retry (up to 2 attempts)
         let plan = self.create_plan_with_retry(&augmented_prompt, &relevant_files, 2).await?;
         println!("   Plan: {}", plan.summary);
@@ -240,6 +235,35 @@ impl Orchestrator {
         total_memories += 1;
 
         self.fire_hook(HookEvent::PostPlan, &plan.summary).await;
+
+        // Intelligent intent detection: empty steps = Q&A, non-empty = action
+        let has_actions = plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+
+        if !has_actions {
+            // Q&A mode: use plan.summary as the answer, skip code/review/apply
+            let response_text = if plan.summary.starts_with('{') || plan.summary.is_empty() {
+                // PlanAgent returned JSON or empty — ask the model directly for a proper answer
+                self.run_ask_mode_direct(prompt, &relevant_files).await?
+            } else {
+                // PlanAgent already answered in the summary field
+                plan.summary.clone()
+            };
+
+            self.record_memory(
+                &format!("Answered '{}'", prompt),
+                MemoryType::Decision,
+            ).await;
+            total_memories += 1;
+
+            self.fire_hook(HookEvent::PostRun, &response_text).await;
+            return Ok(RunResult {
+                elapsed: start.elapsed(),
+                model_name: self.active_model_name(),
+                memories_recorded: total_memories,
+                response_text,
+                ..Default::default()
+            });
+        }
 
         // Phase 2b: Apply context budget to fit token window
         let mut budget = ContextBudget::new(&augmented_prompt, &self.conversation_history, self.project_context.as_deref());
@@ -777,6 +801,86 @@ impl Orchestrator {
             response_text,
             ..Default::default()
         })
+    }
+
+    /// Simplified Q&A — single streaming round for when no code changes are needed.
+    /// Unlike run_ask_mode, this has no tool-calling loop and no "DO NOT propose edits" restriction.
+    async fn run_ask_mode_direct(
+        &mut self,
+        prompt: &str,
+        relevant_files: &[FileContext],
+    ) -> Result<String> {
+        let file_context = self.build_ask_file_context(relevant_files);
+        let mem_context = self.load_memory_context(prompt).await;
+
+        let system_prompt = format!(
+            "You are HyperAgent — a helpful coding assistant. Answer the user's question concisely and accurately.\n\n\
+            Relevant files from the project:\n{}\n\n\
+            Past context about this project:\n{}\n\n\
+            Rules:\n\
+            - Be concise but complete\n\
+            - Reference specific file paths and function names when relevant\n\
+            - If the user wants code changes, suggest the approach with code blocks\n\
+            - Format code blocks with ```language\n\
+            - Answer in the same language as the question",
+            file_context,
+            if mem_context.is_empty() { "None".to_string() } else { mem_context }
+        );
+
+        let mut messages = vec![Message {
+            role: "system".to_string(),
+            content: system_prompt,
+        }];
+
+        // Inject conversation history
+        for (prev_user, prev_assistant) in &self.conversation_history {
+            messages.push(Message {
+                role: "user".to_string(),
+                content: prev_user.clone(),
+            });
+            messages.push(Message {
+                role: "assistant".to_string(),
+                content: prev_assistant.clone(),
+            });
+        }
+
+        messages.push(Message {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        });
+
+        // Stream a single response
+        print!("   💬 ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        match self.chat_stream_with_failover(messages).await {
+            Ok(stream) => {
+                let mut rx = stream.into_receiver();
+                let mut response_text = String::new();
+                while let Some(chunk) = rx.recv().await {
+                    print!("{chunk}");
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    response_text.push_str(&chunk);
+                }
+                println!();
+                Ok(response_text)
+            }
+            Err(e) => {
+                // Fallback to batch
+                match self.chat_with_failover(
+                    vec![Message {
+                        role: "user".to_string(),
+                        content: format!("{prompt}\n\nRelevant files:\n{file_context}"),
+                    }]
+                ).await {
+                    Ok(r) => Ok(r),
+                    Err(e2) => {
+                        eprintln!("   Error: {e2}");
+                        Ok(String::new())
+                    }
+                }
+            }
+        }
     }
 
     /// Check if LLM response contains an MCP tool call
