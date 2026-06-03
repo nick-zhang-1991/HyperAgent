@@ -73,7 +73,7 @@ impl Completer for ReplCompleter {
             "/exit", "/quit",
             "/clear", "/cls",
             "/help", "/stats", "/memory",
-            "/reindex", "/refresh", "/budget",
+            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins",
         ];
 
         let candidates: Vec<Pair> = if prefix.starts_with('/') {
@@ -137,7 +137,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget");
+    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins");
     println!();
 
     // REPL loop
@@ -189,6 +189,8 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  /memory            Show memory stats");
                     println!("  /reindex           Force-rebuild the code index");
                     println!("  /budget            Show session budget status");
+                    println!("  /telemetry         Show usage telemetry");
+                    println!("  /plugins           List installed plugins");
                     println!("  ───────────────────────────────────────");
                     println!("  ↑↓ arrow keys      Browse command history");
                     println!("  Ctrl+C             Cancel current input");
@@ -267,6 +269,19 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     } else {
                         println!("  No budget tracker found. Budget is unlimited.");
                     }
+                }
+                "/telemetry" => {
+                    let telemetry_path = dir.join(".hyper").join("telemetry.db");
+                    let config = crate::telemetry::TelemetryConfig {
+                        enabled: true,
+                        storage_path: telemetry_path.to_string_lossy().to_string(),
+                    };
+                    let mut t = crate::telemetry::Telemetry::new(config);
+                    println!("{}", t.daily_stats());
+                }
+                "/plugins" => {
+                    let registry = crate::plugins::PluginRegistry::new(&dir);
+                    println!("{}", registry.render());
                 }
                 _ => {
                     println!("  Unknown command: {trimmed}. Type /help");

@@ -29,6 +29,7 @@ mod mcp_server;
 mod memory;
 mod modes;
 mod notify;
+mod plugins;
 mod refactor;
 mod repl;
 mod router;
@@ -39,6 +40,7 @@ mod security;
 mod session;
 mod spinner;
 mod swe_bench;
+mod telemetry;
 mod test_gen;
 mod test_runner;
 #[cfg(feature = "tui")]
