@@ -10,6 +10,7 @@
 mod agent;
 mod agent_graph;
 mod auth;
+mod checkpoint;
 mod cli;
 mod dep_graph;
 mod diff;

@@ -388,6 +388,23 @@ pub enum Commands {
         verbose: bool,
     },
 
+    /// Manage checkpoints — snapshot-based undo for agent operations
+    Checkpoint {
+        /// Action: list, diff, undo
+        action: String,
+
+        /// Checkpoint ID (required for diff and undo)
+        id: Option<String>,
+
+        /// When undoing, keep changes staged instead of reverting
+        #[arg(long)]
+        keep: bool,
+
+        /// Project root directory
+        #[arg(long, short, default_value = ".")]
+        dir: PathBuf,
+    },
+
     /// Undo the last agent run — revert all changes via git checkout
     Undo {
         /// Project root directory
@@ -771,6 +788,10 @@ impl Cli {
 
             Some(Commands::Schedule { action, cron, prompt, mode, dir }) => {
                 self.handle_schedule(action, cron, prompt, mode, dir)
+            }
+
+            Some(Commands::Checkpoint { action, id, keep, dir }) => {
+                self.handle_checkpoint(action, id, *keep, dir)
             }
 
             Some(Commands::Deploy { tag, dir }) => {
@@ -2516,6 +2537,35 @@ impl Cli {
             println!("   ✅ Tests appended to {}", file.display());
         }
 
+        Ok(())
+    }
+
+    fn handle_checkpoint(&self, action: &str, id: &Option<String>, keep: bool, dir: &std::path::PathBuf) -> Result<()> {
+        let mgr = crate::checkpoint::CheckpointManager::new(dir);
+        match action {
+            "list" => {
+                let checkpoints = mgr.list()?;
+                crate::checkpoint::display_checkpoints(&checkpoints);
+            }
+            "diff" => {
+                let cp_id = id.as_deref().unwrap_or("");
+                if cp_id.is_empty() {
+                    anyhow::bail!("Usage: hyper checkpoint diff <id>");
+                }
+                let diff = mgr.show_diff(cp_id)?;
+                println!("{}", diff);
+            }
+            "undo" => {
+                let cp_id = id.as_deref().unwrap_or("");
+                if cp_id.is_empty() {
+                    anyhow::bail!("Usage: hyper checkpoint undo <id> [--keep]");
+                }
+                mgr.undo(cp_id, keep)?;
+            }
+            _ => {
+                anyhow::bail!("Unknown action: '{action}'. Use: list, diff, undo");
+            }
+        }
         Ok(())
     }
 
