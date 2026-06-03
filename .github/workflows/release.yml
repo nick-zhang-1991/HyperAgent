@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'  # Push events matching v1.0, v2.1.3, etc.
+      - 'v*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,6 +28,12 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14
             artifact_name: hyperagent-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact_name: hyperagent-windows-x86_64
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            artifact_name: hyperagent-windows-aarch64
 
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +56,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Strip binary
+        if: runner.os != 'Windows'
         run: |
           if [[ "${{ matrix.target }}" == *-apple-* ]]; then
             strip target/${{ matrix.target }}/release/hyperagent
@@ -57,17 +64,27 @@ jobs:
             strip target/${{ matrix.target }}/release/hyperagent
           fi
 
-      - name: Package binary
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf hyperagent-${{ matrix.artifact_name }}.tar.gz hyperagent
-          echo "package_name=hyperagent-${{ matrix.artifact_name }}.tar.gz" >> $GITHUB_ENV
+          tar czf ${{ matrix.artifact_name }}.tar.gz hyperagent
+          echo "package_name=${{ matrix.artifact_name }}.tar.gz" >> $GITHUB_ENV
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd target/${{ matrix.target }}/release
+          Compress-Archive -Path hyperagent.exe -DestinationPath ${{ matrix.artifact_name }}.zip
+          echo "package_name=${{ matrix.artifact_name }}.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: target/${{ matrix.target }}/release/hyperagent-${{ matrix.artifact_name }}.tar.gz
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}.*
 
   release:
     name: Create Release
@@ -85,7 +102,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          for f in */hyperagent-*.tar.gz; do
+          for f in */*.tar.gz */*.zip; do
             sha256sum "$f" >> checksums.txt
           done
 
@@ -114,12 +131,48 @@ jobs:
             # Linux (ARM64)
             tar xzf hyperagent-linux-aarch64.tar.gz
             sudo mv hyperagent /usr/local/bin/hyper
+
+            # Windows
+            # Extract hyperagent-windows-x86_64.zip and run hyperagent.exe
+
+            # npm (all platforms)
+            npm install -g @hyperagent/cli
             ```
 
             ### Checksums
             See checksums.txt in the release assets for SHA256 verification.
           files: |
-            artifacts/*/hyperagent-*.tar.gz
+            artifacts/*/*.tar.gz
+            artifacts/*/*.zip
             artifacts/checksums.txt
           draft: false
           prerelease: false
+
+  publish-npm:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Set npm package version from tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          cd packages/npm
+          npm version "${TAG_VERSION}" --no-git-tag-version --allow-same-version
+
+      - name: Publish to npm
+        run: |
+          cd packages/npm
+          npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

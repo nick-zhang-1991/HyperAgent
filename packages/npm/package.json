@@ -1,0 +1,42 @@
+{
+  "name": "@hyperagent/cli",
+  "version": "0.1.0",
+  "description": "HyperAgent — ultra-fast CLI coding agent with multi-agent parallelism, persistent memory, and automatic LLM failover",
+  "author": "Nick Zhang",
+  "license": "MIT",
+  "homepage": "https://github.com/nick-zhang-1991/HyperAgent",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nick-zhang-1991/HyperAgent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nick-zhang-1991/HyperAgent/issues"
+  },
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "cli",
+    "rust",
+    "code-review",
+    "developer-tools",
+    "pair-programming"
+  ],
+  "bin": {
+    "hyper": "./bin/hyper"
+  },
+  "scripts": {
+    "postinstall": "node ./install.js",
+    "preuninstall": "node ./uninstall.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": ["darwin", "linux"],
+  "cpu": ["x64", "arm64"],
+  "files": [
+    "bin/.gitkeep",
+    "install.js",
+    "uninstall.js",
+    "README.md"
+  ]
+}

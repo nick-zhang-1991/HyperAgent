@@ -14,7 +14,7 @@ BIN_DIR="${HOME}/.local/bin"
 VERSION="${VERSION:-latest}"
 INSTALL_MODE="${INSTALL_MODE:-auto}"   # auto, binary, source
 REPO="hyperagent"
-OWNER="your-org"  # TODO: set to actual org/repo
+OWNER="nick-zhang-1991"
 
 # Colors
 RED='\033[0;31m'
