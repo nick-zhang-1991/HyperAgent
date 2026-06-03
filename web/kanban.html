@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HyperAgent Kanban</title>
+<style>
+  :root {
+    --bg: #1a1b2e;
+    --surface: #232541;
+    --surface2: #2a2d4a;
+    --border: #373b5c;
+    --text: #e4e6f0;
+    --text2: #9ca0b8;
+    --todo: #565b7a;
+    --in-progress: #5b8def;
+    --done: #3acf7a;
+    --blocked: #f5a623;
+    --failed: #e74c5e;
+    --critical: #e74c5e;
+    --high: #f5a623;
+    --medium: #3acf7a;
+    --low: #9ca0b8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .header h1 { font-size: 20px; font-weight: 600; }
+  .header h1 span { color: var(--in-progress); }
+  .header-right { display: flex; gap: 12px; align-items: center; }
+  .stats {
+    display: flex; gap: 8px;
+    font-size: 13px; color: var(--text2);
+  }
+  .stats span { padding: 4px 10px; border-radius: 6px; background: var(--surface2); }
+  .stats .count { color: var(--text); font-weight: 600; }
+
+  .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+
+  .add-card-form {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .add-card-form input, .add-card-form select {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .add-card-form input:focus, .add-card-form select:focus {
+    border-color: var(--in-progress);
+  }
+  .add-card-form input[type="text"] { flex: 1; min-width: 200px; }
+  .add-card-form input[type="text"].desc { flex: 1.5; min-width: 250px; }
+  .add-card-form button, .btn {
+    background: var(--in-progress);
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    color: white;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .add-card-form button:hover, .btn:hover { opacity: 0.85; }
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 16px;
+  }
+  .column {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    min-height: 200px;
+  }
+  .column-header {
+    font-size: 14px;
+    font-weight: 600;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    border-bottom: 2px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .column-header .dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 8px;
+  }
+
+  .card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .card:hover { border-color: var(--text2); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+  .card-title { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+  .card-desc { font-size: 12px; color: var(--text2); margin-bottom: 8px; }
+  .card-meta { display: flex; gap: 6px; font-size: 11px; flex-wrap: wrap; }
+  .card-prio {
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+  .prio-critical { background: var(--critical); color: white; }
+  .prio-high { background: var(--high); color: #1a1b2e; }
+  .prio-medium { background: var(--medium); color: #1a1b2e; }
+  .prio-low { background: var(--low); color: #1a1b2e; }
+  .card-mode {
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--border);
+  }
+  .card-tokens { color: var(--text2); }
+  .card-empty {
+    color: var(--text2);
+    font-size: 13px;
+    text-align: center;
+    padding: 30px 10px;
+  }
+
+  .modal-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  .modal h2 { margin-bottom: 12px; }
+  .modal p { color: var(--text2); margin-bottom: 8px; font-size: 14px; }
+  .modal-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .modal-actions button {
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: none;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .btn-move { background: var(--in-progress); color: white; }
+  .btn-fail { background: var(--failed); color: white; }
+  .btn-block { background: var(--blocked); color: #1a1b2e; }
+  .btn-close { background: var(--border); color: var(--text); }
+  .hidden { display: none; }
+
+  @media (max-width: 768px) {
+    .board { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>⚡ <span>HyperAgent</span> Kanban</h1>
+  <div class="header-right">
+    <div class="stats" id="stats">
+      <span>📋 <span class="count" id="count-total">0</span></span>
+      <span>🔧 <span class="count" id="count-progress">0</span></span>
+      <span>✅ <span class="count" id="count-done">0</span></span>
+      <span>🚫 <span class="count" id="count-blocked">0</span></span>
+      <span>❌ <span class="count" id="count-failed">0</span></span>
+    </div>
+    <button class="btn" onclick="refreshBoard()">🔄 Refresh</button>
+  </div>
+</div>
+
+<div class="container">
+  <div class="add-card-form">
+    <input type="text" id="new-title" placeholder="Card title" required>
+    <input type="text" id="new-desc" class="desc" placeholder="Description">
+    <select id="new-priority">
+      <option value="medium">Medium</option>
+      <option value="high">High</option>
+      <option value="critical">Critical</option>
+      <option value="low">Low</option>
+    </select>
+    <select id="new-mode">
+      <option value="code">Code</option>
+      <option value="architect">Architect</option>
+      <option value="ask">Ask</option>
+      <option value="debug">Debug</option>
+    </select>
+    <button onclick="addCard()">➕ Add Card</button>
+  </div>
+
+  <div class="board" id="board">
+    <div class="column" data-status="todo">
+      <div class="column-header"><span><span class="dot" style="background:var(--todo)"></span>📋 TODO</span> <span id="c-todo">0</span></div>
+      <div id="col-todo"></div>
+    </div>
+    <div class="column" data-status="in_progress">
+      <div class="column-header"><span><span class="dot" style="background:var(--in-progress)"></span>🔧 In Progress</span> <span id="c-progress">0</span></div>
+      <div id="col-in_progress"></div>
+    </div>
+    <div class="column" data-status="done">
+      <div class="column-header"><span><span class="dot" style="background:var(--done)"></span>✅ Done</span> <span id="c-done">0</span></div>
+      <div id="col-done"></div>
+    </div>
+    <div class="column" data-status="blocked">
+      <div class="column-header"><span><span class="dot" style="background:var(--blocked)"></span>🚫 Blocked</span> <span id="c-blocked">0</span></div>
+      <div id="col-blocked"></div>
+    </div>
+    <div class="column" data-status="failed">
+      <div class="column-header"><span><span class="dot" style="background:var(--failed)"></span>❌ Failed</span> <span id="c-failed">0</span></div>
+      <div id="col-failed"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal" id="modal">
+    <h2 id="modal-title"></h2>
+    <p id="modal-desc"></p>
+    <p><strong>Status:</strong> <span id="modal-status"></span></p>
+    <p><strong>Priority:</strong> <span id="modal-prio"></span></p>
+    <p><strong>Mode:</strong> <span id="modal-mode"></span></p>
+    <p id="modal-deps-row"><strong>Dependencies:</strong> <span id="modal-deps"></span></p>
+    <p id="modal-result-row" class="hidden"><strong>Result:</strong> <span id="modal-result"></span></p>
+    <div class="modal-actions" id="modal-actions"></div>
+  </div>
+</div>
+
+<script>
+let allCards = [];
+
+function statusLabel(s) {
+  const m = { todo: '📋 TODO', in_progress: '🔧 In Progress', done: '✅ Done', blocked: '🚫 Blocked', failed: '❌ Failed' };
+  return m[s] || s;
+}
+
+async function refreshBoard() {
+  try {
+    const r = await fetch('/api/cards');
+    allCards = await r.json();
+    renderBoard();
+  } catch (e) {
+    console.error('Failed to load cards:', e);
+  }
+}
+
+function renderBoard() {
+  const cols = { todo: [], in_progress: [], done: [], blocked: [], failed: [] };
+  let total = 0, progress = 0, done = 0, blocked = 0, failed = 0;
+  allCards.forEach(c => {
+    const s = c.status || 'todo';
+    if (cols[s]) cols[s].push(c);
+    if (s === 'todo') total++;
+    else if (s === 'in_progress') progress++;
+    else if (s === 'done') done++;
+    else if (s === 'blocked') blocked++;
+    else if (s === 'failed') failed++;
+    else total++;
+  });
+
+  Object.entries(cols).forEach(([status, cards]) => {
+    const el = document.getElementById(`col-${status}`);
+    const countEl = document.getElementById(`c-${status}`);
+    if (!el) return;
+    if (countEl) countEl.textContent = cards.length;
+
+    if (cards.length === 0) {
+      el.innerHTML = '<div class="card-empty">No cards</div>';
+      return;
+    }
+    el.innerHTML = cards.map(c => renderCard(c)).join('');
+  });
+
+  document.getElementById('count-total').textContent = total + progress + done + blocked + failed;
+  document.getElementById('count-progress').textContent = progress;
+  document.getElementById('count-done').textContent = done;
+  document.getElementById('count-blocked').textContent = blocked;
+  document.getElementById('count-failed').textContent = failed;
+}
+
+function renderCard(c) {
+  const prioClass = `prio-${c.priority || 'medium'}`;
+  const prioLabel = c.priority || 'medium';
+  const desc = (c.description || '').substring(0, 80);
+  const tokens = c.result ? (c.result.tokens_used || 0) : 0;
+  const depCount = c.dependencies ? c.dependencies.length : 0;
+
+  return `<div class="card" onclick="showCard('${c.id}')">
+    <div class="card-title">${escapeHtml(c.title || 'Untitled')}</div>
+    <div class="card-desc">${escapeHtml(desc)}${desc.length >= 80 ? '…' : ''}</div>
+    <div class="card-meta">
+      <span class="card-prio ${prioClass}">${prioLabel}</span>
+      <span class="card-mode">${escapeHtml(c.mode || c.agent_mode || 'code')}</span>
+      ${depCount > 0 ? `<span class="card-tokens">🔗 ${depCount}</span>` : ''}
+      ${tokens > 0 ? `<span class="card-tokens">⚡${tokens}</span>` : ''}
+    </div>
+  </div>`;
+}
+
+function escapeHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function addCard() {
+  const title = document.getElementById('new-title').value.trim();
+  if (!title) return;
+  const desc = document.getElementById('new-desc').value.trim();
+  const priority = document.getElementById('new-priority').value;
+  const mode = document.getElementById('new-mode').value;
+
+  try {
+    const r = await fetch('/api/cards', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, description: desc, priority, mode })
+    });
+    if (r.ok) {
+      document.getElementById('new-title').value = '';
+      document.getElementById('new-desc').value = '';
+      await refreshBoard();
+    }
+  } catch (e) {
+    console.error('Failed to add card:', e);
+  }
+}
+
+let selectedCardId = null;
+
+function showCard(id) {
+  const c = allCards.find(c => c.id === id);
+  if (!c) return;
+  selectedCardId = id;
+
+  document.getElementById('modal-title').textContent = c.title || 'Untitled';
+  document.getElementById('modal-desc').textContent = c.description || '(no description)';
+  document.getElementById('modal-status').textContent = statusLabel(c.status || 'todo');
+  document.getElementById('modal-prio').textContent = c.priority || 'medium';
+  document.getElementById('modal-mode').textContent = c.mode || c.agent_mode || 'code';
+  document.getElementById('modal-deps').textContent = (c.dependencies || []).join(', ') || 'none';
+
+  const resultEl = document.getElementById('modal-result-row');
+  const resultText = document.getElementById('modal-result');
+  if (c.result) {
+    resultEl.classList.remove('hidden');
+    resultText.textContent = `${c.result.summary || ''} (${c.result.tokens_used || 0} tokens, exit ${c.result.exit_code || 0})`;
+  } else {
+    resultEl.classList.add('hidden');
+  }
+
+  const actions = document.getElementById('modal-actions');
+  const s = c.status || 'todo';
+  let btns = '<button class="btn-close" onclick="closeModal()">Close</button>';
+  if (s === 'todo') {
+    btns += '<button class="btn-block" onclick="moveCard(\'block\')">🚫 Block</button>';
+    btns += '<button class="btn-fail" onclick="moveCard(\'fail\')">❌ Fail</button>';
+  } else if (s === 'in_progress') {
+    btns += '<button class="btn-block" onclick="moveCard(\'block\')">🚫 Block</button>';
+    btns += '<button class="btn-move" onclick="moveCard(\'complete\')">✅ Complete</button>';
+    btns += '<button class="btn-fail" onclick="moveCard(\'fail\')">❌ Fail</button>';
+  } else if (s === 'blocked') {
+    btns += '<button class="btn-move" onclick="moveCard(\'start\')">▶️ Start</button>';
+    btns += '<button class="btn-fail" onclick="moveCard(\'fail\')">❌ Fail</button>';
+  } else if (s === 'failed') {
+    btns += '<button class="btn-move" onclick="moveCard(\'start\')">▶️ Retry</button>';
+  }
+  actions.innerHTML = btns;
+  document.getElementById('modal-overlay').classList.remove('hidden');
+}
+
+async function moveCard(action) {
+  if (!selectedCardId) return;
+  try {
+    const r = await fetch('/api/cards/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: selectedCardId, action })
+    });
+    if (r.ok) {
+      closeModal();
+      await refreshBoard();
+    }
+  } catch (e) {
+    console.error('Failed to move card:', e);
+  }
+}
+
+function closeModal(e) {
+  if (e && e.target !== document.getElementById('modal-overlay')) return;
+  document.getElementById('modal-overlay').classList.add('hidden');
+  selectedCardId = null;
+}
+
+// Auto-refresh every 5 seconds
+refreshBoard();
+setInterval(refreshBoard, 5000);
+
+// Enter key to add card
+document.getElementById('new-title').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addCard();
+});
+</script>
+</body>
+</html>

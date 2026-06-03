@@ -41,6 +41,7 @@ mod test_runner;
 #[cfg(feature = "tui")]
 mod tui;
 mod web_search;
+mod web_ui;
 use anyhow::Result;
 use clap::Parser;
 

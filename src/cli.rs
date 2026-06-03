@@ -627,6 +627,15 @@ pub enum KanbanAction {
     Dot,
     /// Clear the board
     Clear,
+    /// Launch web UI dashboard
+    Web {
+        /// Port to listen on
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+        /// Project root directory
+        #[arg(long, short, default_value = ".")]
+        dir: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2127,6 +2136,11 @@ impl Cli {
             KanbanAction::Clear => {
                 board.clear().await;
                 println!("🗑️  Kanban board cleared.");
+            }
+            KanbanAction::Web { port, dir } => {
+                let root = dir.clone();
+                drop(board); // Release the local board, web_ui creates its own
+                crate::web_ui::serve(*port, &root).await?;
             }
         }
         Ok(())
