@@ -24,6 +24,7 @@ mod llm;
 mod mcp;
 mod memory;
 mod modes;
+mod notify;
 mod refactor;
 mod repl;
 mod router;

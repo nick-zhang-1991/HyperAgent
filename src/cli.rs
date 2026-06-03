@@ -1479,6 +1479,15 @@ impl Cli {
             println!("────────────────────────────────────────────────────");
         }
 
+        // Desktop notification on completion (unless JSON mode in CI)
+        if !json_output && result.files_modified > 0 {
+            let _ = crate::notify::notify(&crate::notify::NotificationEvent::RunComplete {
+                files_modified: result.files_modified,
+                elapsed_secs: result.elapsed.as_secs_f64(),
+                tokens_used: result.tokens_used,
+            });
+        }
+
         // Cost tracking
         let cost_per_1k = 0.15; // ~$0.15/M tokens for deepseek-v4-flash
         let cost = (result.tokens_used as f64 / 1000.0) * cost_per_1k;
