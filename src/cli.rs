@@ -450,6 +450,17 @@ pub enum Commands {
         #[arg(long)]
         model: Option<String>,
     },
+
+    /// Authenticate with an LLM provider
+    Auth {
+        /// Auth action (login, status, logout, token)
+        #[arg(default_value = "status")]
+        action: String,
+
+        /// Provider name (deepseek, openai, anthropic, openrouter, or custom name)
+        #[arg(long)]
+        provider: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1179,6 +1190,10 @@ impl Cli {
                 ]).await?;
                 println!("{}", response);
                 Ok(())
+            }
+
+            Some(Commands::Auth { action, provider }) => {
+                self.handle_auth(action, provider.as_deref())
             }
 
             // No subcommand → interactive REPL
@@ -2384,6 +2399,65 @@ impl Cli {
             println!("   ✅ Tests appended to {}", file.display());
         }
 
+        Ok(())
+    }
+
+    fn handle_auth(&self, action: &str, provider: Option<&str>) -> Result<()> {
+        match action {
+            "login" => {
+                let creds = crate::auth::interactive_login(provider.map(|s| s.to_string()))?;
+                println!();
+                println!("   ✅ Logged in as: {}", creds.provider);
+                println!("   🔑 Key:        {}", creds.masked_api_key());
+                println!("   🌐 Endpoint:   {}", creds.base_url);
+                println!("   📦 Model:      {}", creds.default_model);
+            }
+            "status" => {
+                // Check env vars first
+                let env_key = std::env::var("HYPER_LLM_API_KEY").ok();
+                if let Some(_key) = env_key {
+                    println!("   🔑 Using HYPER_LLM_API_KEY environment variable");
+                    println!("   🌐 Endpoint: {}", std::env::var("HYPER_LLM_BASE_URL").unwrap_or_else(|_| "default".to_string()));
+                } else if let Ok(Some(creds)) = crate::auth::load_credentials() {
+                    if creds.is_valid() {
+                        println!("   ✅ Authenticated with {}", creds.provider);
+                        println!("   🔑 Key:   {}", creds.masked_api_key());
+                        println!("   🌐 URL:   {}", creds.base_url);
+                        println!("   📦 Model: {}", creds.default_model);
+                        println!("   🕐 Since: {}", creds.created_at.format("%Y-%m-%d %H:%M UTC"));
+                    } else {
+                        println!("   ⚠️  Stored credentials appear invalid (key too short)");
+                        println!("   Run 'hyper auth login' to re-authenticate.");
+                    }
+                } else {
+                    println!("   ❌ Not authenticated");
+                    println!("   Run 'hyper auth login' to set up API key.");
+                    println!();
+                    println!("   Or set environment variables:");
+                    println!("     export HYPER_LLM_API_KEY=\"sk-....");
+                    println!("     export HYPER_LLM_BASE_URL=\"https://api.deepseek.com/v1\"");
+                }
+            }
+            "logout" => {
+                crate::auth::clear_credentials()?;
+                println!("   ✅ Credentials cleared.");
+            }
+            "token" => {
+                if let Some(key) = crate::auth::get_active_api_key() {
+                    if key.len() > 8 {
+                        println!("{}...{}", &key[..8], &key[key.len() - 4..]);
+                    } else {
+                        println!("{key}");
+                    }
+                } else {
+                    println!("   ❌ No active authentication found.");
+                    println!("   Run 'hyper auth login' or set HYPER_LLM_API_KEY.");
+                }
+            }
+            _ => {
+                anyhow::bail!("Unknown auth action: '{action}'. Use: login, status, logout, token");
+            }
+        }
         Ok(())
     }
 }
