@@ -1248,6 +1248,25 @@ impl Cli {
             None
         };
 
+        // Check for .hyperrules project rules
+        let rules_text = match crate::rules::ProjectRules::load(dir) {
+            Ok(Some(rules)) => {
+                if !json_output {
+                    println!("   📋 Loaded .hyperrules: {}", crate::rules::rules_summary(&rules.full_text));
+                }
+                Some(rules.full_text)
+            }
+            _ => None,
+        };
+
+        // Combine project context with rules
+        let combined_context = match (&project_context, &rules_text) {
+            (Some(ctx), Some(rules)) => Some(format!("{ctx}\n\n{rules}")),
+            (Some(ctx), None) => Some(ctx.clone()),
+            (None, Some(rules)) => Some(rules.clone()),
+            (None, None) => None,
+        };
+
         // Emit run_start event for CI consumption
         emit_json!("run_start",
             mode: mode,
@@ -1381,10 +1400,18 @@ impl Cli {
             None => prompt.to_string(),
         };
 
-        let augmented_prompt = match &project_context {
+        let context_label = if rules_text.is_some() && project_context.is_some() {
+            "--- Project Context (AGENTS.md + .hyperrules) ---"
+        } else if rules_text.is_some() {
+            "--- Project Rules (.hyperrules) ---"
+        } else {
+            "--- Project Context (AGENTS.md) ---"
+        };
+
+        let augmented_prompt = match &combined_context {
             Some(ctx) => {
                 orchestrator = orchestrator.with_project_context(ctx.clone());
-                format!("{prompt_with_image}\n\n--- Project Context (AGENTS.md) ---\n{ctx}")
+                format!("{prompt_with_image}\n\n{context_label}\n{ctx}")
             }
             None => prompt_with_image,
         };

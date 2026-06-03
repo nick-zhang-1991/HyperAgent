@@ -27,6 +27,7 @@ mod modes;
 mod refactor;
 mod repl;
 mod router;
+mod rules;
 mod scaffold;
 mod security;
 mod session;
