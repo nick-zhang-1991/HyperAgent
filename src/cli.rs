@@ -435,6 +435,14 @@ pub enum Commands {
         /// Skip confirmation
         #[arg(long)]
         yes: bool,
+
+        /// Dev server command to run and watch (e.g. 'npm run dev')
+        #[arg(long)]
+        serve: Option<String>,
+
+        /// Auto-fix compilation errors without prompting
+        #[arg(long)]
+        auto_fix: bool,
     },
 
     /// Explain code with LLM — analyze a file or function
@@ -1079,20 +1087,47 @@ impl Cli {
                 Ok(())
             }
 
-            Some(Commands::Watch { prompt, dir, debounce, pattern, yes }) => {
+            Some(Commands::Watch { prompt, dir, debounce, pattern, yes, serve, auto_fix }) => {
                 let watch_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
                 let prompt_text = if prompt.is_empty() {
-                    "Fix any compilation errors".to_string()
+                    if *auto_fix {
+                        "Fix any compilation errors".to_string()
+                    } else {
+                        "Fix any issues found".to_string()
+                    }
                 } else {
                     prompt.join(" ")
                 };
                 let _confirm = !yes;
 
+                // If --serve specified, launch dev server in background
+                let server_child = if let Some(serve_cmd) = serve {
+                    println!("   🚀 Launching dev server: {serve_cmd}");
+                    let cmd_parts: Vec<&str> = serve_cmd.split_whitespace().collect();
+                    if cmd_parts.is_empty() {
+                        anyhow::bail!("Empty --serve command");
+                    }
+                    let child = std::process::Command::new(cmd_parts[0])
+                        .args(&cmd_parts[1..])
+                        .current_dir(&watch_dir)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                        .map_err(|e| anyhow::anyhow!("Failed to start dev server: {e}"))?;
+                    println!("   ✅ Dev server started (PID: {})", child.id());
+                    Some(child)
+                } else {
+                    None
+                };
+
                 println!("🔍 Watching {:?} for changes...", watch_dir);
                 println!("   Prompt: {}", prompt_text);
                 println!("   Debounce: {}s", debounce);
                 if let Some(p) = pattern {
-                    println!("   Pattern: {}", p);
+                    println!("   Pattern: {p}");
+                }
+                if *auto_fix {
+                    println!("   Auto-fix: enabled");
                 }
                 println!("   Press Ctrl+C to stop\n");
 
