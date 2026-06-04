@@ -133,6 +133,10 @@ pub trait MemoryStore: Send + Sync {
 
     /// Un-archive a memory (restore to normal recall).
     fn unarchive(&self, id: &str) -> anyhow::Result<()>;
+
+    /// Query with one-hop graph entity traversal — returns memories linked
+    /// to entities that co-occur with entities found in the query text.
+    fn query_with_graph(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>>;
 }
 
 /// SQLite-backed memory store
@@ -423,6 +427,91 @@ impl MemoryStore for SqliteMemoryStore {
         self.query(&q)
     }
 
+    /// Query with one-hop graph traversal.
+    /// When a memory matches a query entity, also returns memories linked
+    /// to other entities that co-occur in the same context.
+    fn query_with_graph(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
+        // Step 1: Get direct matches (existing query)
+        let direct = self.query(query)?;
+        let mut seen_ids: std::collections::HashSet<String> =
+            direct.iter().map(|m| m.id.clone()).collect();
+        let mut results = direct;
+
+        // Step 2: Extract entities from the query text
+        let query_entities = SqliteMemoryStore::extract_entities(&query.text);
+
+        if !query_entities.is_empty() || !query.text.is_empty() {
+            let conn = self.conn.lock().unwrap();
+
+            // Step 3: Find entities that co-occur with query entities
+            // One-hop: find OTHER entities sharing a memory with query entities
+            let mut related_entity_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+            for entity in &query_entities {
+                // Find all memory_ids that contain this entity
+                let mut stmt = conn.prepare(
+                    "SELECT memory_id FROM memory_entities WHERE entity = ?1"
+                )?;
+                let memory_ids: Vec<String> = stmt.query_map(params![entity], |row| row.get(0))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+
+                // For each memory, find OTHER entities (one-hop traversal)
+                for mem_id in &memory_ids {
+                    let mut ent_stmt = conn.prepare(
+                        "SELECT entity FROM memory_entities WHERE memory_id = ?1 AND entity != ?2"
+                    )?;
+                    let related: Vec<String> = ent_stmt.query_map(params![mem_id, entity], |row| row.get(0))?
+                        .filter_map(|r| r.ok())
+                        .collect();
+                    for rel in related {
+                        related_entity_ids.insert(rel);
+                    }
+                }
+            }
+
+            // Also use keyword terms for entity discovery (for non-entity queries)
+            let terms: Vec<&str> = query.text.split_whitespace()
+                .filter(|w| w.len() > 2)
+                .collect();
+            for term in &terms {
+                let mut stmt = conn.prepare(
+                    "SELECT DISTINCT me.entity FROM memory_entities me
+                     JOIN memories m ON m.id = me.memory_id
+                     WHERE m.content LIKE ?1"
+                )?;
+                let entities: Vec<String> = stmt.query_map(params![format!("%{}%", term)], |row| row.get(0))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                for e in entities {
+                    related_entity_ids.insert(e);
+                }
+            }
+
+            // Step 4: Fetch memories for related entities (excluding already seen)
+            for related_entity in &related_entity_ids {
+                let mut simple_stmt = conn.prepare(
+                    "SELECT id, agent_id, session_id, content, memory_type, entities, importance, embedding, created_at, last_accessed, access_count, consolidated
+                     FROM memories WHERE id IN (
+                         SELECT memory_id FROM memory_entities WHERE entity = ?1
+                     ) ORDER BY importance DESC LIMIT 5"
+                )?;
+                let rows = simple_stmt.query_map(params![related_entity], row_to_memory_entry)?;
+                for row in rows {
+                    if let Ok(mem) = row {
+                        if seen_ids.insert(mem.id.clone()) {
+                            results.push(mem);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 5: Limit results
+        results.truncate(query.limit.max(20)); // Graph can expand results
+        Ok(results)
+    }
+
     fn list_entities(&self) -> anyhow::Result<Vec<(String, usize)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -579,13 +668,13 @@ impl MemoryManager {
     /// Recall memories relevant to a query.
     /// If embeddings are available, combines semantic similarity with keyword + importance scores.
     pub fn recall(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
-        // First, do a broader keyword-based fetch
+        // First, do a broader keyword-based fetch WITH graph traversal
         let q = MemoryQuery {
             text: query.to_string(),
             limit: limit * 3, // Fetch extra for re-ranking
             ..Default::default()
         };
-        let mut memories = self.store.query(&q)?;
+        let mut memories = self.store.query_with_graph(&q)?;
 
         if memories.is_empty() {
             return Ok(vec![]);
