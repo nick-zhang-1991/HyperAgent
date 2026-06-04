@@ -44,66 +44,32 @@ impl<'a> CodeAgent<'a> {
         files: &[FileContext],
     ) -> Vec<FileChange> {
         let (messages, _) = self.build_messages(steps, files);
+        if messages.is_empty() {
+            return vec![];
+        }
 
-        match self.provider.chat_stream(messages.clone()).await {
-            Ok(stream) => {
-                let mut rx = stream.into_receiver();
-                let mut full_response = String::new();
-                let mut last_parsed = 0usize;
-                print!("\r   💻 {}: generating...", agent_name);
-                use std::io::{Write, stdout};
-                stdout().flush().ok();
+        // Use batch mode for reliability — collect full response then parse
+        print!("\r   💻 {}: generating...  ", agent_name);
+        use std::io::{Write, stdout};
+        stdout().flush().ok();
 
-                while let Some(chunk) = rx.recv().await {
-                    full_response.push_str(&chunk);
-
-                    // Try to parse new complete JSON lines progressively
-                    let lines: Vec<&str> = full_response[last_parsed..].lines().collect();
-                    for line in &lines {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with('{') && trimmed.contains("\"file\"") {
-                            if let Ok(change) = serde_json::from_str::<crate::diff::FileChange>(trimmed) {
-                                let diff_text = crate::diff_view::file_change_to_diff_text(&change);
-                                let line_count = change.hunks.iter().map(|h| h.content.lines().filter(|l| l.starts_with('+') || l.starts_with('-')).count()).sum::<usize>();
-                                println!("\r   💻 {} → {} ({} lines, {} hunks)", agent_name, change.file.display(), line_count, change.hunks.len());
-                                crate::diff_view::show_diff(&diff_text);
-                                print!("\r   💻 {}: generating...  ", agent_name);
-                                stdout().flush().ok();
-                                // Track consumed length
-                                if let Some(pos) = full_response[last_parsed..].find(trimmed) {
-                                    last_parsed += pos + trimmed.len();
-                                }
-                            }
-                        }
+        match self.provider.chat(messages).await {
+            Ok(response) => {
+                println!("\r   💻 {}: parsing changes ({} chars)...", agent_name, response.len());
+                let changes = self.parse_changes(&response);
+                if changes.is_empty() {
+                    let fallback = self.parse_fallback_diff(&response);
+                    if fallback.is_empty() {
+                        eprintln!("   [debug] No changes found in response ({})", response.len());
                     }
-
-                    let line_count = full_response.lines().count();
-                    print!("\r   💻 {}: {} lines...  ", agent_name, line_count);
-                    stdout().flush().ok();
+                    fallback
+                } else {
+                    changes
                 }
-                println!("\r   💻 {}: parsing final...", agent_name);
-
-                let changes = self.parse_changes(&full_response);
-                if !changes.is_empty() {
-                    // Show each change as a clean diff preview
-                    for change in &changes {
-                        let lines: usize = change.hunks.iter().map(|h| {
-                            h.content.lines().filter(|l| l.starts_with('+') || l.starts_with('-')).count()
-                        }).sum();
-                        println!("   📄 {} — {} ({} lines changed, {} hunks)",
-                            change.file.display(), change.change_type, lines, change.hunks.len());
-                    }
-                }
-                changes
             }
-            Err(_) => {
-                match self.provider.chat(messages).await {
-                    Ok(response) => self.parse_changes(&response),
-                    Err(e) => {
-                        eprintln!("   CodeAgent error: {e}");
-                        vec![]
-                    }
-                }
+            Err(e) => {
+                eprintln!("   💻 {} error: {e}", agent_name);
+                vec![]
             }
         }
     }
@@ -184,13 +150,35 @@ Rules:
 
     fn parse_changes(&self, response: &str) -> Vec<FileChange> {
         let mut changes = Vec::new();
+        let bytes = response.as_bytes();
+        let n = bytes.len();
+        let mut i = 0;
 
-        let mut start = 0;
-        while let Some(json_start) = response[start..].find('{') {
-            let actual_start = start + json_start;
-            if let Some(json_end) = response[actual_start..].find('}') {
-                let candidate = &response[actual_start..=actual_start + json_end];
-
+        // Brace-counting scanner: correctly handles nested {} in diff content
+        while i < n {
+            if bytes[i] != b'{' {
+                i += 1;
+                continue;
+            }
+            // Found a potential JSON start at position i
+            let mut depth = 1u32;
+            let mut j = i + 1;
+            let mut in_string = false;
+            while j < n && depth > 0 {
+                let c = bytes[j];
+                if c == b'"' && (j == 0 || bytes[j-1] != b'\\') {
+                    in_string = !in_string;
+                } else if !in_string {
+                    match c {
+                        b'{' => depth += 1,
+                        b'}' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                j += 1;
+            }
+            if depth == 0 {
+                let candidate = &response[i..j];
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(candidate) {
                     if let (Some(file), Some(change_type)) = (
                         parsed["file"].as_str(),
@@ -207,7 +195,7 @@ Rules:
                                 };
 
                                 if let Some(diff_text) = parsed["diff"].as_str() {
-                                    let hunks = text_to_hunks(diff_text);
+                                    let hunks = crate::diff::text_to_hunks(diff_text);
                                     changes.push(FileChange {
                                         file: path,
                                         change_type: "edit".to_string(),
@@ -244,9 +232,80 @@ Rules:
                         }
                     }
                 }
-                start = actual_start + json_end + 1;
+                i = j;
             } else {
-                break;
+                i += 1;
+            }
+        }
+        changes
+    }
+
+    /// Fallback parser: if no structured JSON changes found, try to extract
+    /// unified diff blocks directly from the response text.
+    fn parse_fallback_diff(&self, response: &str) -> Vec<FileChange> {
+        let mut changes = Vec::new();
+        let lines: Vec<&str> = response.lines().collect();
+        let mut i = 0;
+
+        // Try to find a section header with a file path like "--- a/path" or "diff --git a/path"
+        while i < lines.len() {
+            let line = lines[i];
+            let file_path = if line.starts_with("--- a/") || line.starts_with("+++ b/") {
+                // Extract path: strip the a/ or b/ prefix
+                let path_str = line.trim_start_matches("--- a/").trim_start_matches("+++ b/").trim();
+                if !path_str.is_empty() && !path_str.contains('/') && i + 1 < lines.len() {
+                    // Single filename, find the full path from file context
+                    self.root.join(path_str)
+                } else if !path_str.is_empty() {
+                    self.root.join(path_str)
+                } else {
+                    i += 1;
+                    continue;
+                }
+            } else if line.starts_with("diff --git") {
+                // Format: diff --git a/path b/path
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 4 {
+                    let path_str = parts[3].trim_start_matches("b/");
+                    self.root.join(path_str)
+                } else {
+                    i += 1;
+                    continue;
+                }
+            } else {
+                i += 1;
+                continue;
+            };
+
+            // Collect diff hunks until next file marker or end
+            let mut diff_lines = Vec::new();
+            i += 1;
+            while i < lines.len() {
+                let l = lines[i];
+                if l.starts_with("diff --git") || l.starts_with("--- a/") {
+                    break;
+                }
+                diff_lines.push(l);
+                i += 1;
+            }
+
+            if !diff_lines.is_empty() {
+                let diff_text = diff_lines.join("\n");
+                let old_content = if file_path.exists() {
+                    std::fs::read_to_string(&file_path).ok()
+                } else {
+                    None
+                };
+                let hunks = crate::diff::text_to_hunks(&diff_text);
+                if !hunks.is_empty() {
+                    changes.push(FileChange {
+                        file: file_path,
+                        change_type: "edit".to_string(),
+                        old_content,
+                        new_content: None,
+                        hunks,
+                    });
+                }
             }
         }
         changes
