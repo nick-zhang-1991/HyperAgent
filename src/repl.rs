@@ -73,7 +73,7 @@ impl Completer for ReplCompleter {
             "/exit", "/quit",
             "/clear", "/cls",
             "/help", "/stats", "/memory",
-            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins",
+            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins", "/org",
         ];
 
         let candidates: Vec<Pair> = if prefix.starts_with('/') {
@@ -137,7 +137,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins");
+    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins  /org");
     println!();
 
     // REPL loop
@@ -191,6 +191,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  /budget            Show session budget status");
                     println!("  /telemetry         Show usage telemetry");
                     println!("  /plugins           List installed plugins");
+                    println!("  /org               Organization management");
                     println!("  ───────────────────────────────────────");
                     println!("  ↑↓ arrow keys      Browse command history");
                     println!("  Ctrl+C             Cancel current input");
@@ -282,6 +283,38 @@ pub async fn run_repl() -> anyhow::Result<()> {
                 "/plugins" => {
                     let registry = crate::plugins::PluginRegistry::new(&dir);
                     println!("{}", registry.render());
+                }
+                cmd if cmd.starts_with("/org") => {
+                    let mut org_mgr = crate::organization::OrgManager::new(&dir);
+                    let args: Vec<&str> = cmd[4..].trim().split_whitespace().collect();
+                    match args.first() {
+                        Some(&"init") if args.len() >= 2 => {
+                            match org_mgr.init(args[1], args.get(2).unwrap_or(&"admin@local")) {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("  ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"status") | Some(&"info") => {
+                            print!("{}", org_mgr.info());
+                        }
+                        Some(&"team") if args.get(1) == Some(&"add") && args.len() >= 3 => {
+                            let role = args.get(3).unwrap_or(&"member");
+                            match org_mgr.add_member(args[2], role, None) {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("  ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"team") if args.get(1) == Some(&"remove") && args.len() >= 3 => {
+                            match org_mgr.remove_member(args[2]) {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("  ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"team") if args.get(1) == Some(&"list") => {
+                            print!("{}", org_mgr.list_members());
+                        }
+                        _ => crate::organization::print_org_help(),
+                    }
                 }
                 _ => {
                     println!("  Unknown command: {trimmed}. Type /help");
