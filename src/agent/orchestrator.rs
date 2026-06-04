@@ -239,6 +239,23 @@ impl Orchestrator {
         // Intelligent intent detection: empty steps = Q&A, non-empty = action
         let has_actions = plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
 
+        // Force action pipeline for command-style prompts even if plan agent returned empty steps
+        let force_action = !has_actions && {
+            let lower = prompt.to_lowercase();
+            lower.starts_with("fix ") || lower.starts_with("add ") || lower.starts_with("implement ")
+                || lower.starts_with("create ") || lower.starts_with("update ") || lower.starts_with("refactor ")
+                || lower.starts_with("change ") || lower.starts_with("modify ") || lower.starts_with("remove ")
+                || lower.starts_with("delete ") || lower.starts_with("optimize ") || lower.starts_with("rewrite ")
+                || lower.starts_with("make ") || lower.starts_with("write ")
+        };
+
+        // Use prompt as plan summary when plan agent returned empty
+        if force_action && plan.summary.is_empty() {
+            plan.summary = prompt.to_string();
+        }
+
+        let has_actions = has_actions || force_action;
+
         if has_actions {
             // Show the plan for action requests
             println!("   Plan: {}", plan.summary);
@@ -601,7 +618,7 @@ impl Orchestrator {
             Rules:\n\
             - Be concise but complete\n\
             - Reference specific file paths and function names when relevant\n\
-            - If the answer requires code changes, say so but DO NOT propose edits\n\
+            - If you find a bug or improvement, fix it using available tools\n\
             - Format code blocks with ```language\n\
             - Answer in the same language as the question",
             file_context,

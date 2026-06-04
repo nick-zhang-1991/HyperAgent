@@ -87,9 +87,7 @@ impl<'a> PlanAgent<'a> {
 
 === INTELLIGENT INTENT DETECTION ===
 
-First, determine what the user wants:
-- **QUESTION**: If the user is asking for information, analysis, explanation, or advice → produce a plan where the "summary" IS your direct answer, and leave "steps" as an empty array [].
-- **ACTION**: If the user wants something done (write code, modify files, execute commands) → produce a plan with actionable execution steps.
+First, determine what the user wants. COMMANDS (fix, add, create, implement, update, refactor, change, modify, remove, delete, optimize) are ALWAYS actions with steps. QUESTIONS (what, how, why, analyze, explain, suggestions ending with ?) are answers with empty steps [].
 
 === FOR ACTION PLANS (WRITING-PLANS METHODOLOGY) ===
 
