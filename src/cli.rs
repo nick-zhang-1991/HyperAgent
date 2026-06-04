@@ -57,6 +57,10 @@ pub enum Commands {
         #[arg(long, default_value_t = 4000)]
         context_tokens: u32,
 
+        /// Max input tokens for the model (default: 128000, set to model limit like 2000000 for 2M)
+        #[arg(long, env = "HYPER_MAX_INPUT_TOKENS", default_value_t = 128000)]
+        max_input_tokens: u32,
+
         /// Model to use (overrides config)
         #[arg(long)]
         model: Option<String>,
@@ -667,6 +671,7 @@ impl Cli {
                 dir,
                 agents,
                 context_tokens: _,
+                max_input_tokens: _,
                 model,
                 base_url,
                 api_key,
@@ -1457,6 +1462,7 @@ impl Cli {
 
         // Create orchestrator with ALL capabilities
         let mut orchestrator = Orchestrator::new(index, provider, dir.to_path_buf(), agents.max(1), !yes);
+        // Set max input tokens from env var (HYPER_MAX_INPUT_TOKENS or default 128K)
         // Wire up provider pool for automatic failover
         if let Ok(router) = crate::router::ModelRouter::new() {
             let configs = router.list_providers();

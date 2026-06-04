@@ -59,6 +59,7 @@ pub struct Orchestrator {
     budget_tracker: Option<crate::budget_tracker::BudgetTracker>,
     file_cache: crate::file_cache::FileContextCache,
     use_worktree: bool,
+    max_input_tokens: usize,
 }
 
 impl Orchestrator {
@@ -88,7 +89,16 @@ impl Orchestrator {
             budget_tracker: None,
             file_cache: crate::file_cache::FileContextCache::default(),
             use_worktree: false,
+            max_input_tokens: std::env::var("HYPER_MAX_INPUT_TOKENS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(128_000),
         }
+    }
+
+    pub fn with_max_input_tokens(mut self, tokens: usize) -> Self {
+        self.max_input_tokens = tokens;
+        self
     }
 
     pub fn with_worktree(mut self) -> Self {
@@ -206,7 +216,7 @@ impl Orchestrator {
         let mut relevant_files = self.index.get_relevant_files(prompt, 15, 4000);
 
         // Apply LRU file cache — summarize large files, evict old entries
-        let max_full_tokens = (MAX_INPUT_TOKENS as f64 * 0.6) as usize; // 60% of budget for files
+        let max_full_tokens = (max_input_tokens() as f64 * 0.6) as usize; // 60% of budget for files
         let cached: Vec<crate::index::FileContext> = relevant_files
             .iter()
             .map(|f| self.file_cache.get_or_load(&f.path, f.score, max_full_tokens / relevant_files.len().max(1)))
@@ -452,7 +462,7 @@ impl Orchestrator {
         let tokens_used = Self::estimate_tokens(prompt, &all_changes);
 
         // Build and render context dashboard
-        let max_ctx = crate::agent::orchestrator::MAX_INPUT_TOKENS;
+        let max_ctx = crate::agent::orchestrator::max_input_tokens();
         let mut dashboard = crate::context_dashboard::ContextDashboard::new(max_ctx);
         dashboard.set_files(budget.full_files, budget.truncated_files, budget.total_files);
         dashboard.set_elapsed(elapsed);
@@ -1213,9 +1223,14 @@ pub struct WorkChunk {
 ///
 /// In a large codebase, 15 files × 4000 chars = 60K chars (~15K tokens)
 /// can easily blow past the model's context limit. ContextBudget tracks
-/// fixed overhead (system prompt, history, project context) and allocates
+/// Fixed overhead (system prompt, history, project context) and allocates
 /// remaining budget to files by relevance.
-const MAX_INPUT_TOKENS: usize = 128_000;
+fn max_input_tokens() -> usize {
+    std::env::var("HYPER_MAX_INPUT_TOKENS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(128_000)
+}
 const MAX_OUTPUT_TOKENS: usize = 16_384;
 const TOKEN_RATIO: usize = 4;
 
@@ -1246,8 +1261,8 @@ impl ContextBudget {
             fixed += _estimate_chars_to_tokens(ctx);
         }
 
-        let available = if MAX_INPUT_TOKENS > fixed {
-            MAX_INPUT_TOKENS - fixed
+        let available = if max_input_tokens() > fixed {
+            max_input_tokens() - fixed
         } else {
             4_000
         };
@@ -1308,9 +1323,9 @@ impl ContextBudget {
         format!(
             "Budget: {:.1}K fixed + {:.1}K files = {:.1}K / {:.1}K tokens ({} full, {} truncated)",
             self.fixed_tokens as f64 / 1000.0,
-            (MAX_INPUT_TOKENS - self.available_for_files) as f64 / 1000.0,
-            (MAX_INPUT_TOKENS - self.available_for_files + self.fixed_tokens) as f64 / 1000.0,
-            (self.fixed_tokens + MAX_INPUT_TOKENS - self.available_for_files) as f64 / 1000.0,
+            (max_input_tokens() - self.available_for_files) as f64 / 1000.0,
+            (max_input_tokens() - self.available_for_files + self.fixed_tokens) as f64 / 1000.0,
+            (self.fixed_tokens + max_input_tokens() - self.available_for_files) as f64 / 1000.0,
             self.full_files,
             self.truncated_files,
         )
