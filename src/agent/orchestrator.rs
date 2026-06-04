@@ -600,7 +600,48 @@ impl Orchestrator {
             }
         }
 
-        self.fire_hook(HookEvent::OnComplete,
+	// Phase 6: Auto-save as skill after complex tasks (5+ changes)
+	if changed_files.len() >= 5 {
+		let home_dir = dirs_next::home_dir();
+		if let Some(ref home) = home_dir {
+			let skill_registry = crate::skills::SkillsRegistry::new(home);
+			let skill_name = prompt
+				.split_whitespace()
+				.take(3)
+				.collect::<Vec<_>>()
+				.join("-")
+				.to_lowercase()
+				.chars()
+				.filter(|c| c.is_alphanumeric() || *c == '-')
+				.collect::<String>()
+				.trim_matches('-')
+				.to_string();
+			let skill_name = if skill_name.len() < 3 {
+				format!("task-{}", &prompt.chars().filter(|c| c.is_alphanumeric()).take(10).collect::<String>())
+			} else {
+				skill_name
+			};
+			if skill_registry.get(&skill_name).is_none() {
+				let steps: Vec<String> = approved.iter()
+					.map(|c| format!("- Modified `{}`", c.file.display()))
+					.collect();
+				let body = format!(
+					"# {}\n\n## Task\n\n{}\n\n## Files Modified\n\n{}\n\n## Steps\n\n1. Analyze the task\n2. Follow the approach below\n\n## Approach\n\n{}\n\n## Pitfalls\n\n- Verify each change compiles with `cargo check`\n\n---\n_Automatically created by HyperAgent_",
+					skill_name, prompt, steps.join("\n"), plan.summary
+				);
+				let _ = skill_registry.save(
+					&skill_name,
+					&format!("Automated workflow: {}", prompt.chars().take(80).collect::<String>()),
+					"auto-generated",
+					&["auto".to_string()],
+					&body,
+				);
+				println!("   📚 Auto-saved as skill: `{}` (in ~/.hyper/skills/)", skill_name);
+			}
+		}
+	}
+
+	self.fire_hook(HookEvent::OnComplete,
             &format!("{} files modified", changed_files.len())).await;
 
         let elapsed = start.elapsed();
