@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cline Integration — HyperAgent</title>
+  <link rel="stylesheet" href="../assets/docs.css">
+</head>
+<body>
+  <nav>
+    <a href="/" class="logo">HyperAgent</a>
+    <a href="/">Home</a>
+    <a href="installation.html">Install</a>
+    <a href="quickstart.html">Quickstart</a>
+  </nav>
+  <div class="container">
+    <h1>Cline Integration</h1>
+    <p>Connect HyperAgent to <a href="https://github.com/cline/cline" target="_blank">Cline</a> — the most popular VS Code AI coding extension (20,000+ users).</p>
+
+    <h2>What This Gives You</h2>
+    <ul>
+      <li>Use HyperAgent's 4 MCP tools directly from Cline's VS Code panel</li>
+      <li>Search code, explain functions, get code stats, and list symbols</li>
+      <li>No need to switch between terminals — stay in your editor</li>
+    </ul>
+
+    <h2>Setup</h2>
+    <p>Add this to your Cline MCP settings (<code>cline_mcp_settings.json</code>):</p>
+    <div class="code-block">{
+  "mcpServers": {
+    "hyperagent": {
+      "command": "hyper",
+      "args": ["mcp-server"],
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}</div>
+
+    <h2>Quick Import</h2>
+    <p>Or copy our pre-configured file:</p>
+    <div class="code-block">cp packages/vscode/cline-mcp.json ~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cli/settings/cline_mcp_settings.json</div>
+
+    <h2>Available Tools</h2>
+    <table>
+      <tr><th>Tool</th><th>Description</th></tr>
+      <tr><td><code>search_code</code></td><td>Search the codebase by symbol name or pattern</td></tr>
+      <tr><td><code>explain_code</code></td><td>Get explanation of a function or file</td></tr>
+      <tr><td><code>code_stats</code></td><td>Get statistics about the codebase</td></tr>
+      <tr><td><code>list_symbols</code></td><td>List all symbols in a file</td></tr>
+    </table>
+
+    <h2>Requirements</h2>
+    <ul>
+      <li>HyperAgent installed (<code>curl ... | bash</code>)</li>
+      <li>Cline VS Code extension installed</li>
+      <li><code>hyper</code> available in PATH</li>
+    </ul>
+  </div>
+  <footer>
+    <p><a href="https://github.com/nick-zhang-1991/HyperAgent">GitHub</a> · HyperAgent © 2026</p>
+  </footer>
+</body>
+</html>
