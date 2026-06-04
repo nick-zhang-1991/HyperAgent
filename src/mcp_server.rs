@@ -26,9 +26,120 @@
 use anyhow::Result;
 use serde_json::Value;
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
-/// Exposed tool definitions for MCP clients
+/// Optional memory manager shared across MCP server lifetime
+type SharedMemory = Option<Arc<Mutex<crate::memory::MemoryManager>>>;
+
+/// Run the MCP server over stdio
+pub async fn run_mcp_server(project_root: &Path) -> Result<()> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut reader = stdin.lock();
+    let mut line_buf = String::new();
+
+    // Initialize memory manager if available
+    let mem: SharedMemory = {
+        let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let mem_path = home.join(".hyper").join("memory.db");
+        if mem_path.exists() {
+            if let Ok(store) = crate::memory::SqliteMemoryStore::new(&mem_path) {
+                let mgr = crate::memory::MemoryManager::new(Box::new(store), "mcp-server");
+                eprintln!("   🧠 Memory loaded: {} entries", mgr.store().count().unwrap_or(0));
+                Some(Arc::new(Mutex::new(mgr)))
+            } else {
+                eprintln!("   ⚠️  Memory database found but couldn't open");
+                None
+            }
+        } else {
+            eprintln!("   📝 No memory database yet (create one via hyper dashboard)");
+            None
+        }
+    };
+
+    // Send server info on startup (can be read by client)
+    eprintln!("   🔌 HyperAgent MCP Server started");
+    eprintln!("   📁 Root: {}", project_root.display());
+    eprintln!("   📋 Tools: search_code, explain_code, code_stats, list_symbols, memory_remember, memory_recall");
+
+    loop {
+        line_buf.clear();
+        let bytes_read = reader.read_line(&mut line_buf)?;
+        if bytes_read == 0 {
+            break; // EOF
+        }
+
+        let line = line_buf.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        // Parse JSON-RPC request
+        let request: Value = match serde_json::from_str(line) {
+            Ok(r) => r,
+            Err(e) => {
+                let error_resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "error": { "code": -32700, "message": format!("Parse error: {e}") },
+                    "id": null
+                });
+                let mut out = stdout.lock();
+                writeln!(out, "{}", serde_json::to_string(&error_resp)?)?;
+                out.flush()?;
+                continue;
+            }
+        };
+
+        let method = request["method"].as_str().unwrap_or("");
+        let id = &request["id"];
+        let params = request.get("params").unwrap_or(&serde_json::Value::Null);
+
+        let response = match method {
+            "initialize" => handle_initialize(id, params),
+            "tools/list" => handle_tools_list(id),
+            "tools/call" => handle_tools_call(id, params, project_root, &mem).await,
+            "notifications/initialized" => {
+                // No response needed for notifications
+                continue;
+            }
+            _ => {
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "error": { "code": -32601, "message": format!("Method not found: {method}") },
+                    "id": id
+                })
+            }
+        };
+
+        let mut out = stdout.lock();
+        writeln!(out, "{}", serde_json::to_string(&response)?)?;
+        out.flush()?;
+    }
+
+    eprintln!("   🔌 MCP Server stopped");
+    Ok(())
+}
+
+fn handle_initialize(id: &Value, _params: &Value) -> Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "result": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {
+                "tools": {}
+            },
+            "serverInfo": {
+                "name": "hyperagent",
+                "version": "0.1.0"
+            }
+        },
+        "id": id
+    })
+}
+
+
 fn tool_definitions() -> Vec<Value> {
     vec![
         serde_json::json!({
@@ -102,94 +213,44 @@ fn tool_definitions() -> Vec<Value> {
                 "required": ["target"]
             }
         }),
+        serde_json::json!({
+            "name": "hyperagent_memory_remember",
+            "description": "Store a memory: save a fact, preference, bug fix, or decision for future recall. Memories persist across sessions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The memory content to store (fact, preference, decision, etc.)"
+                    },
+                    "memory_type": {
+                        "type": "string",
+                        "description": "Type: user_preference, codebase_fact, action_outcome, decision, bug_fix, learned, ephemeral",
+                        "enum": ["user_preference", "codebase_fact", "action_outcome", "decision", "bug_fix", "learned", "ephemeral"]
+                    }
+                },
+                "required": ["content"]
+            }
+        }),
+        serde_json::json!({
+            "name": "hyperagent_memory_recall",
+            "description": "Recall relevant memories based on a query. Returns matches ranked by relevance, including graph-traversed related items.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query to find relevant memories"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max memories to return (default: 10)"
+                    }
+                },
+                "required": ["query"]
+            }
+        }),
     ]
-}
-
-/// Run the MCP server over stdio
-pub async fn run_mcp_server(project_root: &Path) -> Result<()> {
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut reader = stdin.lock();
-    let mut line_buf = String::new();
-
-    // Send server info on startup (can be read by client)
-    eprintln!("   🔌 HyperAgent MCP Server started");
-    eprintln!("   📁 Root: {}", project_root.display());
-    eprintln!("   📋 Tools: search_code, explain_code, code_stats, list_symbols");
-
-    loop {
-        line_buf.clear();
-        let bytes_read = reader.read_line(&mut line_buf)?;
-        if bytes_read == 0 {
-            break; // EOF
-        }
-
-        let line = line_buf.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        // Parse JSON-RPC request
-        let request: Value = match serde_json::from_str(line) {
-            Ok(r) => r,
-            Err(e) => {
-                let error_resp = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "error": { "code": -32700, "message": format!("Parse error: {e}") },
-                    "id": null
-                });
-                let mut out = stdout.lock();
-                writeln!(out, "{}", serde_json::to_string(&error_resp)?)?;
-                out.flush()?;
-                continue;
-            }
-        };
-
-        let method = request["method"].as_str().unwrap_or("");
-        let id = &request["id"];
-        let params = request.get("params").unwrap_or(&serde_json::Value::Null);
-
-        let response = match method {
-            "initialize" => handle_initialize(id, params),
-            "tools/list" => handle_tools_list(id),
-            "tools/call" => handle_tools_call(id, params, project_root).await,
-            "notifications/initialized" => {
-                // No response needed for notifications
-                continue;
-            }
-            _ => {
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "error": { "code": -32601, "message": format!("Method not found: {method}") },
-                    "id": id
-                })
-            }
-        };
-
-        let mut out = stdout.lock();
-        writeln!(out, "{}", serde_json::to_string(&response)?)?;
-        out.flush()?;
-    }
-
-    eprintln!("   🔌 MCP Server stopped");
-    Ok(())
-}
-
-fn handle_initialize(id: &Value, _params: &Value) -> Value {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "result": {
-            "protocolVersion": "2025-03-26",
-            "capabilities": {
-                "tools": {}
-            },
-            "serverInfo": {
-                "name": "hyperagent",
-                "version": "0.1.0"
-            }
-        },
-        "id": id
-    })
 }
 
 fn handle_tools_list(id: &Value) -> Value {
@@ -202,7 +263,7 @@ fn handle_tools_list(id: &Value) -> Value {
     })
 }
 
-async fn handle_tools_call(id: &Value, params: &Value, project_root: &Path) -> Value {
+async fn handle_tools_call(id: &Value, params: &Value, project_root: &Path, mem: &SharedMemory) -> Value {
     let tool_name = params["name"].as_str().unwrap_or("");
     let args = params.get("arguments").unwrap_or(&serde_json::Value::Null);
     let root = args.get("path").and_then(|p| p.as_str())
@@ -210,6 +271,12 @@ async fn handle_tools_call(id: &Value, params: &Value, project_root: &Path) -> V
         .unwrap_or(project_root);
 
     let result = match tool_name {
+        "hyperagent_memory_remember" => {
+            handle_memory_remember(id, args, mem).await
+        }
+        "hyperagent_memory_recall" => {
+            handle_memory_recall(id, args, mem).await
+        }
         "hyperagent_search_code" => {
             let query = args["query"].as_str().unwrap_or("");
             if query.is_empty() {
@@ -254,6 +321,65 @@ async fn handle_tools_call(id: &Value, params: &Value, project_root: &Path) -> V
     };
 
     result
+}
+
+/// Handle memory_remember MCP tool
+async fn handle_memory_remember(id: &Value, args: &Value, mem: &SharedMemory) -> Value {
+    let mgr = match mem {
+        Some(m) => m.lock().await,
+        None => return error_json(id, "Memory system not initialized. Run `hyper dashboard` first to create a memory database."),
+    };
+    let content = args["content"].as_str().unwrap_or("");
+    if content.is_empty() {
+        return error_json(id, "Missing required parameter: content");
+    }
+    let mem_type = args["memory_type"].as_str().unwrap_or("learned");
+    let memory_type = match mem_type {
+        "user_preference" => crate::memory::MemoryType::UserPreference,
+        "codebase_fact" => crate::memory::MemoryType::CodebaseFact,
+        "action_outcome" => crate::memory::MemoryType::ActionOutcome,
+        "decision" => crate::memory::MemoryType::Decision,
+        "bug_fix" => crate::memory::MemoryType::BugFix,
+        "ephemeral" => crate::memory::MemoryType::Ephemeral,
+        _ => crate::memory::MemoryType::Learned,
+    };
+    match mgr.remember(content, memory_type) {
+        Ok(id_str) => success_json(id, &format!("Memory stored with ID: {id_str}")),
+        Err(e) => error_json(id, &format!("Failed to store memory: {e}")),
+    }
+}
+
+/// Handle memory_recall MCP tool
+async fn handle_memory_recall(id: &Value, args: &Value, mem: &SharedMemory) -> Value {
+    let mgr = match mem {
+        Some(m) => m.lock().await,
+        None => return error_json(id, "Memory system not initialized. Run `hyper dashboard` first to create a memory database."),
+    };
+    let query = args["query"].as_str().unwrap_or("");
+    if query.is_empty() {
+        return error_json(id, "Missing required parameter: query");
+    }
+    let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+    match mgr.recall(query, limit) {
+        Ok(memories) => {
+            let results: Vec<serde_json::Value> = memories.iter().map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "content": m.content,
+                    "type": m.memory_type.to_string(),
+                    "importance": m.importance,
+                    "entities": m.entities,
+                    "created": m.created_at.to_rfc3339(),
+                })
+            }).collect();
+            let json = serde_json::json!({
+                "count": results.len(),
+                "results": results
+            });
+            success_json(id, &serde_json::to_string_pretty(&json).unwrap_or_default())
+        }
+        Err(e) => error_json(id, &format!("Failed to recall memories: {e}")),
+    }
 }
 
 fn success_json(id: &Value, content: &str) -> Value {
