@@ -73,7 +73,7 @@ impl Completer for ReplCompleter {
             "/exit", "/quit",
             "/clear", "/cls",
             "/help", "/stats", "/memory",
-            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins", "/health", "/org", "/repo",
+            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins", "/health", "/org", "/repo", "/edit",
         ];
 
         let candidates: Vec<Pair> = if prefix.starts_with('/') {
@@ -137,7 +137,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins  /health  /repo  /org");
+    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins  /health  /repo  /org  /edit");
     println!();
 
     // REPL loop
@@ -162,7 +162,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
             }
         };
 
-        let trimmed = line.trim().to_string();
+        let mut trimmed = line.trim().to_string();
 
         if trimmed.is_empty() {
             continue;
@@ -177,6 +177,30 @@ pub async fn run_repl() -> anyhow::Result<()> {
                 "/exit" | "/quit" | "/q" => {
                     println!("👋 Goodbye!");
                     break;
+                }
+                cmd if cmd.starts_with("/edit ") || cmd.starts_with("/e ") => {
+                    let parts: Vec<&str> = cmd.splitn(3, ' ').collect();
+                    if parts.len() < 3 {
+                        println!("  Usage: /edit N \"new prompt\" — replace message N and re-execute");
+                        continue;
+                    }
+                    let idx: usize = match parts[1].parse() {
+                        Ok(n) if n > 0 && n <= conversation_history.len() => n - 1,
+                        Ok(_) => {
+                            println!("  ⚠️  Index out of range (1..{})", conversation_history.len());
+                            continue;
+                        }
+                        Err(_) => {
+                            println!("  ⚠️  Invalid index: {}", parts[1]);
+                            continue;
+                        }
+                    };
+                    let new_prompt = parts[2].trim_matches('"').to_string();
+                    let old_prompt = conversation_history[idx].0.clone();
+                    println!("  ✏️  Edit [{}/{}]: \"{}\" → \"{}\"", idx + 1, conversation_history.len(), old_prompt, new_prompt);
+                    conversation_history[idx].0 = new_prompt.clone();
+                    trimmed = new_prompt;
+                    // Fall through to execute the edited prompt
                 }
                 "/help" | "/h" => {
                     println!();
@@ -194,6 +218,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  /health            Run codebase health check");
                     println!("  /repo              Multi-repository management");
                     println!("  /org               Organization management");
+                    println!("  /edit N \"msg\"      Edit message N and re-execute");
                     println!("  ───────────────────────────────────────");
                     println!("  ↑↓ arrow keys      Browse command history");
                     println!("  Ctrl+C             Cancel current input");
