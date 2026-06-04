@@ -299,6 +299,17 @@ pub enum Commands {
         dir: PathBuf,
     },
 
+    /// Start remote agent server (TCP)
+    Serve {
+        /// Port to listen on
+        #[arg(short, long, default_value_t = 9173)]
+        port: u16,
+    },
+
+    /// Manage remote hosts (SSH)
+    #[clap(subcommand)]
+    Remote(RemoteAction),
+
     /// Show colorized diff for staged or unstaged changes
     Diff {
         /// Git ref to diff against (default: unstaged changes)
@@ -540,17 +551,6 @@ pub enum Commands {
         #[arg(long)]
         provider: Option<String>,
     },
-
-    /// Start remote agent server (WebSocket bridge)
-    Serve {
-        /// Port to listen on
-        #[arg(long, default_value = "9173")]
-        port: u16,
-
-        /// Bind address
-        #[arg(long, default_value = "0.0.0.0")]
-        bind: String,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -717,6 +717,61 @@ pub enum HooksAction {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum RemoteAction {
+    /// List configured remote hosts
+    List,
+    /// Add a remote host
+    Add {
+        /// Host name
+        name: String,
+        /// SSH connection string (user@host)
+        connection: String,
+        /// SSH port
+        #[arg(short, long, default_value_t = 22)]
+        port: u16,
+        /// SSH key path
+        #[arg(short, long)]
+        key: Option<String>,
+        /// Label/description
+        #[arg(short, long)]
+        label: Option<String>,
+        /// Working directory on remote
+        #[arg(short, long)]
+        workdir: Option<String>,
+    },
+    /// Remove a remote host
+    Remove {
+        /// Host name
+        name: String,
+    },
+    /// Run a command on a remote host
+    Run {
+        /// Host name
+        name: String,
+        /// Command or prompt to execute
+        command: Vec<String>,
+    },
+    /// Copy file to remote host
+    CopyTo {
+        /// Host name
+        name: String,
+        /// Local file path
+        local: String,
+        /// Remote destination path
+        remote: String,
+    },
+    /// Copy file from remote host
+    CopyFrom {
+        /// Host name
+        name: String,
+        /// Remote file path
+        remote: String,
+        /// Local destination path
+        local: String,
+    },
+}
+
 impl Cli {
     pub async fn run(&self) -> Result<()> {
         match &self.command {
@@ -786,6 +841,8 @@ impl Cli {
             Some(Commands::Skills(action)) => self.handle_skills(action).await,
 
             Some(Commands::Hooks(action)) => self.handle_hooks(action).await,
+
+            Some(Commands::Remote(action)) => self.handle_remote(action).await,
 
             Some(Commands::Doctor) => self.run_doctor().await,
 
@@ -1380,12 +1437,8 @@ impl Cli {
                 self.handle_auth(action, provider.as_deref())
             }
 
-            Some(Commands::Serve { port, bind }) => {
-                let config = crate::remote::RemoteConfig {
-                    port: *port,
-                    bind: bind.clone(),
-                };
-                crate::remote::start_server(config).await?;
+            Some(Commands::Serve { port }) => {
+                crate::remote::start_server(*port).await?;
                 Ok(())
             }
 
@@ -2292,6 +2345,96 @@ impl Cli {
                 match registry.delete(name) {
                     Ok(_) => println!("✅ Skill '{name}' deleted."),
                     Err(e) => eprintln!("❌ {e}"),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_remote(&self, action: &RemoteAction) -> Result<()> {
+        use crate::remote::{RemoteConfig, RemoteHost};
+
+        match action {
+            RemoteAction::List => {
+                let config = RemoteConfig::load();
+                println!("{}", config.render());
+            }
+            RemoteAction::Add { name, connection, port, key, label, workdir } => {
+                // Parse user@host from connection string
+                let (user, host) = match connection.split_once('@') {
+                    Some((u, h)) => (u.to_string(), h.to_string()),
+                    None => {
+                        eprintln!("❌ Invalid connection format: {connection}. Use user@host");
+                        return Ok(());
+                    }
+                };
+
+                let host = RemoteHost {
+                    name: name.clone(),
+                    user,
+                    host,
+                    port: *port,
+                    key_path: key.as_ref().map(|k| std::path::PathBuf::from(k)),
+                    label: label.clone(),
+                    workdir: workdir.clone(),
+                };
+
+                let mut config = RemoteConfig::load();
+                config.add(host);
+                if let Err(e) = config.save() {
+                    eprintln!("❌ Failed to save: {e}");
+                } else {
+                    println!("✅ Remote host '{name}' added.");
+                    println!("   Test with: `hyper remote ssh {name} \"echo hello\"`");
+                }
+            }
+            RemoteAction::Remove { name } => {
+                let mut config = RemoteConfig::load();
+                if config.remove(name) {
+                    config.save().ok();
+                    println!("✅ Remote host '{name}' removed.");
+                } else {
+                    eprintln!("❌ Remote host '{name}' not found.");
+                }
+            }
+            RemoteAction::Run { name, command } => {
+                let config = RemoteConfig::load();
+                match config.get(name) {
+                    Some(host) => {
+                        let cmd = command.join(" ");
+                        println!("   🔗 Connecting to {name} ({})...", host.host);
+                        match host.run_ssh(&cmd) {
+                            Ok(output) => {
+                                println!("{}", output);
+                            }
+                            Err(e) => eprintln!("❌ {e}"),
+                        }
+                    }
+                    None => eprintln!("❌ Remote host '{name}' not found. Use `hyper remote list` to see available hosts."),
+                }
+            }
+            RemoteAction::CopyTo { name, local, remote } => {
+                let config = RemoteConfig::load();
+                match config.get(name) {
+                    Some(host) => {
+                        match host.scp_to(std::path::Path::new(local), remote) {
+                            Ok(msg) => println!("{msg}"),
+                            Err(e) => eprintln!("❌ {e}"),
+                        }
+                    }
+                    None => eprintln!("❌ Remote host '{name}' not found."),
+                }
+            }
+            RemoteAction::CopyFrom { name, remote, local } => {
+                let config = RemoteConfig::load();
+                match config.get(name) {
+                    Some(host) => {
+                        match host.scp_from(remote, std::path::Path::new(local)) {
+                            Ok(msg) => println!("{msg}"),
+                            Err(e) => eprintln!("❌ {e}"),
+                        }
+                    }
+                    None => eprintln!("❌ Remote host '{name}' not found."),
                 }
             }
         }

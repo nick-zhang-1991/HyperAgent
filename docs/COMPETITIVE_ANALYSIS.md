@@ -9,7 +9,7 @@
 | **MCP 支持** | ✅ Stdio+HTTP | ✅ 原生 MCP | ❌ | ✅ 内置 | ✅ MCP 客户端 |
 | **浏览器自动化** | ✅ CDP + WebSocket | ✅ computer_use | ❌ | ❌ | ❌ |
 | **后台进程** | ✅ /bg 命令管理 | ❌ 需 skill | ❌ | ❌ | ❌ |
-| **GUI操作电脑** | ❌ 无 | ✅ 原生 (截图+点击+键盘) | ❌ | ❌ | ❌ |
+| **GUI操作电脑** | ✅ macOS: screenshot, mouse, keyboard, osascript, apps | ✅ 原生 (截图+点击+键盘) | ❌ | ❌ | ❌ |
 | **任务看板** | ✅ Kanban Board | ❌ 无 | ✅ Architect模式 | ❌ | ✅ 多代理 |
 | **API 路由** | ✅ Provider Pool + 加权路由 | ✅ 自定义 Provider | ✅ 多 API | ❌ | ✅ |
 | **Streaming UX** | ✅ 实时进度 | ✅ 实时流式 | ✅ | ✅ | ✅ |
