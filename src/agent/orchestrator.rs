@@ -827,7 +827,7 @@ impl Orchestrator {
                 println!();
                 Ok(response_text)
             }
-            Err(e) => {
+            Err(_e) => {
                 // Fallback to batch
                 match self.chat_with_failover(
                     vec![Message {
@@ -1281,7 +1281,7 @@ impl ContextBudget {
 
         let per_file_budget = (self.available_for_files / total).min(2_000).max(100);
 
-        for (i, file) in files.iter_mut().enumerate().take(total) {
+        for (_i, file) in files.iter_mut().enumerate().take(total) {
             let file_tokens = _estimate_chars_to_tokens(&file.content);
 
             if file_tokens > per_file_budget {

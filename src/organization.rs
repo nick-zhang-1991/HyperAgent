@@ -15,7 +15,6 @@
 //!   hyper org invite "bob@company.com"    # Generate invite code
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Role within an organization

@@ -16,7 +16,7 @@
 
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
@@ -100,7 +100,7 @@ async fn handle_session(session: RemoteSession) {
 }
 
 /// Add the server command to the CLI
-pub fn add_cli_command(cmd: &mut clap::Command) {
+pub fn add_cli_command(_cmd: &mut clap::Command) {
     // This is called at CLI build time — pattern from existing CLI setup
 }
 

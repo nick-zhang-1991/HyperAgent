@@ -11,8 +11,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, CommandFactory};
-use clap_complete::{Generator, Shell};
-use std::io::Write;
+use clap_complete::Shell;
 use std::path::{Path, PathBuf};
 
 use crate::agent::orchestrator::Orchestrator;
@@ -1190,7 +1189,7 @@ impl Cli {
                 let _confirm = !yes;
 
                 // If --serve specified, launch dev server in background
-                let server_child = if let Some(serve_cmd) = serve {
+                let _server_child = if let Some(serve_cmd) = serve {
                     println!("   🚀 Launching dev server: {serve_cmd}");
                     let cmd_parts: Vec<&str> = serve_cmd.split_whitespace().collect();
                     if cmd_parts.is_empty() {
@@ -2564,7 +2563,7 @@ impl Cli {
 
         // Ask to append
         print!("   Append to file? [Y/n] ");
-        use std::io::{stdout, stdin, Write};
+        use std::io::{stdin, Write};
         std::io::stdout().flush().ok();
         let mut input = String::new();
         stdin().read_line(&mut input).ok();
@@ -2786,7 +2785,7 @@ fn run_setup() {
 
     // Try env var first, then ask
     let api_key = std::env::var(default_key).ok();
-    if let Some(ref key) = api_key {
+    if let Some(ref _key) = api_key {
         println!("   Using {} from environment", default_key);
     } else {
         println!("   Enter your {} API key (or leave empty to use env var later):", provider_name);

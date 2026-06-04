@@ -120,7 +120,7 @@ impl SymbolGraph {
                 .map(|s| (s.name.clone(), s.signature.clone()))
                 .collect();
 
-            for (import_name, signature) in &imports {
+            for (import_name, _signature) in &imports {
                 // Try deterministic import-to-file resolution
                 // e.g. "crate::utils::helpers::get_config" → ["utils", "helpers", "get_config"]
                 // then try: utils/helpers.rs, utils/helpers/get_config.rs, utils.rs

@@ -305,7 +305,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
                         enabled: true,
                         storage_path: telemetry_path.to_string_lossy().to_string(),
                     };
-                    let mut t = crate::telemetry::Telemetry::new(config);
+                    let t = crate::telemetry::Telemetry::new(config);
                     println!("{}", t.daily_stats());
                 }
                 "/plugins" => {

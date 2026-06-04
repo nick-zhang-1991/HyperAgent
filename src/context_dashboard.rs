@@ -8,7 +8,6 @@
 //!
 //! Inspired by Claude Code's "Used X/Y tokens (73%)" display.
 
-use crate::diff::FileChange;
 use serde::Serialize;
 use std::time::Duration;
 

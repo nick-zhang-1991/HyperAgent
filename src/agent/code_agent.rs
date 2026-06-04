@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::diff::{text_to_hunks, FileChange};
+use crate::diff::FileChange;
 use crate::index::FileContext;
 use crate::llm::{LlmProvider, Message};
 

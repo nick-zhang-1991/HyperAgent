@@ -7,6 +7,8 @@
 //! 4. **Minimal Context** - Only sends the most relevant code to the LLM
 //! 5. **Incremental Updates** - Watches filesystem, re-indexes only changed files
 //!
+#![allow(dead_code)]
+
 mod agent;
 mod agent_graph;
 mod auth;

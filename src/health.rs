@@ -368,7 +368,9 @@ mod tests {
         std::fs::write(dir.join("src").join("lib.rs"), r#"
 // TODO: implement error handling
 pub fn process() {
-    let x = unsafe { get_value() };
+    unsafe {
+        let x = get_value();
+    }
     let y = x.unwrap();
     println!("{}", y);
 }

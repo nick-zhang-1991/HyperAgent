@@ -10,7 +10,7 @@
 //!   cargo run -- eval --list             # List available tasks
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 use serde::{Serialize, Deserialize};
 
@@ -349,7 +349,7 @@ fn run_single_task(task: &EvalTask, temp_dir: &Path, hyper_binary: &Path) -> Eva
         .args(["run", "--yes", &task.prompt])
         .current_dir(temp_dir);
 
-    let agent_output = if task.timeout_secs > 0 {
+    let _agent_output = if task.timeout_secs > 0 {
         // Use a thread-based timeout
         let child = agent_cmd.spawn();
         match child {
@@ -363,7 +363,7 @@ fn run_single_task(task: &EvalTask, temp_dir: &Path, hyper_binary: &Path) -> Eva
                         break;
                     }
                     match child.try_wait() {
-                        Ok(Some(status)) => {
+                        Ok(Some(_status)) => {
                             // Got output
                             break;
                         }
