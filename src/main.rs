@@ -18,6 +18,7 @@ mod dep_graph;
 mod diff;
 mod diff_view;
 mod eval;
+mod file_cache;
 mod git;
 mod health;
 mod hooks;

@@ -56,6 +56,8 @@ pub struct Orchestrator {
     hooks: Option<HookRegistry>,
     mcp: Option<crate::mcp::McpRegistry>,
     mode_registry: Option<crate::modes::ModeRegistry>,
+    budget_tracker: Option<crate::budget_tracker::BudgetTracker>,
+    file_cache: crate::file_cache::FileContextCache,
     use_worktree: bool,
 }
 
@@ -83,6 +85,8 @@ impl Orchestrator {
             mode_registry: None,
             plan_provider: None,
             review_provider: None,
+            budget_tracker: None,
+            file_cache: crate::file_cache::FileContextCache::default(),
             use_worktree: false,
         }
     }
@@ -196,11 +200,23 @@ impl Orchestrator {
                 mem_context.matches('\n').count());
         }
         println!();
-
-        // Phase 1: Get relevant files from PageRank index
+        // Phase 0: Scan codebase with PageRank
         println!("🔍 Scanning codebase with PageRank...");
+
         let mut relevant_files = self.index.get_relevant_files(prompt, 15, 4000);
-        println!("   Found {} relevant files\n", relevant_files.len());
+
+        // Apply LRU file cache — summarize large files, evict old entries
+        let max_full_tokens = (MAX_INPUT_TOKENS as f64 * 0.6) as usize; // 60% of budget for files
+        let cached: Vec<crate::index::FileContext> = relevant_files
+            .iter()
+            .map(|f| self.file_cache.get_or_load(&f.path, f.score, max_full_tokens / relevant_files.len().max(1)))
+            .collect();
+        relevant_files = cached;
+
+        println!("   Found {} relevant files (cache: {:.1}K tokens)",
+            relevant_files.len(),
+            self.file_cache.current_tokens() as f64 / 1000.0,
+        );
 
         // Record file discovery to memory
         let file_paths: Vec<String> = relevant_files.iter()
@@ -1265,8 +1281,8 @@ pub struct WorkChunk {
 /// can easily blow past the model's context limit. ContextBudget tracks
 /// fixed overhead (system prompt, history, project context) and allocates
 /// remaining budget to files by relevance.
-const MAX_INPUT_TOKENS: usize = 32_000;
-const MAX_OUTPUT_TOKENS: usize = 8_192;
+const MAX_INPUT_TOKENS: usize = 128_000;
+const MAX_OUTPUT_TOKENS: usize = 16_384;
 const TOKEN_RATIO: usize = 4;
 
 fn _estimate_chars_to_tokens(s: &str) -> usize {

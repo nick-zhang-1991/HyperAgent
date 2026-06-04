@@ -394,12 +394,10 @@ pub fn process() {
         };
         
         // Each error deducts 5 points
-        report.score = 100.0;
-        report.errors = 5;
-        report.score = (100.0 - 5.0 * 5.0).max(0.0);
+        report.score = (100.0f64 - 5.0 * 5.0).max(0.0);
         assert_eq!(report.score, 75.0);
 
-        report.score = (100.0 - 10.0 * 5.0).max(0.0);
+        report.score = (100.0f64 - 10.0 * 5.0).max(0.0);
         assert_eq!(report.score, 50.0);
     }
 }

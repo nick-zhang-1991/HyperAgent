@@ -76,7 +76,7 @@ impl MultiRepoManager {
         }
 
         // Try to index it
-        let index_path = canonical.join(".hyper").join("index");
+        let _index_path = canonical.join(".hyper").join("index");
         std::fs::create_dir_all(canonical.join(".hyper"))?;
 
         self.config.repos.push(RepoEntry {
