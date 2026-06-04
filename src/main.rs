@@ -37,6 +37,7 @@ mod multi_repo;
 mod notify;
 mod organization;
 mod plugins;
+mod process;
 mod refactor;
 mod remote;
 mod repl;

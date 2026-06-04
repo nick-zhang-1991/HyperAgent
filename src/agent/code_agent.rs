@@ -35,7 +35,8 @@ impl<'a> CodeAgent<'a> {
         }
     }
 
-    /// Execute with streaming output — collects chunks silently, then displays parsed changes
+    /// Execute with streaming output — shows real-time progress with file names
+    /// as they're detected, then displays parsed changes.
     pub async fn execute_stream(
         &self,
         agent_name: &str,
@@ -48,28 +49,96 @@ impl<'a> CodeAgent<'a> {
             return vec![];
         }
 
-        // Use batch mode for reliability — collect full response then parse
-        print!("\r   💻 {}: generating...  ", agent_name);
         use std::io::{Write, stdout};
-        stdout().flush().ok();
 
-        match self.provider.chat(messages).await {
-            Ok(response) => {
-                println!("\r   💻 {}: parsing changes ({} chars)...", agent_name, response.len());
-                let changes = self.parse_changes(&response);
-                if changes.is_empty() {
-                    let fallback = self.parse_fallback_diff(&response);
-                    if fallback.is_empty() {
-                        eprintln!("   [debug] No changes found in response ({})", response.len());
+        // Try streaming first for real-time progress
+        match self.provider.chat_stream(messages.clone()).await {
+            Ok(stream) => {
+                let mut rx = stream.into_receiver();
+                let mut full_response = String::new();
+                let mut file_names: Vec<String> = Vec::new();
+                let start = std::time::Instant::now();
+
+                // Collect chunks progressively, showing file names as detected
+                while let Some(chunk) = rx.recv().await {
+                    full_response.push_str(&chunk);
+                    // Progressive parsing: scan for "file": "..." patterns
+                    // This catches file paths before full JSON is complete
+                    for part in chunk.split('"') {
+                        if part.starts_with("src/") || part.starts_with("lib/") || part.starts_with("tests/")
+                            || part.starts_with("frontend/") || part.starts_with("backend/")
+                            || part.contains(".rs") || part.contains(".ts") || part.contains(".py")
+                            || part.contains(".js") || part.contains(".toml") || part.contains(".json")
+                            || part.contains(".css") || part.contains(".html")
+                        {
+                            // Likely a file path — normalize
+                            let candidate = part.trim().to_string();
+                            if candidate.len() > 3 && candidate.len() < 200
+                                && !file_names.contains(&candidate)
+                                && !candidate.contains(' ')
+                            {
+                                file_names.push(candidate);
+                            }
+                        }
                     }
-                    fallback
-                } else {
+                    // Update progress line
+                    let elapsed = start.elapsed();
+                    if file_names.is_empty() {
+                        print!("\r   💻 {}: generating... [{:.0}s]", agent_name, elapsed.as_secs_f64());
+                    } else {
+                        let shown = if file_names.len() <= 3 {
+                            file_names.join(", ")
+                        } else {
+                            format!("{} (+{} more)", file_names[..3].join(", "), file_names.len() - 3)
+                        };
+                        print!("\r   💻 {}: [{}] {} [{:.0}s]",
+                            agent_name, file_names.len(), shown, elapsed.as_secs_f64());
+                    }
+                    let _ = stdout().flush();
+                }
+
+                // Parse final response
+                let changes = self.parse_changes(&full_response);
+                let elapsed = start.elapsed();
+                if !changes.is_empty() {
+                    println!("\r   💻 {}: done — {} change(s) in {:.1}s                      ",
+                        agent_name, changes.len(), elapsed.as_secs_f64());
                     changes
+                } else {
+                    // Try fallback diff parser
+                    let fallback = self.parse_fallback_diff(&full_response);
+                    if !fallback.is_empty() {
+                        println!("\r   💻 {}: done — {} change(s) (diff) in {:.1}s              ",
+                            agent_name, fallback.len(), elapsed.as_secs_f64());
+                        fallback
+                    } else {
+                        println!("\r   💻 {}: no changes found ({:.1}s)                        ",
+                            agent_name, elapsed.as_secs_f64());
+                        vec![]
+                    }
                 }
             }
-            Err(e) => {
-                eprintln!("   💻 {} error: {e}", agent_name);
-                vec![]
+            Err(_stream_err) => {
+                // Fallback to batch mode
+                print!("\r   💻 {}: generating...  ", agent_name);
+                let _ = stdout().flush();
+
+                match self.provider.chat(messages).await {
+                    Ok(response) => {
+                        println!("\r   💻 {}: parsing changes ({} chars)...", agent_name, response.len());
+                        let changes = self.parse_changes(&response);
+                        if changes.is_empty() {
+                            let fallback = self.parse_fallback_diff(&response);
+                            fallback
+                        } else {
+                            changes
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("   💻 {} error: {e}", agent_name);
+                        vec![]
+                    }
+                }
             }
         }
     }
@@ -146,7 +215,7 @@ Rules:
         ctx
     }
 
-    fn parse_changes(&self, response: &str) -> Vec<FileChange> {
+    pub fn parse_changes(&self, response: &str) -> Vec<FileChange> {
         let mut changes = Vec::new();
         let bytes = response.as_bytes();
         let n = bytes.len();
@@ -240,7 +309,7 @@ Rules:
 
     /// Fallback parser: if no structured JSON changes found, try to extract
     /// unified diff blocks directly from the response text.
-    fn parse_fallback_diff(&self, response: &str) -> Vec<FileChange> {
+    pub fn parse_fallback_diff(&self, response: &str) -> Vec<FileChange> {
         let mut changes = Vec::new();
         let lines: Vec<&str> = response.lines().collect();
         let mut i = 0;

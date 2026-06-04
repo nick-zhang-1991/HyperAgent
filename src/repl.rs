@@ -73,7 +73,7 @@ impl Completer for ReplCompleter {
             "/exit", "/quit",
             "/clear", "/cls",
             "/help", "/stats", "/memory",
-            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins", "/health", "/org", "/repo", "/edit", "/search",
+            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins", "/health", "/org", "/repo", "/edit", "/search", "/bg",
         ];
 
         let candidates: Vec<Pair> = if prefix.starts_with('/') {
@@ -137,11 +137,12 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins  /health  /repo  /org  /edit  /search");
+    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins  /health  /repo  /org  /edit  /search  /bg");
     println!();
 
     // REPL loop
     let mut conversation_history: Vec<(String, String)> = Vec::new();
+    let bg_manager = crate::process::ProcessManager::new();
     loop {
         // Read line with rustyline (supports ↑↓ history, line editing)
         let line = match rl.readline("hyper> ") {
@@ -177,6 +178,101 @@ pub async fn run_repl() -> anyhow::Result<()> {
                 "/exit" | "/quit" | "/q" => {
                     println!("👋 Goodbye!");
                     break;
+                }
+                cmd if cmd.starts_with("/bg") => {
+                    use crate::process::BgStatus;
+                    let args: Vec<&str> = cmd[3..].trim().split_whitespace().collect();
+                    match args.first() {
+                        Some(&"list") | None => {
+                            let procs = bg_manager.list();
+                            if procs.is_empty() {
+                                println!("  No background processes.");
+                            } else {
+                                println!("  📋 Background Processes:");
+                                for (id, cmd_str, status, elapsed) in &procs {
+                                    let status_icon = match status {
+                                        BgStatus::Running => "🟢",
+                                        BgStatus::Done(0) => "✅",
+                                        BgStatus::Done(_) => "❌",
+                                        BgStatus::Killed => "🛑",
+                                        BgStatus::Failed(_) => "💥",
+                                    };
+                                    println!("  {status_icon} {id}: {cmd_str} [{elapsed}] — {status:?}");
+                                }
+                            }
+                        }
+                        Some(&"log" | &"output") if args.len() >= 2 => {
+                            let id = args[1];
+                            let lines = bg_manager.read_output(id);
+                            if lines.is_empty() {
+                                println!("  No new output from {id}.");
+                            } else {
+                                println!("  📄 Output from {id}:");
+                                for line in &lines {
+                                    println!("    {line}");
+                                }
+                            }
+                        }
+                        Some(&"all") if args.len() >= 2 => {
+                            let id = args[1];
+                            let lines = bg_manager.all_output(id);
+                            if lines.is_empty() {
+                                println!("  No output from {id}.");
+                            } else {
+                                println!("  📄 All output from {id}:");
+                                for line in &lines {
+                                    println!("    {line}");
+                                }
+                            }
+                        }
+                        Some(&"kill") if args.len() >= 2 => {
+                            let id = args[1];
+                            match bg_manager.kill(id) {
+                                Ok(()) => println!("  🛑 Killed {id}"),
+                                Err(e) => println!("  ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"input") if args.len() >= 3 => {
+                            let id = args[1];
+                            let text = args[2..].join(" ");
+                            match bg_manager.send_input(id, &text) {
+                                Ok(()) => println!("  📝 Sent input to {id}"),
+                                Err(e) => println!("  ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"wait") if args.len() >= 2 => {
+                            let id = args[1];
+                            let timeout = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(60u64);
+                            println!("  ⏳ Waiting up to {timeout}s for {id}...");
+                            match bg_manager.wait(id, timeout) {
+                                Ok(status) => println!("  {status:?}"),
+                                Err(e) => println!("  ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"cleanup") => {
+                            let removed = bg_manager.cleanup();
+                            println!("  🧹 Removed {removed} completed process(es)");
+                        }
+                        _ => {
+                            // Default: run a command in the background
+                            let rest = cmd[3..].trim();
+                            if rest.is_empty() {
+                                println!("  Usage: /bg <command> [args...]");
+                                println!("  Commands: /bg list, /bg log <id>, /bg kill <id>, /bg input <id> <text>, /bg wait <id> [timeout], /bg cleanup");
+                            } else {
+                                let parts: Vec<String> = rest.split_whitespace().map(String::from).collect();
+                                if parts.is_empty() {
+                                    continue;
+                                }
+                                let command = parts[0].clone();
+                                let args: Vec<String> = parts[1..].to_vec();
+                                match bg_manager.spawn(&command, &args, &dir.to_string_lossy()) {
+                                    Ok(id) => println!("  🚀 Spawned {id}: {command} {}", args.join(" ")),
+                                    Err(e) => println!("  ⚠️  {e}"),
+                                }
+                            }
+                        }
+                    }
                 }
                 cmd if cmd.starts_with("/edit ") || cmd.starts_with("/e ") => {
                     let parts: Vec<&str> = cmd.splitn(3, ' ').collect();
@@ -219,6 +315,11 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  /repo              Multi-repository management");
                     println!("  /org               Organization management");
                     println!("  /edit N \"msg\"      Edit message N and re-execute");
+                    println!("  /bg <cmd>           Run command in background");
+                    println!("  /bg list            List background processes");
+                    println!("  /bg log <id>        Read output from bg process");
+                    println!("  /bg kill <id>       Kill a background process");
+                    println!("  /bg input <id> t    Send input to bg process");
                     println!("  /search \"query\"    Semantic code search (RAG)");
                     println!("  ───────────────────────────────────────");
                     println!("  ↑↓ arrow keys      Browse command history");

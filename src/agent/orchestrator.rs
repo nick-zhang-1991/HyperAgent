@@ -407,25 +407,151 @@ impl Orchestrator {
         }
         self.fire_hook(HookEvent::PostApply, &applied.join(", ")).await;
 
-        // Phase 5b: Lint-driven fix loop — check if applied changes compile
-        // Quick cargo check / tsc check to verify changes compile
+        // Phase 5b: Lint-driven fix loop — check if applied changes compile and auto-fix
+        // Inspired by Aider's lint → auto-fix → re-lint loop
         let has_cargo = self.root.join("Cargo.toml").exists();
         let has_ts = self.root.join("tsconfig.json").exists();
-        if has_cargo || has_ts {
+        let mut fix_round = 1usize;
+        let max_fix_rounds = 3;
+
+        loop {
+            if !has_cargo && !has_ts {
+                break;
+            }
             let linter = if has_cargo { "cargo check" } else { "tsc --noEmit" };
             let check_cmd = if has_cargo {
-                std::process::Command::new("cargo").args(["check"]).current_dir(&self.root).output().ok()
+                std::process::Command::new("cargo")
+                    .args(["check"])
+                    .current_dir(&self.root)
+                    .output()
+                    .ok()
             } else {
-                std::process::Command::new("npx").args(["tsc", "--noEmit"]).current_dir(&self.root).output().ok()
+                std::process::Command::new("npx")
+                    .args(["tsc", "--noEmit"])
+                    .current_dir(&self.root)
+                    .output()
+                    .ok()
             };
+
             match check_cmd {
                 Some(out) if out.status.success() => {
-                    println!("   ✅ Lint passed ({})", linter);
+                    if fix_round > 1 {
+                        println!("   ✅ Lint passed after fix round {}\n", fix_round - 1);
+                    } else {
+                        println!("   ✅ Lint passed ({})\n", linter);
+                    }
+                    break;
                 }
-                Some(_) => {
-                    println!("   ⚠️  Lint check found issues — run `hyper run \"fix compile errors\"` to fix");
+                Some(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    let errors: Vec<&str> = stderr
+                        .lines()
+                        .filter(|l| l.contains("error["))
+                        .collect();
+
+                    if fix_round > max_fix_rounds {
+                        println!("   ⚠️  Max fix rounds reached ({max_fix_rounds}). Remaining errors:");
+                        for err in errors.iter().take(8) {
+                            println!("     {err}");
+                        }
+                        break;
+                    }
+
+                    println!("   🔧 Lint fix round {fix_round}/{max_fix_rounds} — {} error(s)", errors.len());
+                    for err in errors.iter().take(5) {
+                        println!("     {err}");
+                    }
+                    if errors.len() > 5 {
+                        println!("     ... and {} more", errors.len() - 5);
+                    }
+
+                    // Build a fix prompt from lint errors + changed files
+                    let error_summary: String = errors.iter().take(20).map(|e| format!("  {e}\n")).collect();
+                    let fix_prompt = format!(
+                        "The following lint errors were found in the codebase after changes were made. \
+                         Fix them with surgical changes that address each error.\n\n\
+                         Lint errors:\n{error_summary}\n\n\
+                         Apply fixes as JSON: {{\"file\": \"path\", \"change_type\": \"edit\", \"diff\": \"@@ ... @@\"}}"
+                    );
+
+                    // Build file context for the LLM — include the modified files' current content
+                    let changed_file_paths: Vec<_> = approved.iter()
+                        .map(|c| c.file.clone())
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
+                        .collect();
+
+                    let fix_files: Vec<crate::index::FileContext> = changed_file_paths.iter()
+                        .filter_map(|p| {
+                            std::fs::read_to_string(p).ok().map(|content| {
+                                let lines = content.lines().count();
+                                crate::index::FileContext {
+                                    path: p.clone(),
+                                    content,
+                                    score: 1.0,
+                                    total_lines: lines,
+                                    summary: String::new(),
+                                }
+                            })
+                        })
+                        .collect();
+
+                    // Call LLM with batch mode (not streaming) for fixes
+                    let plan_messages = vec![
+                        crate::llm::Message {
+                            role: "system".to_string(),
+                            content: "You are HyperAgent's fix agent. Fix compile errors with surgical changes.\n\
+                                     Output ONLY JSON with exact file paths. Each fix change should be one JSON object per line.".to_string(),
+                        },
+                        crate::llm::Message {
+                            role: "user".to_string(),
+                            content: format!(
+                                "{}\n\nFiles to fix:\n{}",
+                                fix_prompt,
+                                fix_files.iter().map(|f| format!("--- {} ---\n{}", f.path.display(), f.content)).collect::<Vec<_>>().join("\n")
+                            ),
+                        },
+                    ];
+
+                    match self.chat_with_failover(plan_messages).await {
+                        Ok(response) => {
+                            // Parse fix changes from the LLM response
+                            let code_agent = crate::agent::code_agent::CodeAgent::new(&self.provider, &self.root);
+                            let fix_changes = code_agent.parse_changes(&response);
+                            let fix_fallback = if fix_changes.is_empty() {
+                                code_agent.parse_fallback_diff(&response)
+                            } else {
+                                vec![]
+                            };
+
+                            let all_fixes = if !fix_changes.is_empty() {
+                                fix_changes
+                            } else {
+                                fix_fallback
+                            };
+
+                            if !all_fixes.is_empty() {
+                                println!("   🩹 Applying {} fix(es)...", all_fixes.len());
+                                let fix_agent = ApplyAgent::new(&apply_root, false); // no confirm for fixes
+                                let fix_msgs = fix_agent.apply(&all_fixes).await?;
+                                for msg in &fix_msgs {
+                                    println!("     {msg}");
+                                }
+                            } else {
+                                println!("   ⚠️  LLM could not generate fixes");
+                            }
+                        }
+                        Err(e) => {
+                            println!("   ⚠️  Fix LLM call failed: {e}");
+                        }
+                    }
+
+                    fix_round += 1;
                 }
-                _ => {}
+                None => {
+                    println!("   ⚠️  Could not run linter ({linter})");
+                    break;
+                }
             }
         }
 
