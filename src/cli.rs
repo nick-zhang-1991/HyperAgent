@@ -21,12 +21,33 @@ use crate::llm::LlmProvider;
 use crate::memory::{MemoryManager, SqliteMemoryStore};
 use crate::session::{Session, SessionManager};
 
+/// Build detailed version string from compile-time env vars
+fn version_info() -> &'static str {
+    use std::sync::OnceLock;
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION.get_or_init(|| {
+        let version = env!("CARGO_PKG_VERSION");
+        let git_hash = option_env!("GIT_HASH").unwrap_or("unknown");
+        let git_branch = option_env!("GIT_BRANCH").unwrap_or("unknown");
+        let build_time = option_env!("BUILD_TIME").unwrap_or("unknown");
+        let build_profile = option_env!("BUILD_PROFILE").unwrap_or("unknown");
+        format!(
+            "v{version} ({git_branch} @ {git_hash})\nbuilt: {build_time} [{build_profile}]"
+        )
+    })
+}
+
 /// HyperAgent - Ultra-Fast CLI Coding Agent
 ///
 /// An intelligent coding agent with global code understanding
 /// and multi-agent parallel execution.
 #[derive(Parser, Debug)]
-#[command(name = "hyper", version, about)]
+#[command(
+    name = "hyper",
+    version,
+    long_version = version_info(),
+    about,
+)]
 #[command(propagate_version = true)]
 pub struct Cli {
     /// The subcommand (omit to enter interactive REPL)
