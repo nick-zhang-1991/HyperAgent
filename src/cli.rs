@@ -2262,7 +2262,7 @@ impl Cli {
                 // Create with empty body — user can edit the file
                 let path = registry.save(
                     name, description, category, &parsed_tags,
-                    "# {name}\n\n## Description\n\n{description}\n\n## When to use\n\n\n\n## Steps\n\n1. \n2. \n3. \n\n## Pitfalls\n\n- \n"
+                    &format!("# {name}\n\n## Description\n\n{description}\n\n## When to use\n\n\n\n## Steps\n\n1. \n2. \n3. \n\n## Pitfalls\n\n- \n")
                 )?;
                 println!("✅ Skill '{name}' created at {}\n", path.display());
                 println!("   Edit the SKILL.md file to add content, then use `hyper skills show {name}` to view.");

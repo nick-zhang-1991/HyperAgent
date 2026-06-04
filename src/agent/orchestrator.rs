@@ -1115,6 +1115,30 @@ impl Orchestrator {
             }
         }
 
+        // Add relevant skills context — load skills whose name/description matches the prompt
+        let home_dir = dirs_next::home_dir();
+        if let Some(ref home) = home_dir {
+            let skill_registry = crate::skills::SkillsRegistry::new(home);
+            if !skill_registry.is_empty() {
+                let prompt_lower = prompt.to_lowercase();
+                let mut matched: Vec<String> = Vec::new();
+                for skill in skill_registry.list() {
+                    if matched.len() >= 3 { break; }
+                    if prompt_lower.contains(&skill.name.to_lowercase())
+                        || skill.tags.iter().any(|t| prompt_lower.contains(&t.to_lowercase()))
+                        || skill.description.to_lowercase().contains(&prompt_lower)
+                    {
+                        matched.push(format!("- {}: {}", skill.name, skill.description));
+                    }
+                }
+                if !matched.is_empty() {
+                    parts.push("\n\n--- Relevant Skills ---\n".to_string());
+                    parts.push("The following skills are available from past sessions. Use them as reference:\n".to_string());
+                    parts.push(matched.join("\n"));
+                }
+            }
+        }
+
         // Add mode-specific instructions from ModeRegistry
         let mode_prompt = match &self.mode_registry {
             Some(registry) => registry.build_prompt(&self.mode, None),
