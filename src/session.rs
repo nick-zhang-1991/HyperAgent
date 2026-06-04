@@ -213,6 +213,63 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Full-text search across all session transcripts
+    pub fn search(&self, query: &str) -> Result<Vec<(Session, Vec<String>)>> {
+        let sessions = self.list()?;
+        let q = query.to_lowercase();
+        let mut results = Vec::new();
+
+        for session in sessions {
+            let mut matches = Vec::new();
+
+            // Search in prompt
+            if session.prompt.to_lowercase().contains(&q) {
+                matches.push(format!("prompt: {}", session.prompt.chars().take(80).collect::<String>()));
+            }
+
+            // Search in summary
+            if session.summary.to_lowercase().contains(&q) {
+                matches.push(format!("summary: {}", session.summary.chars().take(80).collect::<String>()));
+            }
+
+            // Search in changes
+            for change in &session.changes {
+                if change.to_lowercase().contains(&q) {
+                    matches.push(format!("change: {change}"));
+                    break;
+                }
+            }
+
+            // Search in tags
+            for tag in &session.tags {
+                if tag.to_lowercase().contains(&q) {
+                    matches.push(format!("tag: {tag}"));
+                    break;
+                }
+            }
+
+            // Search in all messages
+            for msg in &session.messages {
+                if msg.content.to_lowercase().contains(&q) {
+                    let excerpt = msg.content
+                        .chars()
+                        .take(120)
+                        .collect::<String>();
+                    matches.push(format!("[{}]: {}...", msg.role, excerpt));
+                    break; // one match per session
+                }
+            }
+
+            if !matches.is_empty() {
+                results.push((session, matches));
+            }
+        }
+
+        // Sort by match count (most relevant first)
+        results.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        Ok(results)
+    }
+
     /// Get session tree (parent + children) as an indented string
     pub fn tree(&self, root_id: Option<&str>) -> Result<String> {
         let sessions = self.list()?;

@@ -651,6 +651,14 @@ pub enum SessionAction {
         #[arg(short)]
         output: Option<PathBuf>,
     },
+    /// Full-text search across all session transcripts
+    Search {
+        /// Search query (multiple words combined)
+        query: Vec<String>,
+        /// Maximum results to show
+        #[arg(short, long, default_value_t = 10)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1583,6 +1591,7 @@ impl Cli {
                     crate::memory_web::DashboardState {
                         mem_manager,
                         skills_dir: Some(home.join(".hyper")),
+                        config_path: Some(home.join(".config").join("hyper").join("config.toml")),
                     }
                 ));
                 println!("   📊 Starting HyperAgent Dashboard...");
@@ -2788,6 +2797,33 @@ impl Cli {
                         println!("📤 Exported {} sessions", sessions.len());
                     }
                     None => println!("{json}"),
+                }
+            }
+            SessionAction::Search { query, limit } => {
+                let q = query.join(" ");
+                if q.is_empty() {
+                    eprintln!("❌ Search query is empty.");
+                    return Ok(());
+                }
+                let results = sm.search(&q)?;
+                if results.is_empty() {
+                    println!("🔍 No sessions match '{q}'.");
+                    return Ok(());
+                }
+                let show = results.len().min(*limit);
+                println!("🔍 Found {} sessions matching '{q}' (showing {}):\n", results.len(), show);
+                for (i, (session, matches)) in results.iter().take(show).enumerate() {
+                    let time = chrono::DateTime::from_timestamp(session.timestamp as i64, 0)
+                        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    println!("  {}. {} [{}] — {} matches", i + 1, &session.id[..15], time, matches.len());
+                    for m in matches.iter().take(3) {
+                        println!("     {m}");
+                    }
+                    if matches.len() > 3 {
+                        println!("     ... and {} more matches", matches.len() - 3);
+                    }
+                    println!();
                 }
             }
         }

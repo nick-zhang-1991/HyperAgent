@@ -23,6 +23,7 @@ use tokio::sync::Mutex;
 pub struct DashboardState {
     pub mem_manager: Option<MemoryManager>,
     pub skills_dir: Option<std::path::PathBuf>,
+    pub config_path: Option<std::path::PathBuf>,
 }
 
 /// Start the memory & skills web dashboard
@@ -70,6 +71,8 @@ async fn handle_request(request: &str, state: &Arc<Mutex<DashboardState>>) -> St
         ("DELETE", path) if path.starts_with("/api/memories/") => handle_delete_memory(state, path).await,
         ("DELETE", path) if path.starts_with("/api/skills/") => handle_delete_skill(state, path).await,
         ("GET", "/api/stats") => handle_stats(state).await,
+        ("GET", "/api/config") => handle_get_config(state).await,
+        ("POST", "/api/config") => handle_set_config(state, &request).await,
         _ => http_response(404, "{\"error\": \"Not found\"}", "application/json"),
     }
 }
@@ -190,6 +193,135 @@ async fn handle_stats(state: &Arc<Mutex<DashboardState>>) -> String {
         "skills": skill_count,
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+/// Read config file and return as JSON
+async fn handle_get_config(state: &Arc<Mutex<DashboardState>>) -> String {
+    let guard = state.lock().await;
+    match &guard.config_path {
+        Some(path) if path.exists() => {
+            match std::fs::read_to_string(path) {
+                Ok(content) => {
+                    // Parse TOML, convert to JSON
+                    match content.parse::<toml::Value>() {
+                        Ok(toml_val) => {
+                            let json_val = toml_to_json(&toml_val);
+                            http_json(&json_val)
+                        }
+                        Err(e) => http_response(500, &format!("{{\"error\": \"Parse error: {e}\"}}"), "application/json"),
+                    }
+                }
+                Err(e) => http_response(500, &format!("{{\"error\": \"Read error: {e}\"}}"), "application/json"),
+            }
+        }
+        _ => http_json(&serde_json::json!({"config_path": "not found"})),
+    }
+}
+
+/// Write config file from POST body
+async fn handle_set_config(state: &Arc<Mutex<DashboardState>>, request: &str) -> String {
+    let guard = state.lock().await;
+    let config_path = match &guard.config_path {
+        Some(p) => p.clone(),
+        None => return http_response(400, "{\"error\": \"No config path configured\"}", "application/json"),
+    };
+
+    // Extract JSON body from POST request
+    let body = match extract_post_body(request) {
+        Some(b) => b,
+        None => return http_response(400, "{\"error\": \"No body found\"}", "application/json"),
+    };
+
+    // Parse as JSON
+    let json_val: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => return http_response(400, &format!("{{\"error\": \"Invalid JSON: {e}\"}}"), "application/json"),
+    };
+
+    // Read existing config if it exists
+    let mut existing = if config_path.exists() {
+        match std::fs::read_to_string(&config_path) {
+            Ok(c) => c.parse::<toml::Value>().unwrap_or(toml::Value::Table(toml::value::Table::new())),
+            Err(_) => toml::Value::Table(toml::value::Table::new()),
+        }
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    // Merge JSON into existing TOML (flat merge for simplicity)
+    if let (toml::Value::Table(ref mut table), serde_json::Value::Object(map)) = (&mut existing, &json_val) {
+        for (key, value) in map {
+            let toml_value = json_to_toml_value(value);
+            table.insert(key.clone(), toml_value);
+        }
+    }
+
+    // Serialize back to TOML
+    let toml_str = toml::to_string_pretty(&existing).unwrap_or_default();
+    match std::fs::write(&config_path, &toml_str) {
+        Ok(_) => {
+            let msg = serde_json::json!({"status": "ok", "path": config_path.to_string_lossy()});
+            http_json(&msg)
+        }
+        Err(e) => http_response(500, &format!("{{\"error\": \"Write failed: {e}\"}}"), "application/json"),
+    }
+}
+
+/// Simple POST body extraction from raw HTTP request
+fn extract_post_body(req: &str) -> Option<String> {
+    // Find the double CRLF separating headers from body
+    if let Some(pos) = req.find("\r\n\r\n") {
+        let body = &req[pos + 4..];
+        let trimmed = body.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    } else if let Some(pos) = req.find("\n\n") {
+        let body = &req[pos + 2..];
+        let trimmed = body.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    } else {
+        None
+    }
+}
+
+/// Convert toml::Value to serde_json::Value
+fn toml_to_json(v: &toml::Value) -> serde_json::Value {
+    match v {
+        toml::Value::String(s) => serde_json::Value::String(s.clone()),
+        toml::Value::Integer(i) => serde_json::Value::Number((*i).into()),
+        toml::Value::Float(f) => serde_json::json!(f),
+        toml::Value::Boolean(b) => serde_json::Value::Bool(*b),
+        toml::Value::Array(arr) => serde_json::Value::Array(arr.iter().map(toml_to_json).collect()),
+        toml::Value::Table(tbl) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in tbl {
+                map.insert(k.clone(), toml_to_json(v));
+            }
+            serde_json::Value::Object(map)
+        }
+        toml::Value::Datetime(dt) => serde_json::Value::String(dt.to_string()),
+    }
+}
+
+/// Convert serde_json::Value to toml::Value
+fn json_to_toml_value(v: &serde_json::Value) -> toml::Value {
+    match v {
+        serde_json::Value::String(s) => toml::Value::String(s.clone()),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() { toml::Value::Integer(i) }
+            else if let Some(f) = n.as_f64() { toml::Value::Float(f) }
+            else { toml::Value::String(n.to_string()) }
+        }
+        serde_json::Value::Bool(b) => toml::Value::Boolean(*b),
+        serde_json::Value::Array(arr) => toml::Value::Array(arr.iter().map(json_to_toml_value).collect()),
+        serde_json::Value::Object(map) => {
+            let mut tbl = toml::value::Table::new();
+            for (k, v) in map {
+                tbl.insert(k.clone(), json_to_toml_value(v));
+            }
+            toml::Value::Table(tbl)
+        }
+        serde_json::Value::Null => toml::Value::String("null".to_string()),
+    }
 }
 
 fn http_response(status: u16, body: &str, content_type: &str) -> String {
