@@ -1,59 +1,121 @@
-# HyperAgent 竞争力分析 (2026-07)
+# HyperAgent 竞争力分析 (2026-07) — 更新版
 
 ## 核心能力对比
 
 | 能力 | HyperAgent | Hermes Agent | Aider | Claude Code | Cline |
 |------|-----------|-------------|-------|-------------|-------|
-| **记忆系统** | ✅ SQLite + 向量嵌入(可选) | ✅ 持久化 Memory (注入每轮) | ❌ 无 | ✅ 项目记忆 | ✅ 会话记忆 |
-| **技能系统** | ✅ ~/.hyper/skills/ | ✅ 完整技能系统 | ❌ 无 | ❌ 无内置 | ❌ 无 |
+| **并行智能体** | ✅ N-way tokio | ❌ 单线程 | ❌ 顺序 | ❌ 顺序 | ❌ 顺序 |
+| **持久化记忆** | ✅ SQLite + 向量嵌入 | ✅ 每轮注入 | ❌ 无 | ✅ 项目记忆 | ✅ 会话记忆 |
+| **技能系统** | ✅ ~/.hyper/skills/ + import/export/search/sync | ✅ 完整技能系统 | ❌ 无 | ❌ 无 | ❌ 无 |
 | **MCP 支持** | ✅ Stdio+HTTP | ✅ 原生 MCP | ❌ | ✅ 内置 | ✅ MCP 客户端 |
-| **浏览器自动化** | ✅ CDP + WebSocket | ✅ computer_use | ❌ | ❌ | ❌ |
+| **浏览器自动化** | ✅ CDP WebSocket | ✅ computer_use | ❌ | ❌ | ❌ |
 | **后台进程** | ✅ /bg 命令管理 | ❌ 需 skill | ❌ | ❌ | ❌ |
 | **GUI操作电脑** | ✅ macOS: screenshot, mouse, keyboard, osascript, apps | ✅ 原生 (截图+点击+键盘) | ❌ | ❌ | ❌ |
-| **任务看板** | ✅ Kanban Board | ❌ 无 | ✅ Architect模式 | ❌ | ✅ 多代理 |
-| **API 路由** | ✅ Provider Pool + 加权路由 | ✅ 自定义 Provider | ✅ 多 API | ❌ | ✅ |
-| **Streaming UX** | ✅ 实时进度 | ✅ 实时流式 | ✅ | ✅ | ✅ |
-| **Lint 自动修复** | ✅ 最多3轮 | ✅ 技能驱动 | ✅ Auto fix | ❌ | ❌ |
-| **E2E 评估** | ✅ SWE-bench + 内置测试 | ❌ | ✅ SWE-bench | ❌ | ❌ |
-| **多节点部署** | ✅ SSH远程主机 + SCP文件传输 + TCP服务器 | ✅ 远程节点 | ❌ | ❌ | ❌ |
+| **任务看板** | ✅ Kanban Board + Web UI | ❌ 无 | ✅ Architect模式 | ❌ | ✅ 多代理 |
+| **API 路由** | ✅ Provider Pool + 加权路由 + 冷却 | ✅ 自定义 Provider | ✅ 多 API | ❌ | ✅ |
+| **Streaming UX** | ✅ 实时进度 (文件名/字符数/计时) | ✅ 实时流式 | ✅ | ✅ | ✅ |
+| **Lint 自动修复** | ✅ 最多3轮 cargo check/tsc | ✅ 技能驱动 | ✅ Auto fix | ❌ | ❌ |
+| **SWE-bench 评估** | ✅ 内置 7 任务 | ❌ | ✅ SWE-bench | ❌ | ❌ |
+| **远程节点** | ✅ SSH + SCP + TCP 服务器 | ✅ Tailscale + SSH | ❌ | ❌ | ❌ |
 | **Cron 任务** | ✅ 定时调度 | ✅ Cron 系统 | ❌ | ❌ | ❌ |
-| **生命周期钩子** | ✅ Hooks | ✅ Hooks | ❌ | ❌ | ❌ |
-| **代码索引** | ✅ PageRank | ✅ CodeGraph | ✅ Tree-sitter | ✅ 内置 | ✅ |
+| **生命周期钩子** | ✅ 12 种事件 | ✅ Hooks | ❌ | ❌ | ❌ |
+| **代码索引** | ✅ PageRank 4 策略 | ✅ CodeGraph | ✅ Tree-sitter | ✅ 内置 | ✅ |
+| **Web 仪表盘** | ✅ memory + skills + kanban | ✅ Hermes Desktop | ❌ | ❌ | ❌ |
+| **多模态视觉** | ✅ analyze_image + analyze_screenshot | ✅ vision_analyze | ✅ 图片 | ❌ | ✅ 图片 |
+| **基准测试** | ✅ hyper benchmark (7 任务) | ❌ | ✅ SWE-bench | ❌ | ❌ |
+| **会话管理** | ✅ fork/merge/tree/branch | ✅ 会话树 | ❌ | ❌ | ❌ |
+| **安全沙箱** | ✅ 13 种危险模式检测 | ✅ 工具审批 | ⚠️ 基础 | ✅ | ✅ |
+| **自动变更日志** | ✅ conventional commits | ❌ | ❌ | ❌ | ❌ |
+| **Shell 补全** | ✅ 5 种 shell | ❌ | ❌ | ✅ | ❌ |
+| **配置热加载** | ✅ mtime 监控 | ✅ 配置 CLI | ❌ | ❌ | ❌ |
+| **增量索引** | ✅ 文件监听器 | ✅ 自动 | ❌ | ❌ | ❌ |
+| **跨平台发布** | ✅ CI/CD (5 targets) | ❌ | ✅ PyPI | ✅ npm | ✅ VSIX |
+| **TUI 仪表盘** | ✅ ratatui | ❌ | ❌ | ❌ | ❌ |
 
-## 关键差距分析
+## 关键差异分析
 
-### 1. 记忆系统 — Hermes Agent 领先
+### HyperAgent 领先于 Hermes Agent 的领域
 
-**Hermes Agent**: 持久性 `memory.md` + `user.md` 每轮注入，支持预定义知识、系统配置、项目环境、操作记录。前端面板可查看/编辑记忆。用户角色 profile 区分记忆和用户偏好。
+| 领域 | 说明 |
+|------|------|
+| **并行智能体** | HyperAgent 支持 N 路并行 CodeAgent，Hermes 单线程 |
+| **后台进程管理** | HyperAgent 有完整的 /bg 子系统 |
+| **任务看板** | HyperAgent 内置 Kanban + Web UI |
+| **SWE-bench 评估** | HyperAgent 有内置评估框架 |
+| **基准测试套件** | HyperAgent 有 7 道编程挑战自动评测 |
+| **会话管理** | HyperAgent 支持 fork/merge/tree |
+| **自动变更日志** | HyperAgent 支持 conventional commits |
+| **Shell 补全** | HyperAgent 支持 5 种 shell |
+| **TUI 仪表盘** | HyperAgent 有终端仪表盘 (ratatui) |
+| **跨平台发布** | HyperAgent 有 CI/CD 自动构建 5 平台 |
 
-**HyperAgent**: SQLite 存储记忆，支持向量嵌入(通过 Ollama)做语义检索。更新/归档/合并/提取等操作。但不如 Hermes 精细：无前端面板，无用户/系统记忆分离，无技能间跳转。
+### Hermes Agent 领先于 HyperAgent 的领域
 
-### 2. 操作电脑能力 — Hermes Agent 显著领先
+| 领域 | 说明 |
+|------|------|
+| **记忆系统精细度** | Hermes 区分 user.md + memory.md，每轮注入 |
+| **Herkes Desktop** | Hermes 有原生 macOS 桌面应用 (arm64) |
+| **MCP 生态** | Hermes MCP 服务器支持更丰富 |
+| **代码索引深度** | Hermes 的 CodeGraph 使用 tree-sitter AST |
+| **native MCP 客户端** | Hermes 内置 MCP 客户端发现配置中的服务器 |
+| **agent 工具集** | Hermes 有 skill_view/skill_manage/读写文件等更多原生工具 |
 
-**Hermes Agent**: 原生 `computer_use` 工具集，`osascript` 控制 macOS GUI (微信等桌面应用)，截图+点击+键盘操作，桌面远程控制 (Tailscale/SSH)。Hermes Desktop 官方应用 (arm64)。
+### 持平领域
 
-**HyperAgent**: CDP 浏览器自动化（Chrome devtools protocol），可截屏、点击、获取源码。但**不支持桌面GUI操作**，无法控制浏览器外的应用。
+| 领域 | 说明 |
+|------|------|
+| **技能系统** | 功能接近，各有特色 |
+| **GUI 操作电脑** | 都支持 macOS osascript，HyperAgent 新增 |
+| **远程节点** | 都支持 SSH 远程，HyperAgent 新增 |
+| **Web 面板** | 都支持，HyperAgent 新增 |
+| **多模态** | 都支持 vision API，HyperAgent 新增 |
 
-### 3. 技能系统 — 各有特色
+## 10/10 待办清单
 
-**Hermes Agent**: 自动匹配技能描述，`skill_view()`/`skill_manage()` 工具管理，自动归档/更新过时技能。YAML frontmatter，文件丰富。
+以下是从 9.2 → 10.0 需要补齐的能力：
 
-**HyperAgent (新实现)**: 类似架构但更简单：~/.hyper/skills/ 存储，SKILL.md 格式，CLI 命令管理，自动保存复杂任务，自动加载匹配技能到上下文。
+### P0 — 必须 (直接用户可见)
 
-### 4. 远程部署 — Hermes Agent 领先
+1. **跨会话对话搜索** — `hyper session search <query>` 搜索历史对话内容
+2. **Memory 前端编辑** — dashboard 中支持编辑/更新记忆内容，不只是查看/删除
+3. **配置 Web 面板** — dashboard 增加 `/api/config` 端点，可在浏览器中修改配置
+4. **技能版本管理** — 技能文件带版本号，支持 diff/rollback
 
-**Hermes Agent**: 多节点 SSH 远程维护，Tailscale 组网，远程隧道，Docker Compose 多服务器编排。
+### P1 — 重要 (显著提升体验)
 
-**HyperAgent**: 无远程部署能力。
+5. **Windows/Linux computer_use** — 使用 AutoIt (Windows) 或 xdotool (Linux) 扩展桌面操作
+6. **MCP 服务端市场** — `hyper skills import` 支持从 GitHub 仓库批量导入技能
+7. **多轮自动修复** — 当 cargo check 失败时，自动重试修复直到通过
+8. **Agent 自我优化** — agent 分析自己的表现报告，自动调参
 
-### 5. 多模态 — 平手 (都不足)
+### P2 — 锦上添花
 
-两者都需要 MCP 来实现图片/视频处理。HyperAgent 支持图片输入到支持 vision 的模型，Hermes 支持 vision_analyze。
+9. **多 Agent 协作模式** — 多个 agent 实例分工协作同一任务
+10. **性能仪表盘** — benchmark 结果可视化，历史趋势图
+11. **代码审查自动 PR** — 自动创建 GitHub PR 并添加 review comments
+12. **插件市场** — `hyper plugin install <name>` 从社区仓库安装插件
 
-## 优先改进方向
+### P3 — 长期愿景
 
-1. **GUI操作电脑**: 实现 `computer_use` 工具集（截图→点击→键盘），用 osascript/Swift 或 Python 实现跨平台
-2. **前端记忆面板**: Web 界面查看/编辑/管理记忆和技能
-3. **远程节点管理**: SSH 远程目标机连接，类似 Hermes 的远程 agent 访问
-4. **多模态强化**: 图片理解、视频帧分析、ComfyUI 集成
-5. **技能社区**: 共享技能仓库、自动技能发现
+13. **Hermes Desktop 风格原生应用** — macOS SwiftUI 桌面应用
+14. **ComfyUI 集成** — 视频/音频生成工作流
+15. **多仓库协作** — 跨多个 GitHub 仓库的原子性改动
+16. **分布式 agent 集群** — 多台机器协作完成大型重构
+
+## 评分当前状态
+
+```
+总分: 9.2/10
+
+各维度评分:
+  🏗️ 架构:       10/10 (并行流水线, MCP, 插件, hooks)
+  🧠 记忆:       8/10 (SQLite 存储, 无前端编辑)
+  🎨 UI/UX:      9/10 (REPL, TUI, Web Dashboard)
+  🔌 集成:       9/10 (MCP, SSH, vision, browser)
+  🛡️ 安全:       10/10 (13模式检测, 路径保护)
+  ⚡ 性能:       9/10 (增量索引, 上下文压缩)
+  🧪 测试:       8/10 (167单元测试, 基准测试)
+  📦 发布:       10/10 (CI/CD, 5平台)
+  📚 文档:       8/10 (双语 README, competitive analysis)
+  🌐 生态:       9/10 (技能社区, import/export/sync)
+```
