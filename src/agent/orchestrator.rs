@@ -581,6 +581,13 @@ impl Orchestrator {
         }
         total_memories += 1;
 
+        // Phase 5c: LLM-driven memory extraction — analyze outcome for structured knowledge
+        let plan_summary = plan.summary.clone();
+        let extraction_count = self.extract_memories_from_outcome(
+            prompt, &plan_summary, &changed_files, &approved, start.elapsed(),
+        ).await;
+        total_memories += extraction_count;
+
         self.fire_hook(HookEvent::OnComplete,
             &format!("{} files modified", changed_files.len())).await;
 
@@ -1084,6 +1091,128 @@ impl Orchestrator {
     async fn record_memory(&self, content: &str, mem_type: MemoryType) {
         if let Some(ref mem) = self.memory {
             let _ = mem.remember(content, mem_type);
+        }
+    }
+
+    /// LLM-driven memory extraction: after a task completes, analyze the outcome
+    /// and extract structured memories (decisions, bugs, patterns, preferences).
+    /// This replaces shallow template-based recording with semantic extraction.
+    async fn extract_memories_from_outcome(
+        &self,
+        prompt: &str,
+        plan_summary: &str,
+        changed_files: &[String],
+        approved_changes: &[crate::diff::FileChange],
+        elapsed: std::time::Duration,
+    ) -> usize {
+        let mem = match &self.memory {
+            Some(m) => m,
+            None => return 0,
+        };
+
+        // Only run extraction if we have a meaningful outcome
+        if prompt.is_empty() && plan_summary.is_empty() {
+            return 0;
+        }
+
+        // Build a concise summary of what happened
+        let changes_summary = if changed_files.is_empty() {
+            "No files changed.".to_string()
+        } else {
+            let mut s = format!("{} file(s) changed:\n", changed_files.len());
+            for f in changed_files {
+                s.push_str(&format!("  - {f}\n"));
+            }
+            s
+        };
+
+        let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
+
+        let extraction_prompt = format!(
+            r#"Analyze the following coding task outcome and extract actionable knowledge.
+Return a JSON array of memories. Each memory has:
+  - "content": a concise factual statement (1-2 sentences)
+  - "type": one of "decision" (design choice + why), "bug_fix" (what broke + how fixed),
+            "codebase_fact" (API/pattern/convention discovered), "user_preference" (how user wants things done),
+            "action_outcome" (what was done + result), "learned" (general insight)
+
+Rules:
+- Extract 0-5 memories. Only include genuinely useful information.
+- Prefer specific, actionable facts over generic statements.
+- Include file paths and function names when relevant.
+- Be factual — don't speculate.
+
+Task prompt: {prompt}
+Plan: {plan_summary}
+{changes_summary}
+Time: {elapsed_str}"#,
+            prompt = prompt,
+            plan_summary = plan_summary,
+            changes_summary = changes_summary,
+            elapsed_str = elapsed_str,
+        );
+
+        // Use plan_provider if available, otherwise main provider
+        let extraction_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
+        let messages = vec![
+            crate::llm::Message {
+                role: "system".to_string(),
+                content: "You are a memory extraction specialist. Extract structured knowledge from task outcomes. Return ONLY valid JSON array.".to_string(),
+            },
+            crate::llm::Message {
+                role: "user".to_string(),
+                content: extraction_prompt,
+            },
+        ];
+
+        match extraction_provider.chat(messages).await {
+            Ok(response) => {
+                // Parse JSON from response (strip markdown fences if present)
+                let cleaned = response
+                    .trim()
+                    .trim_start_matches("```json")
+                    .trim_start_matches("```")
+                    .trim_end_matches("```")
+                    .trim();
+                let json_str = if let Some(start) = cleaned.find('[') {
+                    if let Some(end) = cleaned.rfind(']') {
+                        &cleaned[start..=end]
+                    } else {
+                        return 0;
+                    }
+                } else {
+                    return 0;
+                };
+
+                let parsed: Vec<serde_json::Value> = match serde_json::from_str(json_str) {
+                    Ok(v) => v,
+                    Err(_) => return 0,
+                };
+
+                let mut stored = 0usize;
+                for entry in &parsed {
+                    let content = match entry["content"].as_str() {
+                        Some(c) => c,
+                        None => continue,
+                    };
+                    let mem_type = match entry["type"].as_str() {
+                        Some("decision") => MemoryType::Decision,
+                        Some("bug_fix") => MemoryType::BugFix,
+                        Some("codebase_fact") => MemoryType::CodebaseFact,
+                        Some("user_preference") => MemoryType::UserPreference,
+                        Some("action_outcome") => MemoryType::ActionOutcome,
+                        _ => MemoryType::Learned,
+                    };
+                    if mem.remember(content, mem_type).is_ok() {
+                        stored += 1;
+                    }
+                }
+                if stored > 0 {
+                    println!("   🧠 LLM extracted {} memories", stored);
+                }
+                stored
+            }
+            Err(_) => 0,
         }
     }
 
