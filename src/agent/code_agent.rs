@@ -91,16 +91,16 @@ impl<'a> CodeAgent<'a> {
 5. VERIFY YOUR OUTPUT
 === END KARPATHY GUIDELINES ===
 
-Output format — JSON objects:
+Output format — JSON objects, one per line. No other text.
 
-FULL-FILE (create|delete): {"file": "path", "change_type": "create|delete", "content": "..."}
-DIFF (edit — PREFERRED):   {"file": "path", "change_type": "edit", "diff": "@@ -1,3 +1,4 @@..."}
+For edits: {"file": "relative/path", "change_type": "edit", "content": "COMPLETE new file content (include ALL lines after your change)"}
+For creates: {"file": "relative/path", "change_type": "create", "content": "FULL file content"}
+For deletes: {"file": "relative/path", "change_type": "delete"}
 
 Rules:
-- For EDIT use DIFF mode — output ONLY the changed lines
-- For CREATE/DELETE use FULL-FILE mode
+- For EDIT, output the COMPLETE new file content — every line including all context
+- For CREATE, output the full file content
 - Output ONLY valid JSON, one per line
-- No extra text outside JSON
 "#;
 
         let file_context = self.build_file_context(files);
@@ -134,14 +134,12 @@ Rules:
                 file.score
             ));
 
-            let preview: Vec<&str> = file.content.lines().take(3).collect();
-            if !preview.is_empty() {
-                ctx.push_str("  Style preview:\n  ```\n");
-                for line in &preview {
-                    ctx.push_str(&format!("  {line}\n"));
-                }
-                ctx.push_str("  ```\n");
+            let full_content: Vec<&str> = file.content.lines().collect();
+            ctx.push_str(&format!("  Full content ({} lines):\n  ```\n", full_content.len()));
+            for line in &full_content {
+                ctx.push_str(&format!("  {line}\n"));
             }
+            ctx.push_str("  ```\n");
 
             ctx.push('\n');
         }
