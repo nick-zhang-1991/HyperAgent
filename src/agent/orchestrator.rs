@@ -1237,6 +1237,7 @@ Time: {elapsed_str}"#,
 
     /// Create plan with retry on empty/failed plan
     /// Uses progressive prompting: standard → action-focused → raw retry
+    /// Shows streaming progress during planning.
     async fn create_plan_with_retry(
         &self,
         prompt: &str,
@@ -1246,8 +1247,8 @@ Time: {elapsed_str}"#,
         let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
         let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
 
-        // First attempt: batch (reliable JSON parsing)
-        match plan_agent.create_plan(prompt, files).await {
+        // First attempt: streaming with progress
+        match plan_agent.create_plan_stream(prompt, files).await {
             Ok(plan) if !plan.summary.is_empty() && plan.summary != "No plan generated" => {
                 return Ok(plan);
             }

@@ -43,13 +43,12 @@ impl<'a> PlanAgent<'a> {
         Ok(plan)
     }
 
-    /// Create a plan with streaming output — collects chunks silently, parses progress
+    /// Create a plan with streaming output — shows dynamic progress inline.
+    /// Falls back to batch if streaming fails.
     pub async fn create_plan_stream(
         &self,
-        _agent_name: &str,
         prompt: &str,
         relevant_files: &[FileContext],
-        spinner: Option<&indicatif::ProgressBar>,
     ) -> Result<Plan> {
         let (messages, _file_context) = self.build_plan_messages(prompt, relevant_files);
 
@@ -57,23 +56,35 @@ impl<'a> PlanAgent<'a> {
             Ok(stream) => {
                 let mut rx = stream.into_receiver();
                 let mut full_response = String::new();
+                let start = std::time::Instant::now();
 
-                // Collect silently — no raw JSON in terminal
+                // Show streaming progress
+                print!("\r   📋 Planning... ");
+                let _ = std::io::Write::flush(&mut std::io::stdout()).ok();
+
                 while let Some(chunk) = rx.recv().await {
                     full_response.push_str(&chunk);
-                    // Update spinner if provided
-                    if let Some(sp) = spinner {
-                        let len = full_response.len();
-                        sp.set_message(format!("planning... ({} chars)", len));
+                    let elapsed = start.elapsed();
+                    // Show character count progress every so often
+                    if full_response.len() % 50 < chunk.len() {
+                        print!("\r   📋 Planning... ({} chars, {:.0}s)",
+                            full_response.len(), elapsed.as_secs_f64());
+                        let _ = std::io::Write::flush(&mut std::io::stdout()).ok();
                     }
                 }
+
                 let plan = self.parse_plan_response(&full_response);
+                let elapsed = start.elapsed();
+                println!("\r   📋 Plan ready ({:.1}s)", elapsed.as_secs_f64());
                 Ok(plan)
             }
             Err(_) => {
                 // Fallback to batch
+                print!("   📋 Planning (batch)... ");
+                let _ = std::io::Write::flush(&mut std::io::stdout()).ok();
                 let response = self.provider.chat(messages).await?;
                 let plan = self.parse_plan_response(&response);
+                println!("done");
                 Ok(plan)
             }
         }

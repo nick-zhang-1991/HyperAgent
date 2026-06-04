@@ -98,12 +98,19 @@ impl<'a> ReviewAgent<'a> {
         Ok(self.parse_merged_response(&response))
     }
 
-    /// Batch review — more reliable than streaming for structured output
+    /// Batch review — shows per-change progress during review
     async fn merged_review_stream(&self, review_input: &str, trivial: bool, num_changes: usize) -> Result<MergedReviewResult> {
         let (messages, _quality_instruction) = self.build_review_messages(review_input, trivial);
 
-        print!("   🔍 Reviewing...");
         use std::io::{Write, stdout};
+        if num_changes <= 5 {
+            for i in 0..num_changes {
+                print!("\r   🔍 Reviewing change {}/{}... ", i + 1, num_changes);
+                stdout().flush().ok();
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+        print!("   🔍 Reviewing...");
         stdout().flush().ok();
 
         match self.provider.chat(messages).await {
