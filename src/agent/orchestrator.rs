@@ -1019,44 +1019,32 @@ impl Orchestrator {
         let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
         let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
 
-        // First attempt: standard batch
-        match plan_agent.create_plan(prompt, files).await {
-            Ok(plan) if plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false) => {
+        // First attempt with streaming (silent collection, accept both Q&A and action)
+        match plan_agent.create_plan_stream("", prompt, files, None).await {
+            Ok(plan) if !plan.summary.is_empty() => {
                 return Ok(plan);
-            }
-            Ok(plan) if plan.steps.is_none() || plan.steps.as_ref().map(|s| s.is_empty()).unwrap_or(true) => {
-                // Plan didn't generate actionable steps — will retry
             }
             _ => {}
         }
 
-        // Retries with progressively more explicit prompting
+        // Fallback retries with batch
         let mut _last_error = String::new();
         let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
         let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
 
         for attempt in 1..=max_attempts.saturating_sub(1) {
             println!("   🔄 Retrying plan creation (attempt {attempt}/{max_attempts})...");
-            // Second+ attempt: use action-focused prompt to force JSON output
-            match plan_agent.create_action_plan(prompt, files).await {
-                Ok(plan) if plan.steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false) => {
+            match plan_agent.create_plan(prompt, files).await {
+                Ok(plan) if !plan.summary.is_empty() => {
                     return Ok(plan);
                 }
-                Ok(plan) if plan.steps.is_some() => {
-                    // Steps array exists but is empty → Q&A, return as-is
-                    return Ok(plan);
-                }
-                Ok(_) => {
-                    _last_error = "Empty plan".to_string();
-                }
-                Err(e) => {
-                    _last_error = format!("{e}");
-                }
+                Ok(_) => { _last_error = "Empty plan".to_string(); }
+                Err(e) => { _last_error = format!("{e}"); }
             }
         }
-
-        // Last resort: return whatever we got
-        plan_agent.create_action_plan(prompt, files).await
+        // Last attempt: return whatever we got
+        let plan_agent = crate::agent::plan_agent::PlanAgent::new(&self.provider);
+        plan_agent.create_plan(prompt, files).await
     }
 
     /// Execute code agents with retry if no changes generated

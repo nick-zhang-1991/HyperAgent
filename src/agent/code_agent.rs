@@ -49,18 +49,39 @@ impl<'a> CodeAgent<'a> {
             Ok(stream) => {
                 let mut rx = stream.into_receiver();
                 let mut full_response = String::new();
+                let mut last_parsed = 0usize;
                 print!("\r   💻 {}: generating...", agent_name);
                 use std::io::{Write, stdout};
                 stdout().flush().ok();
 
                 while let Some(chunk) = rx.recv().await {
                     full_response.push_str(&chunk);
-                    // Show progress without printing raw content
+
+                    // Try to parse new complete JSON lines progressively
+                    let lines: Vec<&str> = full_response[last_parsed..].lines().collect();
+                    for line in &lines {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with('{') && trimmed.contains("\"file\"") {
+                            if let Ok(change) = serde_json::from_str::<crate::diff::FileChange>(trimmed) {
+                                let diff_text = crate::diff_view::file_change_to_diff_text(&change);
+                                let line_count = change.hunks.iter().map(|h| h.content.lines().filter(|l| l.starts_with('+') || l.starts_with('-')).count()).sum::<usize>();
+                                println!("\r   💻 {} → {} ({} lines, {} hunks)", agent_name, change.file.display(), line_count, change.hunks.len());
+                                crate::diff_view::show_diff(&diff_text);
+                                print!("\r   💻 {}: generating...  ", agent_name);
+                                stdout().flush().ok();
+                                // Track consumed length
+                                if let Some(pos) = full_response[last_parsed..].find(trimmed) {
+                                    last_parsed += pos + trimmed.len();
+                                }
+                            }
+                        }
+                    }
+
                     let line_count = full_response.lines().count();
                     print!("\r   💻 {}: {} lines...  ", agent_name, line_count);
                     stdout().flush().ok();
                 }
-                println!("\r   💻 {}: parsing changes...", agent_name);
+                println!("\r   💻 {}: parsing final...", agent_name);
 
                 let changes = self.parse_changes(&full_response);
                 if !changes.is_empty() {
