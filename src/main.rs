@@ -34,6 +34,7 @@ mod llm;
 mod mcp;
 mod mcp_server;
 mod memory;
+mod memory_web;
 mod modes;
 mod multi_repo;
 mod notify;

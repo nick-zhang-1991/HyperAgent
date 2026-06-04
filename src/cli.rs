@@ -306,6 +306,13 @@ pub enum Commands {
         port: u16,
     },
 
+    /// Launch memory & skills web dashboard
+    Dashboard {
+        /// Port to listen on
+        #[arg(short, long, default_value_t = 8081)]
+        port: u16,
+    },
+
     /// Manage remote hosts (SSH)
     #[clap(subcommand)]
     Remote(RemoteAction),
@@ -1439,6 +1446,31 @@ impl Cli {
 
             Some(Commands::Serve { port }) => {
                 crate::remote::start_server(*port).await?;
+                Ok(())
+            }
+
+            Some(Commands::Dashboard { port }) => {
+                let home = dirs_next::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                let mem_path = home.join(".hyper").join("memory.db");
+                let mem_manager = if mem_path.exists() {
+                    match crate::memory::SqliteMemoryStore::new(&mem_path) {
+                        Ok(store) => {
+                            let mgr = crate::memory::MemoryManager::new(Box::new(store), "dashboard");
+                            Some(mgr)
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                };
+                let state = std::sync::Arc::new(tokio::sync::Mutex::new(
+                    crate::memory_web::DashboardState {
+                        mem_manager,
+                        skills_dir: Some(home.join(".hyper")),
+                    }
+                ));
+                println!("   📊 Starting HyperAgent Dashboard...");
+                crate::memory_web::serve(*port, state).await?;
                 Ok(())
             }
 
