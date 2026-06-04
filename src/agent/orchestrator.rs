@@ -250,9 +250,34 @@ impl Orchestrator {
         };
 
         // Use prompt as plan summary when plan agent returned empty
-        if force_action && plan.summary.is_empty() {
-            plan.summary = prompt.to_string();
-        }
+        let plan = if force_action && plan.summary.is_empty() {
+            crate::agent::plan_agent::Plan {
+                summary: prompt.to_string(),
+                steps: Some(vec![prompt.to_string()]),
+                reasoning: plan.reasoning,
+            }
+        } else {
+            plan
+        };
+
+        // Ensure steps exist for action requests
+        let plan = if has_actions || force_action {
+            let steps = plan.steps.clone().unwrap_or_else(|| {
+                vec![format!("{}: {}", plan.summary, prompt)]
+            });
+            let steps = if steps.is_empty() {
+                vec![prompt.to_string()]
+            } else {
+                steps
+            };
+            crate::agent::plan_agent::Plan {
+                summary: plan.summary,
+                steps: Some(steps),
+                reasoning: plan.reasoning,
+            }
+        } else {
+            plan
+        };
 
         let has_actions = has_actions || force_action;
 
@@ -1052,9 +1077,9 @@ impl Orchestrator {
         let plan_provider = self.plan_provider.as_ref().unwrap_or(&self.provider);
         let plan_agent = crate::agent::plan_agent::PlanAgent::new(plan_provider);
 
-        // First attempt with streaming (silent collection, accept both Q&A and action)
-        match plan_agent.create_plan_stream("", prompt, files, None).await {
-            Ok(plan) if !plan.summary.is_empty() => {
+        // First attempt: batch (reliable JSON parsing)
+        match plan_agent.create_plan(prompt, files).await {
+            Ok(plan) if !plan.summary.is_empty() && plan.summary != "No plan generated" => {
                 return Ok(plan);
             }
             _ => {}
