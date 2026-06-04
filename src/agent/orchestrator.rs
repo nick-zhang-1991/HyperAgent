@@ -588,6 +588,18 @@ impl Orchestrator {
         ).await;
         total_memories += extraction_count;
 
+        // Phase 5d: Memory curator — auto-archive old memories and merge duplicates
+        if let Some(ref mem) = self.memory {
+            let curator = crate::memory::MemoryCurator::new(mem);
+            if let Ok(report) = curator.run() {
+                if report.archived > 0 || report.merged > 0 {
+                    println!("   🗄️  Curator: archived {}, merged {} ({} active / {} total)",
+                        report.archived, report.merged,
+                        report.stats.active, report.stats.total);
+                }
+            }
+        }
+
         self.fire_hook(HookEvent::OnComplete,
             &format!("{} files modified", changed_files.len())).await;
 

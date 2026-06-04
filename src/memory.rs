@@ -40,6 +40,7 @@ pub struct MemoryEntry {
     pub last_accessed: DateTime<Utc>,
     pub access_count: u32,
     pub consolidated: bool,
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -126,6 +127,12 @@ pub trait MemoryStore: Send + Sync {
     /// Update an existing memory entry by ID — replaces content, re-extracts entities,
     /// re-computes embedding if an embedder is available on the manager side.
     fn update(&self, id: &str, content: &str, memory_type: &str, importance: f32, embedding_json: Option<String>) -> anyhow::Result<()>;
+
+    /// Mark a memory as archived (hidden from normal recall).
+    fn archive(&self, id: &str) -> anyhow::Result<()>;
+
+    /// Un-archive a memory (restore to normal recall).
+    fn unarchive(&self, id: &str) -> anyhow::Result<()>;
 }
 
 /// SQLite-backed memory store
@@ -174,6 +181,7 @@ fn row_to_memory_entry(row: &rusqlite::Row) -> rusqlite::Result<MemoryEntry> {
             .unwrap_or_else(|_| Utc::now()),
         access_count: row.get(10)?,
         consolidated: row.get::<_, u32>(11)? != 0,
+        archived: row.get::<_, u32>(12)? != 0,
     })
 }
 
@@ -194,7 +202,8 @@ impl SqliteMemoryStore {
                 created_at       TEXT NOT NULL,
                 last_accessed    TEXT NOT NULL,
                 access_count     INTEGER NOT NULL DEFAULT 0,
-                consolidated     INTEGER NOT NULL DEFAULT 0
+                consolidated     INTEGER NOT NULL DEFAULT 0,
+                archived         INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS memory_entities (
                 entity       TEXT NOT NULL,
@@ -211,6 +220,11 @@ impl SqliteMemoryStore {
         let has_embedding = conn.prepare("SELECT embedding FROM memories LIMIT 1").is_ok();
         if !has_embedding {
             let _ = conn.execute_batch("ALTER TABLE memories ADD COLUMN embedding TEXT;");
+        }
+        // Migration: add archived column for existing databases
+        let has_archived = conn.prepare("SELECT archived FROM memories LIMIT 1").is_ok();
+        if !has_archived {
+            let _ = conn.execute_batch("ALTER TABLE memories ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;");
         }
 
         Ok(Self {
@@ -482,6 +496,18 @@ impl MemoryStore for SqliteMemoryStore {
             conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
         Ok(count as usize)
     }
+
+    fn archive(&self, id: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE memories SET archived = 1 WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    fn unarchive(&self, id: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE memories SET archived = 0 WHERE id = ?1", params![id])?;
+        Ok(())
+    }
 }
 
 // ═══════════════════════════════════════════════
@@ -542,6 +568,7 @@ impl MemoryManager {
             last_accessed: Utc::now(),
             access_count: 0,
             consolidated: false,
+            archived: false,
         };
 
         let id = entry.id.clone();
@@ -815,6 +842,152 @@ impl MemoryManager {
         }
         Ok(shared)
     }
+}
+
+/// Memory Curator — automatic memory lifecycle management.
+///
+/// Scans the memory store periodically to:
+/// - Archive old, low-importance memories not accessed recently
+/// - Detect and merge duplicate/similar memories
+/// - Report memory health statistics
+pub struct MemoryCurator<'a> {
+    manager: &'a MemoryManager,
+    /// Days after which an unaccessed memory is eligible for archiving
+    pub archive_after_days: i64,
+    /// Minimum importance score to avoid archiving (0.0 - 1.0)
+    pub min_importance: f32,
+}
+
+impl<'a> MemoryCurator<'a> {
+    pub fn new(manager: &'a MemoryManager) -> Self {
+        Self {
+            manager,
+            archive_after_days: 7,
+            min_importance: 0.3,
+        }
+    }
+
+    /// Run a full curator cycle: archive old + merge duplicates + report stats.
+    pub fn run(&self) -> anyhow::Result<CuratorReport> {
+        let archived = self.archive_old()?;
+        let merged = self.merge_duplicates()?;
+        let stats = self.stats()?;
+        Ok(CuratorReport { archived, merged, stats })
+    }
+
+    /// Archive memories not accessed in `archive_after_days` days
+    /// and below `min_importance` threshold.
+    pub fn archive_old(&self) -> anyhow::Result<usize> {
+        let all = self.manager.recall("", 9999)?;
+        let cutoff = Utc::now() - chrono::Duration::days(self.archive_after_days);
+        let mut count = 0;
+
+        for mem in &all {
+            if mem.archived {
+                continue;
+            }
+            if mem.last_accessed < cutoff && mem.importance < self.min_importance {
+                let _ = self.manager.store.archive(&mem.id);
+                count += 1;
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// Merge duplicate memories: same type + same entities + similar content
+    /// Keeps the most recent version, archives the older one.
+    pub fn merge_duplicates(&self) -> anyhow::Result<usize> {
+        let all = self.manager.recall("", 9999)?;
+        let mut merged = 0;
+
+        // Group by memory type
+        let mut groups: std::collections::HashMap<String, Vec<&MemoryEntry>> =
+            std::collections::HashMap::new();
+        for mem in &all {
+            if mem.archived {
+                continue;
+            }
+            groups.entry(mem.memory_type.to_string()).or_default().push(mem);
+        }
+
+        for (_type_name, entries) in &groups {
+            if entries.len() < 2 {
+                continue;
+            }
+            for i in 0..entries.len() {
+                for j in (i + 1)..entries.len() {
+                    let a = entries[i];
+                    let b = entries[j];
+
+                    // Check entity overlap
+                    let a_set: std::collections::HashSet<&str> =
+                        a.entities.iter().map(|e| e.as_str()).collect();
+                    let b_set: std::collections::HashSet<&str> =
+                        b.entities.iter().map(|e| e.as_str()).collect();
+
+                    let common = a_set.intersection(&b_set).count();
+                    let min_len = a_set.len().min(b_set.len());
+                    if min_len == 0 {
+                        continue;
+                    }
+                    let entity_overlap = common as f64 / min_len as f64;
+
+                    // If entity overlap > 60%, they're likely duplicates
+                    if entity_overlap > 0.6 {
+                        // Keep the more recent one, archive the older
+                        if a.last_accessed > b.last_accessed {
+                            let _ = self.manager.store.archive(&b.id);
+                        } else {
+                            let _ = self.manager.store.archive(&a.id);
+                        }
+                        merged += 1;
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(merged)
+    }
+
+    /// Memory health statistics
+    pub fn stats(&self) -> anyhow::Result<CuratorStats> {
+        let all = self.manager.recall("", 9999)?;
+        let total = all.len();
+        let active = all.iter().filter(|m| !m.archived).count();
+        let archived_count = all.iter().filter(|m| m.archived).count();
+
+        // Breakdown by type
+        let mut by_type: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for mem in &all {
+            if !mem.archived {
+                *by_type.entry(mem.memory_type.to_string()).or_default() += 1;
+            }
+        }
+
+        Ok(CuratorStats {
+            total,
+            active,
+            archived: archived_count,
+            by_type,
+        })
+    }
+}
+
+/// Result from a single curator run
+pub struct CuratorReport {
+    pub archived: usize,
+    pub merged: usize,
+    pub stats: CuratorStats,
+}
+
+/// Memory store health stats
+pub struct CuratorStats {
+    pub total: usize,
+    pub active: usize,
+    pub archived: usize,
+    pub by_type: std::collections::HashMap<String, usize>,
 }
 
 #[cfg(test)]
