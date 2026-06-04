@@ -122,6 +122,10 @@ pub trait MemoryStore: Send + Sync {
 
     /// Total memory count
     fn count(&self) -> anyhow::Result<usize>;
+
+    /// Update an existing memory entry by ID — replaces content, re-extracts entities,
+    /// re-computes embedding if an embedder is available on the manager side.
+    fn update(&self, id: &str, content: &str, memory_type: &str, importance: f32, embedding_json: Option<String>) -> anyhow::Result<()>;
 }
 
 /// SQLite-backed memory store
@@ -445,6 +449,33 @@ impl MemoryStore for SqliteMemoryStore {
         Ok(())
     }
 
+    fn update(&self, id: &str, content: &str, memory_type: &str, importance: f32, embedding_json: Option<String>) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let mut entities = Self::extract_entities(content);
+        // Deduplicate
+        entities.sort();
+        entities.dedup();
+        let entities_json = serde_json::to_string(&entities)?;
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "UPDATE memories SET content = ?1, memory_type = ?2, entities = ?3, importance = ?4, embedding = ?5, last_accessed = ?6, access_count = access_count + 1, consolidated = 0
+             WHERE id = ?7",
+            params![content, memory_type, entities_json, importance, embedding_json, now, id],
+        )?;
+
+        // Re-sync entities
+        conn.execute("DELETE FROM memory_entities WHERE memory_id = ?1", params![id])?;
+        for entity in &entities {
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_entities (entity, memory_id) VALUES (?1, ?2)",
+                params![entity, id],
+            )?;
+        }
+
+        Ok(())
+    }
+
     fn count(&self) -> anyhow::Result<usize> {
         let conn = self.conn.lock().unwrap();
         let count: i64 =
@@ -585,6 +616,80 @@ impl MemoryManager {
     /// Recall by entity (project/library/tool name)
     pub fn recall_by_entity(&self, entity: &str, limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
         self.store.query_by_entity(entity, limit)
+    }
+
+    /// Update a memory entry by ID — replaces content, re-extracts entities,
+    /// re-computes embedding. Uses the underlying store.update().
+    pub fn update_memory(&self, id: &str, content: &str, memory_type: MemoryType) -> anyhow::Result<()> {
+        let entities = SqliteMemoryStore::extract_entities(content);
+        let importance = SqliteMemoryStore::calculate_importance(content);
+        let embedding_json = self.embedder.as_ref().and_then(|e| {
+            e.embed(&[content.to_string()])
+                .ok()
+                .and_then(|v| v.into_iter().next())
+                .and_then(|emb| serde_json::to_string(&emb).ok())
+        });
+        let type_str = memory_type.to_string();
+        self.store.update(id, content, &type_str, importance, embedding_json)
+    }
+
+    /// Remember a memory, but first check if a similar memory already exists.
+    /// If a memory with a similar content pattern (same type + high keyword overlap) is found,
+    /// update it instead of creating a new entry. Returns (id, was_updated).
+    pub fn remember_or_update(&self, content: &str, memory_type: MemoryType) -> anyhow::Result<(String, bool)> {
+        // Search for existing memories of the same type with overlapping keywords
+        let keywords: Vec<&str> = content
+            .split_whitespace()
+            .filter(|w| w.len() > 3)
+            .collect();
+
+        if !keywords.is_empty() {
+            let existing = self.recall(content, 5)?;
+            for mem in &existing {
+                if mem.memory_type != memory_type {
+                    continue;
+                }
+                // Check keyword overlap
+                let mem_lower = mem.content.to_lowercase();
+                let overlap: usize = keywords.iter()
+                    .filter(|k| mem_lower.contains(&k.to_lowercase()))
+                    .count();
+                // If more than 50% keyword overlap, update instead of insert
+                if overlap as f64 / keywords.len() as f64 > 0.5 {
+                    self.update_memory(&mem.id, content, memory_type)?;
+                    return Ok((mem.id.clone(), true));
+                }
+            }
+        }
+
+        let id = self.remember(content, memory_type)?;
+        Ok((id, false))
+    }
+
+    /// Replace all memories whose content contains `old_text` with `new_content`.
+    /// Preserves the original memory type. Returns number of replaced entries.
+    pub fn replace_content(&self, old_text: &str, new_content: &str) -> anyhow::Result<usize> {
+        // Find memories matching the text pattern
+        let q = MemoryQuery {
+            text: old_text.to_string(),
+            limit: 100,
+            ..Default::default()
+        };
+        let matching = self.store.query(&q)?;
+        let mut replaced = 0;
+
+        for mem in &matching {
+            if mem.content.contains(old_text) {
+                // Replace old_text with new_content within the existing content
+                let updated = mem.content.replace(old_text, new_content);
+                if updated != mem.content {
+                    self.update_memory(&mem.id, &updated, mem.memory_type.clone())?;
+                    replaced += 1;
+                }
+            }
+        }
+
+        Ok(replaced)
     }
 
     /// Build a context string from relevant memories for LLM prompts
