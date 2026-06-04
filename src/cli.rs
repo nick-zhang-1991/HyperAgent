@@ -37,6 +37,57 @@ fn version_info() -> &'static str {
     })
 }
 
+/// Import a skill from a URL (GitHub raw, pastebin, etc.)
+fn import_skill(home_dir: &Path, url: &str, name_override: Option<&str>) -> anyhow::Result<String> {
+    use std::io::Read;
+
+    // Download the content
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("HyperAgent/1.0")
+        .build()?;
+
+    let resp = client.get(url).send()?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        return Err(anyhow::anyhow!("HTTP {status} fetching {url}"));
+    }
+    let content = resp.text()?;
+
+    // Parse skill name from frontmatter or URL
+    let skill_name = name_override.map(|s| s.to_string()).unwrap_or_else(|| {
+        // Try to extract from frontmatter
+        if let Some(rest) = content.trim_start().strip_prefix("---") {
+            if let Some(end) = rest.find("\n---") {
+                let fm = &rest[..end];
+                for line in fm.lines() {
+                    if let Some(val) = line.trim().strip_prefix("name: ") {
+                        return val.trim().trim_matches('"').to_string();
+                    }
+                }
+            }
+        }
+        // Fallback: extract from URL filename
+        url.rsplit_once('/')
+            .map(|(_, fname)| fname.trim_end_matches(".md").to_string())
+            .unwrap_or_else(|| "imported-skill".to_string())
+    });
+
+    // Ensure the skill name is valid
+    let skill_name: String = skill_name.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let skill_name = if skill_name.is_empty() { "imported-skill".to_string() } else { skill_name };
+
+    // Save to skills directory
+    let skills_dir = home_dir.join(".hyper").join("skills").join(&skill_name);
+    std::fs::create_dir_all(&skills_dir)?;
+    let skill_path = skills_dir.join("SKILL.md");
+    std::fs::write(&skill_path, &content)?;
+
+    Ok(skill_name)
+}
+
 /// HyperAgent - Ultra-Fast CLI Coding Agent
 ///
 /// An intelligent coding agent with global code understanding
@@ -709,6 +760,32 @@ pub enum SkillsAction {
     /// Delete a skill
     Delete {
         /// Skill name
+        name: String,
+    },
+    /// Import a skill from URL (GitHub raw, etc.)
+    Import {
+        /// URL to skill SKILL.md or archive
+        url: String,
+        /// Optional name override
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+    /// Export a skill as standalone SKILL.md file
+    Export {
+        /// Skill name to export
+        name: String,
+        /// Output path (default: ./<name>.md)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Search across all skill content
+    Search {
+        /// Search query
+        query: Vec<String>,
+    },
+    /// Sync skills from a remote host
+    Sync {
+        /// Remote host name (configured via `hyper remote add`)
         name: String,
     },
 }
@@ -2377,6 +2454,106 @@ impl Cli {
                 match registry.delete(name) {
                     Ok(_) => println!("✅ Skill '{name}' deleted."),
                     Err(e) => eprintln!("❌ {e}"),
+                }
+            }
+            SkillsAction::Import { url, name } => {
+                let skill_name = match import_skill(&home_dir, url, name.as_deref()) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("❌ Import failed: {e}");
+                        return Ok(());
+                    }
+                };
+                println!("✅ Skill '{skill_name}' imported from {url}");
+                println!("   Use `hyper skills show {skill_name}` to view.");
+            }
+            SkillsAction::Export { name, output } => {
+                match registry.get(name) {
+                    Some(skill) => {
+                        let out_path = output.as_ref()
+                            .map(|p| std::path::PathBuf::from(p))
+                            .unwrap_or_else(|| std::path::PathBuf::from(format!("{name}.md")));
+                        // Read the full SKILL.md file (frontmatter + body)
+                        match std::fs::read_to_string(&skill.path) {
+                            Ok(content) => {
+                                if let Err(e) = std::fs::write(&out_path, &content) {
+                                    eprintln!("❌ Export write failed: {e}");
+                                } else {
+                                    println!("✅ Skill '{name}' exported to {}", out_path.display());
+                                }
+                            }
+                            Err(e) => eprintln!("❌ Export read failed: {e}"),
+                        }
+                    }
+                    None => eprintln!("❌ Skill '{name}' not found."),
+                }
+            }
+            SkillsAction::Search { query } => {
+                let q = query.join(" ").to_lowercase();
+                if q.is_empty() {
+                    eprintln!("❌ Search query is empty.");
+                    return Ok(());
+                }
+                let mut found = false;
+                for skill in registry.list() {
+                    let name_match = skill.name.to_lowercase().contains(&q);
+                    let desc_match = skill.description.to_lowercase().contains(&q);
+                    let content_match = skill.content.to_lowercase().contains(&q);
+                    let tag_match = skill.tags.iter().any(|t| t.to_lowercase().contains(&q));
+                    if name_match || desc_match || content_match || tag_match {
+                        if !found {
+                            println!("🔍 Search results for '{q}':\n");
+                            found = true;
+                        }
+                        let reason = if name_match { "name" } else if desc_match { "description" } else if tag_match { "tags" } else { "content" };
+                        println!("   • {} — {} (matched: {reason})", skill.name, skill.description);
+                    }
+                }
+                if !found {
+                    println!("   No skills match '{q}'.");
+                }
+            }
+            SkillsAction::Sync { name } => {
+                let config = crate::remote::RemoteConfig::load();
+                match config.get(name) {
+                    Some(host) => {
+                        println!("   🔗 Syncing skills from {name} ({})...", host.host);
+                        // Run remote command to list and fetch skills
+                        match host.run_ssh("ls ~/.hyper/skills/") {
+                            Ok(output) => {
+                                let remote_skills: Vec<&str> = output.lines()
+                                    .filter(|l| !l.is_empty())
+                                    .collect();
+                                if remote_skills.is_empty() {
+                                    println!("   No skills found on remote.");
+                                } else {
+                                    println!("   Found {} remote skills:", remote_skills.len());
+                                    for skill_name in &remote_skills {
+                                        // Check if local already has it
+                                        if registry.get(skill_name).is_some() {
+                                            println!("   • {skill_name} (already exists locally)");
+                                            continue;
+                                        }
+                                        // Fetch the skill content
+                                        let remote_path = format!("~/.hyper/skills/{skill_name}/SKILL.md");
+                                        match host.run_ssh(&format!("cat {remote_path}")) {
+                                            Ok(content) => {
+                                                let local_dir = home_dir.join(".hyper").join("skills").join(skill_name);
+                                                std::fs::create_dir_all(&local_dir).ok();
+                                                match std::fs::write(local_dir.join("SKILL.md"), &content) {
+                                                    Ok(_) => println!("   • {skill_name} ✅ synced"),
+                                                    Err(e) => println!("   • {skill_name} ❌ write failed: {e}"),
+                                                }
+                                            }
+                                            Err(e) => println!("   • {skill_name} ❌ fetch failed: {e}"),
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => eprintln!("❌ Remote sync failed: {e}"),
+                        }
+                    }
+                    None => eprintln!("❌ Remote host '{name}' not found."),
                 }
             }
         }
