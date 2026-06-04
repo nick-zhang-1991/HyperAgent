@@ -1571,7 +1571,7 @@ impl Cli {
         }
 
         // Connect MCP servers (discover from config + ~/.hyper/mcp/*.json)
-        let mcp_registry = crate::mcp::McpRegistry::new(dir);
+        let mut mcp_registry = crate::mcp::McpRegistry::new(dir);
         let mcp_servers = crate::mcp::McpRegistry::discover_servers(&[]);
         if !mcp_servers.is_empty() {
             mcp_registry.connect_all(&mcp_servers).await;
@@ -1972,7 +1972,7 @@ impl Cli {
 
     async fn handle_mcp(&self, action: &McpAction) -> Result<()> {
         let project_root = std::env::current_dir()?;
-        let registry = crate::mcp::McpRegistry::new(&project_root);
+        let mut registry = crate::mcp::McpRegistry::new(&project_root);
 
         match action {
             McpAction::Connect => {

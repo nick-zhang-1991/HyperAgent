@@ -732,7 +732,7 @@ async fn run_prompt(
         }
         orchestrator = orchestrator.with_hooks(hooks);
 
-        let mcp_registry = crate::mcp::McpRegistry::new(dir);
+        let mut mcp_registry = crate::mcp::McpRegistry::new(dir);
         let mcp_servers = crate::mcp::McpRegistry::discover_servers(&[]);
         if !mcp_servers.is_empty() {
             mcp_registry.connect_all(&mcp_servers).await;
