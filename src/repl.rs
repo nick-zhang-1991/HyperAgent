@@ -18,6 +18,7 @@ use crate::llm::LlmProvider;
 use crate::memory::{MemoryManager, SqliteMemoryStore};
 use crate::router::ModelRouter;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use rustyline::Editor;
@@ -143,6 +144,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
     // REPL loop
     let mut conversation_history: Vec<(String, String)> = Vec::new();
     let bg_manager = crate::process::ProcessManager::new();
+    let mut browser_mgr = crate::browser::BrowserManager::new();
     loop {
         // Read line with rustyline (supports ↑↓ history, line editing)
         let line = match rl.readline("hyper> ") {
@@ -271,6 +273,139 @@ pub async fn run_repl() -> anyhow::Result<()> {
                                     Err(e) => println!("  ⚠️  {e}"),
                                 }
                             }
+                        }
+                    }
+                }
+                cmd if cmd.starts_with("/browser") => {
+                    let args: Vec<&str> = cmd[8..].trim().split_whitespace().collect();
+                    match args.first() {
+                        Some(&"open") if args.len() >= 2 => {
+                            let url = args[1];
+                            match browser_mgr.get_or_launch().await {
+                                Ok(browser) => {
+                                    match browser.navigate(url).await {
+                                        Ok(_) => {
+                                            // Take screenshot after navigation
+                                            let shot_path = format!("/tmp/hyper-shot-{}.png", std::process::id());
+                                            match browser.screenshot_file(&shot_path).await {
+                                                Ok(path) => {
+                                                    if let Ok(title) = browser.page_title().await {
+                                                        println!("   📄 Title: {}", title);
+                                                    }
+                                                    println!("   📷 Screenshot saved: {}", path.display());
+                                                }
+                                                Err(e) => println!("   ⚠️  Screenshot failed: {e}"),
+                                            }
+                                        }
+                                        Err(e) => println!("   ⚠️  Navigation failed: {e}"),
+                                    }
+                                }
+                                Err(e) => println!("   ⚠️  Browser launch failed: {e}"),
+                            }
+                        }
+                        Some(&"screenshot") | Some(&"shot") => {
+                            let path = args.get(1).map(|s| *s).unwrap_or("/tmp/hyper-shot.png");
+                            match browser_mgr.get_or_launch().await {
+                                Ok(browser) => {
+                                    let save_path = PathBuf::from(path);
+                                    match browser.screenshot_file(path).await {
+                                        Ok(p) => println!("   📷 Screenshot saved: {}", p.display()),
+                                        Err(e) => println!("   ⚠️  Screenshot failed: {e}"),
+                                    }
+                                }
+                                Err(e) => println!("   ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"source") | Some(&"text") => {
+                            match browser_mgr.get_or_launch().await {
+                                Ok(browser) => {
+                                    match browser.page_text().await {
+                                        Ok(text) => {
+                                            // Truncate to avoid flooding terminal
+                                            let preview = if text.len() > 2000 {
+                                                format!("{}...\n   (truncated, {} chars total)", &text[..2000], text.len())
+                                            } else {
+                                                text
+                                            };
+                                            println!("   📄 Page content:\n{}", preview);
+                                        }
+                                        Err(e) => println!("   ⚠️  {e}"),
+                                    }
+                                }
+                                Err(e) => println!("   ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"html") => {
+                            match browser_mgr.get_or_launch().await {
+                                Ok(browser) => {
+                                    match browser.page_html().await {
+                                        Ok(html) => {
+                                            let preview = if html.len() > 2000 {
+                                                format!("{}...\n   (truncated, {} chars total)", &html[..2000], html.len())
+                                            } else {
+                                                html
+                                            };
+                                            println!("   📄 Page HTML:\n{}", preview);
+                                        }
+                                        Err(e) => println!("   ⚠️  {e}"),
+                                    }
+                                }
+                                Err(e) => println!("   ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"click") if args.len() >= 2 => {
+                            let selector = args[1..].join(" ");
+                            match browser_mgr.get_or_launch().await {
+                                Ok(browser) => {
+                                    match browser.click(&selector).await {
+                                        Ok(()) => {
+                                            println!("   🖱️  Clicked: {}", selector);
+                                            // Auto-screenshot after click
+                                            let shot_path = format!("/tmp/hyper-click-{}.png", std::process::id());
+                                            if let Ok(p) = browser.screenshot_file(&shot_path).await {
+                                                println!("   📷 Screenshot: {}", p.display());
+                                            }
+                                        }
+                                        Err(e) => println!("   ⚠️  Click failed: {e}"),
+                                    }
+                                }
+                                Err(e) => println!("   ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"eval") if args.len() >= 2 => {
+                            let js = args[1..].join(" ");
+                            match browser_mgr.get_or_launch().await {
+                                Ok(browser) => {
+                                    match browser.evaluate_js(&js).await {
+                                        Ok(value) => {
+                                            let display = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string());
+                                            println!("   🖥️  JS result:\n{}", display);
+                                        }
+                                        Err(e) => println!("   ⚠️  JS eval failed: {e}"),
+                                    }
+                                }
+                                Err(e) => println!("   ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"close") => {
+                            match browser_mgr.close().await {
+                                Ok(()) => {}
+                                Err(e) => println!("   ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"status") => {
+                            print!("{}", browser_mgr.status());
+                        }
+                        _ => {
+                            println!("  Browser commands:");
+                            println!("  /browser open <url>       Open URL and screenshot");
+                            println!("  /browser screenshot [path] Take screenshot");
+                            println!("  /browser click <selector> Click element by CSS selector");
+                            println!("  /browser source            Get page text content");
+                            println!("  /browser html              Get page HTML");
+                            println!("  /browser eval <js>         Execute JavaScript");
+                            println!("  /browser close             Close browser");
+                            println!("  /browser status            Show connection info");
                         }
                     }
                 }

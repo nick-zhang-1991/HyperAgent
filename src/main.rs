@@ -13,6 +13,7 @@ mod agent;
 mod agent_graph;
 mod auth;
 mod budget_tracker;
+mod browser;
 mod checkpoint;
 mod cli;
 mod context_dashboard;
