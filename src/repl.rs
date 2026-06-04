@@ -73,7 +73,7 @@ impl Completer for ReplCompleter {
             "/exit", "/quit",
             "/clear", "/cls",
             "/help", "/stats", "/memory",
-            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins", "/health", "/org", "/repo", "/edit",
+            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins", "/health", "/org", "/repo", "/edit", "/search",
         ];
 
         let candidates: Vec<Pair> = if prefix.starts_with('/') {
@@ -137,7 +137,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins  /health  /repo  /org  /edit");
+    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins  /health  /repo  /org  /edit  /search");
     println!();
 
     // REPL loop
@@ -184,7 +184,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
                         println!("  Usage: /edit N \"new prompt\" — replace message N and re-execute");
                         continue;
                     }
-                    let idx: usize = match parts[1].parse() {
+                    let idx: usize = match parts[1].parse::<usize>() {
                         Ok(n) if n > 0 && n <= conversation_history.len() => n - 1,
                         Ok(_) => {
                             println!("  ⚠️  Index out of range (1..{})", conversation_history.len());
@@ -219,6 +219,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  /repo              Multi-repository management");
                     println!("  /org               Organization management");
                     println!("  /edit N \"msg\"      Edit message N and re-execute");
+                    println!("  /search \"query\"    Semantic code search (RAG)");
                     println!("  ───────────────────────────────────────");
                     println!("  ↑↓ arrow keys      Browse command history");
                     println!("  Ctrl+C             Cancel current input");
@@ -315,6 +316,33 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("   Running health check...");
                     let report = crate::health::run_health_check(&dir);
                     print!("{}", crate::health::render_report(&report));
+                }
+                cmd if cmd.starts_with("/search") => {
+                    let query = cmd.trim_start_matches("/search").trim().trim_matches('"');
+                    if query.is_empty() {
+                        println!("  Usage: /search \"your query\" — semantic code search");
+                        continue;
+                    }
+                    let embedder = crate::embed::create_provider("mock:768");
+                    if let Some(e) = embedder {
+                        let query_emb = match e.embed(&[query.to_string()]) {
+                            Ok(v) => v.into_iter().next().unwrap_or_default(),
+                            Err(err) => { println!("  ⚠️  Embedding error: {err}"); continue; }
+                        };
+                        if let Some(ref idx) = index {
+                            let files = idx.get_relevant_files("", 10, 9999);
+                            println!("  🔎 Semantic search: \"{}\"", query);
+                            for file in &files {
+                                let file_emb = e.embed(&[file.content.clone()]).unwrap_or_default().into_iter().next().unwrap_or_default();
+                                let sim = crate::embed::cosine_similarity(&query_emb, &file_emb);
+                                println!("     [{:.2}] {}", sim, file.path.display());
+                            }
+                        } else {
+                            println!("  ⚠️  Index not available");
+                        }
+                    } else {
+                        println!("  ⚠️  No embedding provider configured. Set HYPER_EMBED=ollama:model:url or use mock:768");
+                    }
                 }
                 cmd if cmd.starts_with("/repo") => {
                     let mut repo_mgr = crate::multi_repo::MultiRepoManager::new(&dir);

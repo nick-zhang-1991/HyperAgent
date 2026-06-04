@@ -17,6 +17,7 @@ mod context_dashboard;
 mod dep_graph;
 mod diff;
 mod diff_view;
+mod embed;
 mod eval;
 mod file_cache;
 mod git;
