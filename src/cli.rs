@@ -1455,7 +1455,16 @@ impl Cli {
         let memory_path = dir.join(".hyper").join("memory.db");
         std::fs::create_dir_all(dir.join(".hyper")).ok();
         let memory = SqliteMemoryStore::new(&memory_path).ok()
-            .map(|store| MemoryManager::new(Box::new(store), "hyperagent"));
+            .map(|store| {
+                let mut mgr = MemoryManager::new(Box::new(store), "hyperagent");
+                // Wire up embedding provider if configured via HYPER_EMBED env var
+                if let Ok(embed_config) = std::env::var("HYPER_EMBED") {
+                    if let Some(embedder) = crate::embed::create_provider(&embed_config) {
+                        mgr = mgr.with_embedder(embedder);
+                    }
+                }
+                mgr
+            });
 
         // Initialize hooks
         let hooks = Some(HookRegistry::new(dir));

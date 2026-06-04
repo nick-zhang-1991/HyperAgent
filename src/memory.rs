@@ -1,10 +1,11 @@
-//! Smart Memory System — inspired by mem0 + codex memories
+//! Smart Memory System — inspired by mem0 + codex memories + embeddings
 //!
 //! Design:
 //! - **Add-only extraction** — memories accumulate, never overwritten (mem0 style)
 //! - **Entity linking** — entities extracted and linked across memories for boosted retrieval
-//! - **Multi-signal retrieval** — semantic (via LLM embedding) + keyword + entity matching
+//! - **Multi-signal retrieval** — semantic (via LLM/embedding) + keyword + entity matching
 //! - **Temporal reasoning** — time-aware ranking; current state > recent > old
+//! - **Vector embeddings** — optional Ollama-based semantic search for better recall
 //! - **SQLite-backed persistence** — using rusqlite
 //! - **Two-stage pipeline** (codex inspired):
 //!   Stage 1: Extract facts from agent conversation
@@ -18,6 +19,12 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Embedding provider for semantic search
+use crate::embed::EmbeddingProvider;
+
+/// Default embedding dimension (used when no provider available)
+const DEFAULT_EMBED_DIM: usize = 768;
+
 /// A single memory entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEntry {
@@ -27,7 +34,8 @@ pub struct MemoryEntry {
     pub content: String,
     pub memory_type: MemoryType,
     pub entities: Vec<String>,
-    pub importance: f32,  // 0.0 - 1.0
+    pub importance: f32, // 0.0 - 1.0
+    pub embedding: Option<Vec<f32>>,
     pub created_at: DateTime<Utc>,
     pub last_accessed: DateTime<Utc>,
     pub access_count: u32,
@@ -122,6 +130,49 @@ pub struct SqliteMemoryStore {
     conn: Arc<Mutex<rusqlite::Connection>>,
 }
 
+/// Map a SQLite row to a MemoryEntry (shared helper for query + get_unconsolidated)
+fn row_to_memory_entry(row: &rusqlite::Row) -> rusqlite::Result<MemoryEntry> {
+    let mem_type_str: String = row.get(4)?;
+    let mem_type = match mem_type_str.as_str() {
+        "user_preference" => MemoryType::UserPreference,
+        "codebase_fact" => MemoryType::CodebaseFact,
+        "action_outcome" => MemoryType::ActionOutcome,
+        "decision" => MemoryType::Decision,
+        "bug_fix" => MemoryType::BugFix,
+        "learned" => MemoryType::Learned,
+        "ephemeral" => MemoryType::Ephemeral,
+        _ => MemoryType::Learned,
+    };
+    let entities_str: String = row.get(5)?;
+    let entities: Vec<String> = serde_json::from_str(&entities_str).unwrap_or_default();
+
+    let embedding: Option<Vec<f32>> = row
+        .get::<_, Option<String>>(7)?
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let created: String = row.get(8)?;
+    let accessed: String = row.get(9)?;
+
+    Ok(MemoryEntry {
+        id: row.get(0)?,
+        agent_id: row.get(1)?,
+        session_id: row.get(2)?,
+        content: row.get(3)?,
+        memory_type: mem_type,
+        entities,
+        importance: row.get(6)?,
+        embedding,
+        created_at: DateTime::parse_from_rfc3339(&created)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+        last_accessed: DateTime::parse_from_rfc3339(&accessed)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+        access_count: row.get(10)?,
+        consolidated: row.get::<_, u32>(11)? != 0,
+    })
+}
+
 impl SqliteMemoryStore {
     pub fn new(db_path: &Path) -> anyhow::Result<Self> {
         let conn = rusqlite::Connection::open(db_path)?;
@@ -135,6 +186,7 @@ impl SqliteMemoryStore {
                 memory_type      TEXT NOT NULL,
                 entities         TEXT NOT NULL DEFAULT '[]',
                 importance       REAL NOT NULL DEFAULT 0.5,
+                embedding        TEXT,
                 created_at       TEXT NOT NULL,
                 last_accessed    TEXT NOT NULL,
                 access_count     INTEGER NOT NULL DEFAULT 0,
@@ -151,6 +203,12 @@ impl SqliteMemoryStore {
             CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);",
         )?;
 
+        // Migration: add embedding column for existing databases
+        let has_embedding = conn.prepare("SELECT embedding FROM memories LIMIT 1").is_ok();
+        if !has_embedding {
+            let _ = conn.execute_batch("ALTER TABLE memories ADD COLUMN embedding TEXT;");
+        }
+
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -163,8 +221,9 @@ impl SqliteMemoryStore {
         let mut entities = Vec::new();
         // Extract PascalCase/CamelCase identifiers and file paths
         let re = regex::Regex::new(
-            r"(?:[A-Z][a-z]+[A-Z][a-zA-Z]*)|(?:[A-Z]{2,}(?:[a-z]+)?)|(?:[A-Z][a-z]+(?:\s[A-Z][a-z]+)+)|(?:[a-zA-Z0-9_/.-]+\.[a-z]{2,})"
-        ).unwrap();
+            r"(?:[A-Z][a-z]+[A-Z][a-zA-Z]*)|(?:[A-Z]{2,}(?:[a-z]+)?)|(?:[A-Z][a-z]+(?:\s[A-Z][a-z]+)+)|(?:[a-zA-Z0-9_/.-]+\.[a-z]{2,})",
+        )
+        .unwrap();
         for cap in re.find_iter(content) {
             let entity = cap.as_str().to_string();
             if !entities.contains(&entity) {
@@ -178,10 +237,29 @@ impl SqliteMemoryStore {
     pub fn calculate_importance(content: &str) -> f32 {
         let mut score: f32 = 0.5;
         // Signal words
-        let high_impact = ["always", "never", "must", "critical", "bug", "fix", "important",
-                          "prefers", "projects", "config", "API", "architecture"];
-        let medium_impact = ["usually", "often", "recommend", "pattern", "convention",
-                            "style", "prefer"];
+        let high_impact = [
+            "always",
+            "never",
+            "must",
+            "critical",
+            "bug",
+            "fix",
+            "important",
+            "prefers",
+            "projects",
+            "config",
+            "API",
+            "architecture",
+        ];
+        let medium_impact = [
+            "usually",
+            "often",
+            "recommend",
+            "pattern",
+            "convention",
+            "style",
+            "prefer",
+        ];
 
         let lower = content.to_lowercase();
         for word in &high_impact {
@@ -202,9 +280,13 @@ impl MemoryStore for SqliteMemoryStore {
     fn insert(&self, entry: MemoryEntry) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         let entities_json = serde_json::to_string(&entry.entities)?;
+        let embedding_json = entry
+            .embedding
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
         conn.execute(
-            "INSERT INTO memories (id, agent_id, session_id, content, memory_type, entities, importance, created_at, last_accessed, access_count, consolidated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO memories (id, agent_id, session_id, content, memory_type, entities, importance, embedding, created_at, last_accessed, access_count, consolidated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 entry.id,
                 entry.agent_id,
@@ -213,6 +295,7 @@ impl MemoryStore for SqliteMemoryStore {
                 entry.memory_type.to_string(),
                 entities_json,
                 entry.importance,
+                embedding_json,
                 entry.created_at.to_rfc3339(),
                 entry.last_accessed.to_rfc3339(),
                 entry.access_count,
@@ -234,8 +317,8 @@ impl MemoryStore for SqliteMemoryStore {
     fn query(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = String::from(
-            "SELECT id, agent_id, session_id, content, memory_type, entities, importance, created_at, last_accessed, access_count, consolidated
-             FROM memories WHERE 1=1"
+            "SELECT id, agent_id, session_id, content, memory_type, entities, importance, embedding, created_at, last_accessed, access_count, consolidated
+             FROM memories WHERE 1=1",
         );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -262,8 +345,12 @@ impl MemoryStore for SqliteMemoryStore {
         }
 
         // Keyword search in content
-        let search_terms: Vec<&str> = query.text.split_whitespace()
-            .filter(|w| w.len() > 2 && !["the", "and", "for", "was", "are", "but", "not"].contains(w))
+        let search_terms: Vec<&str> = query
+            .text
+            .split_whitespace()
+            .filter(|w| {
+                w.len() > 2 && !["the", "and", "for", "was", "are", "but", "not"].contains(w)
+            })
             .collect();
 
         if !search_terms.is_empty() {
@@ -278,7 +365,7 @@ impl MemoryStore for SqliteMemoryStore {
             sql.push(')');
         }
 
-        // Order by relevance (importance × recency × access_count boost)
+        // Order by relevance (importance × access_count boost × consolidation)
         sql.push_str(" ORDER BY importance * (1.0 + access_count * 0.1) * CASE WHEN consolidated THEN 1.2 ELSE 1.0 END DESC");
 
         // Limit
@@ -287,45 +374,10 @@ impl MemoryStore for SqliteMemoryStore {
 
         let mut stmt = conn.prepare(&sql)?;
 
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter()
-            .map(|p| p.as_ref())
-            .collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
 
-        let rows = stmt.query_map(params_refs.as_slice(), |row| {
-            let mem_type_str: String = row.get(4)?;
-            let mem_type = match mem_type_str.as_str() {
-                "user_preference" => MemoryType::UserPreference,
-                "codebase_fact" => MemoryType::CodebaseFact,
-                "action_outcome" => MemoryType::ActionOutcome,
-                "decision" => MemoryType::Decision,
-                "bug_fix" => MemoryType::BugFix,
-                "learned" => MemoryType::Learned,
-                "ephemeral" => MemoryType::Ephemeral,
-                _ => MemoryType::Learned,
-            };
-            let entities_str: String = row.get(5)?;
-            let entities: Vec<String> = serde_json::from_str(&entities_str).unwrap_or_default();
-            let created: String = row.get(7)?;
-            let accessed: String = row.get(8)?;
-
-            Ok(MemoryEntry {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                session_id: row.get(2)?,
-                content: row.get(3)?,
-                memory_type: mem_type,
-                entities,
-                importance: row.get(6)?,
-                created_at: DateTime::parse_from_rfc3339(&created)
-                    .map(|d| d.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                last_accessed: DateTime::parse_from_rfc3339(&accessed)
-                    .map(|d| d.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                access_count: row.get(9)?,
-                consolidated: row.get::<_, u32>(10)? != 0,
-            })
-        })?;
+        let rows = stmt.query_map(params_refs.as_slice(), row_to_memory_entry)?;
 
         let results: Vec<MemoryEntry> = rows.filter_map(|r| r.ok()).collect();
 
@@ -345,18 +397,20 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     fn query_by_entity(&self, entity: &str, limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
-        let q = MemoryQuery { entity: Some(entity.to_string()), limit, ..Default::default() };
+        let q = MemoryQuery {
+            entity: Some(entity.to_string()),
+            limit,
+            ..Default::default()
+        };
         self.query(&q)
     }
 
     fn list_entities(&self) -> anyhow::Result<Vec<(String, usize)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT entity, COUNT(*) as cnt FROM memory_entities GROUP BY entity ORDER BY cnt DESC LIMIT 200"
+            "SELECT entity, COUNT(*) as cnt FROM memory_entities GROUP BY entity ORDER BY cnt DESC LIMIT 200",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -372,61 +426,29 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     fn get_unconsolidated(&self, limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
-        let _q = MemoryQuery::default();
-        // We need a way to query unconsolidated only
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, agent_id, session_id, content, memory_type, entities, importance, created_at, last_accessed, access_count, consolidated
-             FROM memories WHERE consolidated = 0 ORDER BY created_at ASC LIMIT ?1"
+            "SELECT id, agent_id, session_id, content, memory_type, entities, importance, embedding, created_at, last_accessed, access_count, consolidated
+             FROM memories WHERE consolidated = 0 ORDER BY created_at ASC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
-            let mem_type_str: String = row.get(4)?;
-            let mem_type = match mem_type_str.as_str() {
-                "user_preference" => MemoryType::UserPreference,
-                "codebase_fact" => MemoryType::CodebaseFact,
-                "action_outcome" => MemoryType::ActionOutcome,
-                "decision" => MemoryType::Decision,
-                "bug_fix" => MemoryType::BugFix,
-                "learned" => MemoryType::Learned,
-                "ephemeral" => MemoryType::Ephemeral,
-                _ => MemoryType::Learned,
-            };
-            let entities_str: String = row.get(5)?;
-            let entities: Vec<String> = serde_json::from_str(&entities_str).unwrap_or_default();
-            let created: String = row.get(7)?;
-            let accessed: String = row.get(8)?;
-
-            Ok(MemoryEntry {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                session_id: row.get(2)?,
-                content: row.get(3)?,
-                memory_type: mem_type,
-                entities,
-                importance: row.get(6)?,
-                created_at: DateTime::parse_from_rfc3339(&created)
-                    .map(|d| d.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                last_accessed: DateTime::parse_from_rfc3339(&accessed)
-                    .map(|d| d.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                access_count: row.get(9)?,
-                consolidated: row.get::<_, u32>(10)? != 0,
-            })
-        })?;
+        let rows = stmt.query_map(params![limit as i64], row_to_memory_entry)?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     fn delete(&self, id: &str) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM memory_entities WHERE memory_id = ?1", params![id])?;
+        conn.execute(
+            "DELETE FROM memory_entities WHERE memory_id = ?1",
+            params![id],
+        )?;
         conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
         Ok(())
     }
 
     fn count(&self) -> anyhow::Result<usize> {
         let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
         Ok(count as usize)
     }
 }
@@ -439,6 +461,7 @@ pub struct MemoryManager {
     store: Box<dyn MemoryStore>,
     agent_id: String,
     session_id: Option<String>,
+    embedder: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 impl MemoryManager {
@@ -447,7 +470,13 @@ impl MemoryManager {
             store,
             agent_id: agent_id.to_string(),
             session_id: None,
+            embedder: None,
         }
+    }
+
+    pub fn with_embedder(mut self, embedder: Arc<dyn EmbeddingProvider>) -> Self {
+        self.embedder = Some(embedder);
+        self
     }
 
     #[allow(dead_code)]
@@ -456,10 +485,18 @@ impl MemoryManager {
         self
     }
 
-    /// Record a memory from agent conversation
+    /// Record a memory from agent conversation.
+    /// If an embedding provider is configured, computes and stores a vector embedding.
     pub fn remember(&self, content: &str, memory_type: MemoryType) -> anyhow::Result<String> {
         let entities = SqliteMemoryStore::extract_entities(content);
         let importance = SqliteMemoryStore::calculate_importance(content);
+
+        // Compute embedding if provider available
+        let embedding = self.embedder.as_ref().and_then(|e| {
+            e.embed(&[content.to_string()])
+                .ok()
+                .and_then(|v| v.into_iter().next())
+        });
 
         let entry = MemoryEntry {
             id: Uuid::new_v4().to_string(),
@@ -469,6 +506,7 @@ impl MemoryManager {
             memory_type,
             entities,
             importance,
+            embedding,
             created_at: Utc::now(),
             last_accessed: Utc::now(),
             access_count: 0,
@@ -480,17 +518,61 @@ impl MemoryManager {
         Ok(id)
     }
 
-    /// Recall memories relevant to a query
-    pub fn recall(&self, query: &str, _limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
+    /// Recall memories relevant to a query.
+    /// If embeddings are available, combines semantic similarity with keyword + importance scores.
+    pub fn recall(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
+        // First, do a broader keyword-based fetch
         let q = MemoryQuery {
             text: query.to_string(),
+            limit: limit * 3, // Fetch extra for re-ranking
             ..Default::default()
         };
-        self.store.query(&q)
+        let mut memories = self.store.query(&q)?;
+
+        if memories.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // If we have an embedder and some memories have embeddings, do semantic re-ranking
+        if let Some(ref embedder) = self.embedder {
+            if let Ok(query_vec) = embedder.embed(&[query.to_string()]) {
+                if let Some(query_emb) = query_vec.into_iter().next() {
+                    // Compute combined score: 60% semantic + 40% traditional
+                    for mem in &mut memories {
+                        let semantic_score = mem.embedding.as_ref().map_or(0.0, |emb| {
+                            crate::embed::cosine_similarity(&query_emb, emb)
+                        });
+                        let traditional_score = mem.importance * (1.0 + (mem.access_count as f32) * 0.1);
+                        // Boost consolidated memories
+                        let consolidation_boost = if mem.consolidated { 1.2 } else { 1.0 };
+                        // Combined: semantic weighted at 60%, traditional at 40%
+                        // Store temporary score in importance field for sorting
+                        let combined = semantic_score * 0.6 + traditional_score * 0.4 * consolidation_boost;
+                        // We store the combined as a proxy — importance field is used for display
+                        mem.importance = combined;
+                    }
+                }
+            }
+        }
+
+        // Sort by importance (now = combined score if semantic, or traditional)
+        memories.sort_by(|a, b| {
+            b.importance
+                .partial_cmp(&a.importance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        memories.truncate(limit);
+        Ok(memories)
     }
 
+    #[allow(dead_code)]
     /// Recall by memory type
-    pub fn recall_by_type(&self, memory_type: MemoryType, limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
+    pub fn recall_by_type(
+        &self,
+        memory_type: MemoryType,
+        limit: usize,
+    ) -> anyhow::Result<Vec<MemoryEntry>> {
         let q = MemoryQuery {
             memory_type: Some(memory_type),
             limit,
@@ -522,7 +604,8 @@ impl MemoryManager {
             } else {
                 format!("{}d ago", ago.num_days())
             };
-            context.push_str(&format!("  [{ago_str}] ({mem_type}) {content}\n",
+            context.push_str(&format!(
+                "  [{ago_str}] ({mem_type}) {content}\n",
                 mem_type = mem.memory_type,
                 content = mem.content,
             ));
@@ -555,7 +638,9 @@ impl MemoryManager {
         entries.sort_by(|a, b| {
             let a_score = a.importance * (1.0 + (a.access_count as f32) * 0.1);
             let b_score = b.importance * (1.0 + (b.access_count as f32) * 0.1);
-            b_score.partial_cmp(&a_score).unwrap_or(std::cmp::Ordering::Equal)
+            b_score
+                .partial_cmp(&a_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         let to_keep: std::collections::HashSet<&str> = entries
@@ -645,9 +730,13 @@ mod tests {
         let medium = "We usually prefer the builder pattern";
         let low = "The weather is nice today";
 
-        assert!(SqliteMemoryStore::calculate_importance(high) >
-                SqliteMemoryStore::calculate_importance(low));
-        assert!(SqliteMemoryStore::calculate_importance(medium) >
-                SqliteMemoryStore::calculate_importance(low));
+        assert!(
+            SqliteMemoryStore::calculate_importance(high)
+                > SqliteMemoryStore::calculate_importance(low)
+        );
+        assert!(
+            SqliteMemoryStore::calculate_importance(medium)
+                > SqliteMemoryStore::calculate_importance(low)
+        );
     }
 }
