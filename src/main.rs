@@ -16,6 +16,7 @@ mod budget_tracker;
 mod browser;
 mod checkpoint;
 mod cli;
+mod computer_use;
 mod context_dashboard;
 mod dep_graph;
 mod diff;

@@ -646,6 +646,144 @@ pub async fn run_repl() -> anyhow::Result<()> {
                         _ => crate::organization::print_org_help(),
                     }
                 }
+                cmd if cmd.starts_with("/computer") || cmd.starts_with("/screen") => {
+                    use crate::computer_use::ComputerUse;
+                    let args: Vec<&str> = cmd.split_whitespace().collect();
+                    match args.first().map(|s| *s) {
+                        Some("/screenshot") | Some("/screen") => {
+                            // /screenshot [path]
+                            let path = args.get(1).map(|p| std::path::Path::new(p));
+                            let result = ComputerUse::screenshot(path);
+                            if result.success {
+                                println!("  📷 {}", result.message);
+                            } else {
+                                println!("  ⚠️  {}", result.message);
+                            }
+                        }
+                        _ => {
+                            // /computer <subcommand> [args...]
+                            let sub = args.get(1).copied().unwrap_or("help");
+                            match sub {
+                                "screenshot" | "shot" => {
+                                    let path = args.get(2).map(|p| std::path::Path::new(p));
+                                    println!("  {}", ComputerUse::screenshot(path).message);
+                                }
+                                "region" => {
+                                    if args.len() >= 5 {
+                                        let x = args[2].parse().unwrap_or(0);
+                                        let y = args[3].parse().unwrap_or(0);
+                                        let w = args[4].parse().unwrap_or(100);
+                                        let h = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(100);
+                                        println!("  {}", ComputerUse::screenshot_region(x, y, w, h, None).message);
+                                    } else {
+                                        println!("  Usage: /computer region <x> <y> <w> [h]");
+                                    }
+                                }
+                                "move" | "mousemove" => {
+                                    if args.len() >= 4 {
+                                        let x: f64 = args[2].parse().unwrap_or(0.0);
+                                        let y: f64 = args[3].parse().unwrap_or(0.0);
+                                        println!("  {}", ComputerUse::mouse_move(x, y).message);
+                                    } else {
+                                        println!("  Usage: /computer move <x> <y>");
+                                    }
+                                }
+                                "click" => {
+                                    if args.len() >= 4 {
+                                        let x: f64 = args[2].parse().unwrap_or(0.0);
+                                        let y: f64 = args[3].parse().unwrap_or(0.0);
+                                        println!("  {}", ComputerUse::click_at(x, y).message);
+                                    } else {
+                                        println!("  {}", ComputerUse::mouse_click().message);
+                                    }
+                                }
+                                "rightclick" | "right-click" => {
+                                    println!("  {}", ComputerUse::right_click().message);
+                                }
+                                "doubleclick" | "double-click" => {
+                                    println!("  {}", ComputerUse::double_click().message);
+                                }
+                                "type" => {
+                                    let text = args[2..].join(" ");
+                                    if !text.is_empty() {
+                                        println!("  {}", ComputerUse::type_text(&text).message);
+                                    } else {
+                                        println!("  Usage: /computer type <text to type>");
+                                    }
+                                }
+                                "key" => {
+                                    if let Some(key) = args.get(2) {
+                                        println!("  {}", ComputerUse::press_key(key).message);
+                                    } else {
+                                        println!("  Usage: /computer key <keyname>");
+                                    }
+                                }
+                                "combo" | "hotkey" => {
+                                    if let Some(combo) = args.get(2) {
+                                        println!("  {}", ComputerUse::press_key_combo(combo).message);
+                                    } else {
+                                        println!("  Usage: /computer combo cmd+c");
+                                    }
+                                }
+                                "cursor" | "pos" | "position" => {
+                                    println!("  {}", ComputerUse::cursor_position().message);
+                                }
+                                "screen" | "size" => {
+                                    println!("  {}", ComputerUse::screen_size().message);
+                                }
+                                "focus" => {
+                                    if let Some(name) = args.get(2) {
+                                        println!("  {}", ComputerUse::focus_app(name).message);
+                                    } else {
+                                        println!("  Usage: /computer focus <app name>");
+                                    }
+                                }
+                                "apps" | "windows" => {
+                                    println!("  {}", ComputerUse::list_apps().message);
+                                }
+                                "text" | "windowtext" => {
+                                    println!("  {}", ComputerUse::get_window_text().message);
+                                }
+                                "drag" => {
+                                    if args.len() >= 4 {
+                                        let x: f64 = args[2].parse().unwrap_or(0.0);
+                                        let y: f64 = args[3].parse().unwrap_or(0.0);
+                                        println!("  {}", ComputerUse::drag_to(x, y).message);
+                                    } else {
+                                        println!("  Usage: /computer drag <x> <y>");
+                                    }
+                                }
+                                "scroll" => {
+                                    let dir = args.get(2).unwrap_or(&"down");
+                                    let amount: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
+                                    println!("  {}", ComputerUse::scroll(dir, amount).message);
+                                }
+                                "check" | "status" => {
+                                    let r = ComputerUse::check_available();
+                                    println!("  {}", r.message);
+                                }
+                                _ => {
+                                    println!("  🖥️  Computer Control Commands:");
+                                    println!("    /screenshot [path]        — Take full screenshot");
+                                    println!("    /computer region x y w h  — Screenshot region");
+                                    println!("    /computer click [x y]     — Click (at coords or current)");
+                                    println!("    /computer move x y        — Move mouse");
+                                    println!("    /computer type <text>     — Type text");
+                                    println!("    /computer key <key>       — Press key (enter, esc, tab, etc.)");
+                                    println!("    /computer combo <keys>    — Key combo (cmd+c, cmd+shift+z)");
+                                    println!("    /computer cursor          — Get cursor position");
+                                    println!("    /computer screen          — Get screen dimensions");
+                                    println!("    /computer focus <app>     — Focus an application");
+                                    println!("    /computer apps            — List running apps");
+                                    println!("    /computer text            — Get focused window text");
+                                    println!("    /computer drag x y        — Drag to coordinates");
+                                    println!("    /computer scroll d n      — Scroll direction by amount");
+                                    println!("    /computer check           — Check macOS automation tools");
+                                }
+                            }
+                        }
+                    }
+                }
                 _ => {
                     println!("  Unknown command: {trimmed}. Type /help");
                 }
