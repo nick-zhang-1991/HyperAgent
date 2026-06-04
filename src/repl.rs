@@ -73,7 +73,7 @@ impl Completer for ReplCompleter {
             "/exit", "/quit",
             "/clear", "/cls",
             "/help", "/stats", "/memory",
-            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins", "/org", "/health",
+            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins", "/health", "/org", "/repo",
         ];
 
         let candidates: Vec<Pair> = if prefix.starts_with('/') {
@@ -137,7 +137,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins  /health  /org");
+    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins  /health  /repo  /org");
     println!();
 
     // REPL loop
@@ -192,6 +192,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  /telemetry         Show usage telemetry");
                     println!("  /plugins           List installed plugins");
                     println!("  /health            Run codebase health check");
+                    println!("  /repo              Multi-repository management");
                     println!("  /org               Organization management");
                     println!("  ───────────────────────────────────────");
                     println!("  ↑↓ arrow keys      Browse command history");
@@ -289,6 +290,40 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("   Running health check...");
                     let report = crate::health::run_health_check(&dir);
                     print!("{}", crate::health::render_report(&report));
+                }
+                cmd if cmd.starts_with("/repo") => {
+                    let mut repo_mgr = crate::multi_repo::MultiRepoManager::new(&dir);
+                    let args: Vec<&str> = cmd[5..].trim().split_whitespace().collect();
+                    match args.first() {
+                        Some(&"add") if args.len() >= 2 => {
+                            let path = std::path::Path::new(args[1]);
+                            let canonical = if path.is_absolute() {
+                                path.to_path_buf()
+                            } else {
+                                dir.join(path)
+                            };
+                            match repo_mgr.add(&canonical) {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("  ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"remove") | Some(&"rm") if args.len() >= 2 => {
+                            match repo_mgr.remove(args[1]) {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("  ⚠️  {e}"),
+                            }
+                        }
+                        Some(&"search") if args.len() >= 2 => {
+                            let query = args[1..].join(" ");
+                            print!("{}", repo_mgr.search(&query));
+                        }
+                        _ => {
+                            print!("{}", repo_mgr.list());
+                            if !repo_mgr.is_empty() {
+                                println!("   Commands: /repo add <path>  /repo remove <name>  /repo search <query>");
+                            }
+                        }
+                    }
                 }
                 cmd if cmd.starts_with("/org") => {
                     let mut org_mgr = crate::organization::OrgManager::new(&dir);

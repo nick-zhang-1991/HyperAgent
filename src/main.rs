@@ -29,6 +29,7 @@ mod mcp;
 mod mcp_server;
 mod memory;
 mod modes;
+mod multi_repo;
 mod notify;
 mod organization;
 mod plugins;
