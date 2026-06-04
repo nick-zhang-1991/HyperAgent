@@ -810,27 +810,73 @@ impl MemoryManager {
 
     /// Build a context string from relevant memories for LLM prompts
     pub fn build_context(&self, task: &str, max_memories: usize) -> anyhow::Result<String> {
-        let memories = self.recall(task, max_memories)?;
-        if memories.is_empty() {
+        // L0: Always-injected memories (user preferences + critical codebase facts)
+        let l0_prefs = self.store.query_with_graph(&MemoryQuery {
+            memory_type: Some(MemoryType::UserPreference),
+            limit: 5,
+            ..Default::default()
+        })?;
+
+        // L1: Task-relevant memories (existing recall mechanism with graph)
+        let l1 = self.recall(task, max_memories)?;
+
+        // L2: Archived/low-importance memories — only if task explicitly asks
+        let l2: Vec<MemoryEntry> = if task.to_lowercase().contains("history")
+            || task.to_lowercase().contains("old")
+            || task.to_lowercase().contains("past")
+            || task.to_lowercase().contains("archive")
+        {
+            self.store.query(&MemoryQuery {
+                text: task.to_string(),
+                limit: 5,
+                ..Default::default()
+            })?
+        } else {
+            vec![]
+        };
+
+        if l0_prefs.is_empty() && l1.is_empty() && l2.is_empty() {
             return Ok(String::new());
         }
 
         let mut context = String::from("\n\n--- Relevant Past Knowledge ---\n");
-        for mem in memories {
-            let ago = chrono::Utc::now().signed_duration_since(mem.created_at);
-            let ago_str = if ago.num_minutes() < 60 {
-                format!("{}m ago", ago.num_minutes())
-            } else if ago.num_hours() < 24 {
-                format!("{}h ago", ago.num_hours())
-            } else {
-                format!("{}d ago", ago.num_days())
-            };
-            context.push_str(&format!(
-                "  [{ago_str}] ({mem_type}) {content}\n",
-                mem_type = mem.memory_type,
-                content = mem.content,
-            ));
+
+        // L0 section — always injected
+        if !l0_prefs.is_empty() {
+            context.push_str("▪ User Preferences & Rules:\n");
+            for mem in &l0_prefs {
+                context.push_str(&format!("  • {}\n", mem.content));
+            }
         }
+
+        // L1 section — task-relevant
+        if !l1.is_empty() {
+            context.push_str("▪ Relevant Past Knowledge:\n");
+            for mem in l1.iter().take(max_memories) {
+                let ago = chrono::Utc::now().signed_duration_since(mem.created_at);
+                let ago_str = if ago.num_minutes() < 60 {
+                    format!("{}m ago", ago.num_minutes())
+                } else if ago.num_hours() < 24 {
+                    format!("{}h ago", ago.num_hours())
+                } else {
+                    format!("{}d ago", ago.num_days())
+                };
+                context.push_str(&format!(
+                    "  [{ago_str}] ({mem_type}) {content}\n",
+                    mem_type = mem.memory_type,
+                    content = mem.content,
+                ));
+            }
+        }
+
+        // L2 section — archived history (only when asked)
+        if !l2.is_empty() {
+            context.push_str("▪ Archived History:\n");
+            for mem in &l2 {
+                context.push_str(&format!("  • [archived] {}\n", mem.content));
+            }
+        }
+
         Ok(context)
     }
 
