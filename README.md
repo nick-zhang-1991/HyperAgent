@@ -240,8 +240,8 @@ HyperAgent 的多智能体流水线在一个命令内完成 **规划 → 编码 
 |---------------|-------------------|
 | **MCP tools** / MCP 工具 | Native OpenAI function calling protocol — 3-round tool call loop with result feedback |
 | **Web search** / 网页搜索 | `hyper search <query>` — DuckDuckGo API, no API key required |
-|| **Knowledge base** / 知识库 | `hyper knowledge build/search` — SQLite-backed BM25, no external API |
-|| **MCP server** / MCP 服务端 | `hyper mcp-server` — expose HyperAgent as MCP tool server for other AI agents |
+| **Knowledge base** / 知识库 | `hyper knowledge build/search` — SQLite-backed BM25, no external API |
+| **MCP server** / MCP 服务端 | `hyper mcp-server` — expose HyperAgent as MCP tool server for other AI agents |
 
 ### 🖥️ Desktop & Remote / 桌面与远程
 
