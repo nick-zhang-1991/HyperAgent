@@ -12,6 +12,7 @@
 mod agent;
 mod agent_graph;
 mod auth;
+mod benchmark;
 mod budget_tracker;
 mod browser;
 mod checkpoint;

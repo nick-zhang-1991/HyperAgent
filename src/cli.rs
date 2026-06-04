@@ -258,6 +258,19 @@ pub enum Commands {
     /// Interactive setup wizard (first-time configuration)
     Setup,
 
+    /// Run benchmark suite against coding challenges
+    Benchmark {
+        /// Run quick subset (3 tasks instead of 7)
+        #[arg(long)]
+        quick: bool,
+        /// List available benchmark tasks
+        #[arg(long)]
+        list: bool,
+        /// Specific task to run
+        #[arg(long)]
+        task: Option<String>,
+    },
+
     /// List and run available agents
     Agents {
         /// Agent name to run (lists all if not provided)
@@ -964,6 +977,32 @@ impl Cli {
 
             Some(Commands::Setup) => {
                 run_setup();
+                Ok(())
+            }
+
+            Some(Commands::Benchmark { quick, list, task }) => {
+                if *list {
+                    println!("📋 Available Benchmark Tasks:\n");
+                    for t in crate::benchmark::builtin_tasks() {
+                        let stars = "⭐".repeat(t.difficulty as usize);
+                        println!("   • {}  {stars}  {}", t.name, t.description);
+                    }
+                    return Ok(());
+                }
+                if let Some(task_name) = task {
+                    let tasks = crate::benchmark::builtin_tasks();
+                    if let Some(task) = tasks.iter().find(|t| t.name == *task_name) {
+                        println!("▶️  Running benchmark: {} ({})", task.name, task.description);
+                        let result = crate::benchmark::run_benchmark(task).await;
+                        let status = if result.passed { "✅ PASS" } else { "❌ FAIL" };
+                        println!("   {status} — {:.1}s", result.elapsed_ms as f64 / 1000.0);
+                    } else {
+                        eprintln!("❌ Unknown task: {task_name}. Use --list to see available tasks.");
+                    }
+                } else {
+                    let report = crate::benchmark::run_all(*quick).await;
+                    println!("{}", report.summary());
+                }
                 Ok(())
             }
 
