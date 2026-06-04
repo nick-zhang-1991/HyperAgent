@@ -19,6 +19,7 @@ mod diff;
 mod diff_view;
 mod eval;
 mod git;
+mod health;
 mod hooks;
 mod index;
 mod kanban;

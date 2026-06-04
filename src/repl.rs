@@ -73,7 +73,7 @@ impl Completer for ReplCompleter {
             "/exit", "/quit",
             "/clear", "/cls",
             "/help", "/stats", "/memory",
-            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins", "/org",
+            "/reindex", "/refresh", "/budget", "/telemetry", "/plugins", "/org", "/health",
         ];
 
         let candidates: Vec<Pair> = if prefix.starts_with('/') {
@@ -137,7 +137,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins  /org");
+    println!("  Commands:  /exit  /help  /clear  /stats  /memory  /reindex  /budget  /telemetry  /plugins  /health  /org");
     println!();
 
     // REPL loop
@@ -191,6 +191,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  /budget            Show session budget status");
                     println!("  /telemetry         Show usage telemetry");
                     println!("  /plugins           List installed plugins");
+                    println!("  /health            Run codebase health check");
                     println!("  /org               Organization management");
                     println!("  ───────────────────────────────────────");
                     println!("  ↑↓ arrow keys      Browse command history");
@@ -283,6 +284,11 @@ pub async fn run_repl() -> anyhow::Result<()> {
                 "/plugins" => {
                     let registry = crate::plugins::PluginRegistry::new(&dir);
                     println!("{}", registry.render());
+                }
+                "/health" => {
+                    println!("   Running health check...");
+                    let report = crate::health::run_health_check(&dir);
+                    print!("{}", crate::health::render_report(&report));
                 }
                 cmd if cmd.starts_with("/org") => {
                     let mut org_mgr = crate::organization::OrgManager::new(&dir);
