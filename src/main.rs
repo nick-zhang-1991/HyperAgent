@@ -55,6 +55,7 @@ mod spinner;
 mod swe_bench;
 mod telemetry;
 mod test_gen;
+mod vision;
 mod test_runner;
 #[cfg(feature = "tui")]
 mod tui;
