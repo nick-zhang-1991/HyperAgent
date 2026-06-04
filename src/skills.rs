@@ -235,3 +235,136 @@ impl SkillsRegistry {
         self.skills.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn setup() -> (TempDir, SkillsRegistry) {
+        let dir = TempDir::new().unwrap();
+        let registry = SkillsRegistry::new(dir.path());
+        (dir, registry)
+    }
+
+    #[test]
+    fn test_empty_registry() {
+        let (_dir, registry) = setup();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+        assert!(registry.list().is_empty());
+    }
+
+    #[test]
+    fn test_save_and_list_skill() {
+        let (dir, _registry) = setup();
+        let registry = SkillsRegistry::new(dir.path());
+        let path = registry.save("test-skill", "A test skill", "testing", &["rust".to_string(), "cli".to_string()], "# Test\n\nSome body").unwrap();
+        assert!(path.exists());
+        assert!(path.to_string_lossy().contains("test-skill"));
+
+        // Re-discover after save
+        let registry = SkillsRegistry::new(dir.path());
+        assert_eq!(registry.len(), 1);
+        let skill = registry.get("test-skill").unwrap();
+        assert_eq!(skill.name, "test-skill");
+        assert_eq!(skill.description, "A test skill");
+        assert_eq!(skill.category.as_deref(), Some("testing"));
+        assert_eq!(skill.tags, vec!["rust", "cli"]);
+        assert!(skill.content.contains("Test"));
+    }
+
+    #[test]
+    fn test_get_nonexistent() {
+        let (_dir, registry) = setup();
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_save_duplicate_name_overwrites() {
+        let (dir, _registry) = setup();
+        let registry = SkillsRegistry::new(dir.path());
+        registry.save("dup", "first", "cat1", &[], "body1").unwrap();
+        registry.save("dup", "second", "cat2", &["tag1".to_string()], "body2").unwrap();
+        // SkillsRegistry::save overwrites — test that last write wins
+        let registry = SkillsRegistry::new(dir.path());
+        let skill = registry.get("dup").unwrap();
+        assert_eq!(skill.description, "second");
+        assert_eq!(skill.tags, vec!["tag1"]);
+    }
+
+    #[test]
+    fn test_delete_skill() {
+        let (dir, _registry) = setup();
+        let registry = SkillsRegistry::new(dir.path());
+        registry.save("to-delete", "desc", "cat", &[], "body").unwrap();
+        let registry = SkillsRegistry::new(dir.path());
+        assert_eq!(registry.len(), 1);
+        registry.delete("to-delete").unwrap();
+        let registry = SkillsRegistry::new(dir.path());
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_delete_nonexistent() {
+        let (_dir, registry) = setup();
+        let result = registry.delete("ghost");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_render_empty() {
+        let (_dir, registry) = setup();
+        let output = registry.render();
+        assert!(output.contains("No skills"));
+    }
+
+    #[test]
+    fn test_render_with_skills() {
+        let (dir, _registry) = setup();
+        let registry = SkillsRegistry::new(dir.path());
+        registry.save("alpha", "First skill", "tools", &["go".to_string()], "body alpha").unwrap();
+        registry.save("beta", "Second skill", "tools", &["rust".to_string()], "body beta").unwrap();
+        let registry = SkillsRegistry::new(dir.path());
+        let output = registry.render();
+        assert!(output.contains("alpha"));
+        assert!(output.contains("First skill"));
+        assert!(output.contains("beta"));
+        assert!(output.contains("Second skill"));
+    }
+
+    #[test]
+    fn test_skill_loads_from_file() {
+        let dir = TempDir::new().unwrap();
+        let skills_dir = dir.path().join(".hyper").join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        let skill_dir = skills_dir.join("my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let content = "---\nname: \"my-skill\"\ndescription: \"My custom skill\"\ncategory: \"devops\"\ntags: [\"deploy\", \"docker\"]\n---\n\n# My Skill\n\n## Steps\n1. Do X\n2. Do Y\n";
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        let registry = SkillsRegistry::new(dir.path());
+        assert_eq!(registry.len(), 1);
+        let skill = registry.get("my-skill").unwrap();
+        assert_eq!(skill.description, "My custom skill");
+        assert_eq!(skill.category.as_deref(), Some("devops"));
+        assert!(skill.tags.contains(&"deploy".to_string()));
+        assert!(skill.content.contains("Do X"));
+    }
+
+    #[test]
+    fn test_skill_without_frontmatter() {
+        let dir = TempDir::new().unwrap();
+        let skills_dir = dir.path().join(".hyper").join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        let path = skills_dir.join("plain.md");
+        std::fs::write(&path, "# Plain Skill\n\nJust content").unwrap();
+
+        let registry = SkillsRegistry::new(dir.path());
+        assert_eq!(registry.len(), 1);
+        let skill = registry.get("plain").unwrap();
+        assert_eq!(skill.name, "plain");
+        assert!(skill.content.contains("Plain Skill"));
+    }
+}

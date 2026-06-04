@@ -274,3 +274,65 @@ impl ProcessManager {
         removed
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_process_manager_new() {
+        let pm = ProcessManager::new();
+        assert!(pm.list().is_empty());
+    }
+
+    #[test]
+    fn test_spawn_basic() {
+        let pm = ProcessManager::new();
+        let id = pm.spawn("echo", &["hello".to_string()], "/tmp").unwrap();
+        assert!(id.starts_with("bg-"));
+        // Brief wait for process to complete
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Process should have completed
+        assert_eq!(pm.list().len(), 1);
+    }
+
+    #[test]
+    fn test_spawn_nonexistent_cmd() {
+        let pm = ProcessManager::new();
+        let result = pm.spawn("nonexistent-command-xyz", &[], "/tmp");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_kill_unknown() {
+        let pm = ProcessManager::new();
+        pm.kill("ghost-id");
+        // Should not panic
+    }
+
+    #[test]
+    fn test_cleanup_empty() {
+        let pm = ProcessManager::new();
+        assert_eq!(pm.cleanup(), 0);
+    }
+
+    #[test]
+    fn test_read_output_unknown() {
+        let pm = ProcessManager::new();
+        let output = pm.read_output("ghost");
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_bg_status_serialization() {
+        let status = BgStatus::Running;
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, "\"Running\"");
+
+        let parsed: BgStatus = serde_json::from_str("\"Running\"").unwrap();
+        assert_eq!(parsed, BgStatus::Running);
+
+        let parsed: BgStatus = serde_json::from_str("\"Killed\"").unwrap();
+        assert_eq!(parsed, BgStatus::Killed);
+    }
+}
