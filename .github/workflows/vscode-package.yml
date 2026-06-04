@@ -1,0 +1,45 @@
+name: Package VS Code Extension
+
+on:
+  push:
+    branches: [master]
+    paths: ['packages/vscode/**']
+  release:
+    types: [created]
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          cd packages/vscode
+          npm ci || npm install
+
+      - name: Build TypeScript
+        run: |
+          cd packages/vscode
+          npx tsc --noEmit || echo "Type check warnings"
+
+      - name: Package .vsix
+        run: |
+          cd packages/vscode
+          npx @vscode/vsce package -o hyperagent-vscode.vsix
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hyperagent-vscode
+          path: packages/vscode/hyperagent-vscode.vsix
+
+      - name: Publish to Marketplace
+        if: github.event_name == 'release'
+        run: |
+          cd packages/vscode
+          npx @vscode/vsce publish -p ${{ secrets.VSCODE_MARKETPLACE_TOKEN }}

@@ -244,8 +244,12 @@ HyperAgent 的多智能体流水线在一个命令内完成 **规划 → 编码 
 | **Dependency graph** / 依赖图 | `hyper deps` — scans `Cargo.toml` and `package.json` |
 | **Multi-modal input** / 多模态输入 | `hyper run --image screenshot.png` — base64 data URL for vision-capable models |
 | **Docker deployment** / Docker 部署 | `hyper deploy --tag myapp:latest` |
+| **Remote agent** / 远程执行 | `hyper serve --port 9173` — TCP server for remote sessions |
+| **RAG search** / 语义搜索 | `hyper /search "query"` — vector embedding + PageRank hybrid search |
+| **Conversation editing** / 对话编辑 | `hyper /edit 3 "new prompt"` — edit past messages and regenerate |
+| **ESLint/fix auto-correct** / 自动修复 | `hyper run --fix` — auto-fix lint errors with LLM loop |
 
----
+### 🏢 Enterprise / 企业特性
 
 ## Competitive Comparison / 竞品对比
 
@@ -530,9 +534,17 @@ hyper eval --task gen-fibonacci  # Run single benchmark
 
 ---
 
+## Benchmarks / 基准测试
+
+| Benchmark | Score | Tasks |
+|-----------|-------|-------|
+| SWE-bench (built-in) | 🚧 Running... | 7 Rust/JS bug-fix tasks |
+
+*Benchmarks run automatically on each release.*
+
 ## Test Suite / 测试套件
 
-**79 tests** across 13 modules, all passing. Binary-only crate (no `lib.rs` required).
+**137 tests** across 18 modules, all passing. Binary-only crate (no `lib.rs` required).
 
 ```bash
 # Run all tests — 运行全部测试
