@@ -512,6 +512,17 @@ pub enum Commands {
         #[arg(long)]
         provider: Option<String>,
     },
+
+    /// Start remote agent server (WebSocket bridge)
+    Serve {
+        /// Port to listen on
+        #[arg(long, default_value = "9173")]
+        port: u16,
+
+        /// Bind address
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1307,6 +1318,15 @@ impl Cli {
 
             Some(Commands::Auth { action, provider }) => {
                 self.handle_auth(action, provider.as_deref())
+            }
+
+            Some(Commands::Serve { port, bind }) => {
+                let config = crate::remote::RemoteConfig {
+                    port: *port,
+                    bind: bind.clone(),
+                };
+                crate::remote::start_server(config).await?;
+                Ok(())
             }
 
             // No subcommand → interactive REPL

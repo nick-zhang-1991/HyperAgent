@@ -36,6 +36,7 @@ mod notify;
 mod organization;
 mod plugins;
 mod refactor;
+mod remote;
 mod repl;
 mod router;
 mod rules;
