@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quickstart — HyperAgent</title>
+  <link rel="stylesheet" href="../assets/docs.css">
+</head>
+<body>
+  <nav>
+    <a href="/" class="logo">HyperAgent</a>
+    <a href="/">Home</a>
+    <a href="installation.html">Install</a>
+    <a href="commands.html">Commands</a>
+  </nav>
+  <div class="container">
+    <h1>Quickstart</h1>
+    <p>Get started with HyperAgent in 5 minutes.</p>
+
+    <h2>1. Start the REPL</h2>
+    <div class="code-block">$ hyper
+
+╔══════════════════════════════════════════════╗
+║        HyperAgent Interactive Shell         ║
+╚══════════════════════════════════════════════╝
+
+  Directory: /Users/me/my-project
+  Provider:  deepseek-v4-flash
+  Memory:    71 past learnings
+  Commands:  /exit  /help  /clear  /stats  /memory  /reindex
+
+hyper></div>
+
+    <h2>2. Ask Questions</h2>
+    <p>Just type naturally — HyperAgent auto-detects whether you're asking or commanding:</p>
+    <div class="code-block">hyper> 分析这个项目的架构
+
+📋 Planning...
+   💬 这个项目使用 Rust + React 架构，核心模块包括...</div>
+
+    <h2>3. Fix Bugs</h2>
+    <div class="code-block">hyper> Fix the off-by-one error in sum_range
+
+📋 Planning...
+   Plan: Fix off-by-one by changing start..end to start..=end in src/lib.rs
+   1. Change range to inclusive in src/lib.rs
+👨‍💻 Executing...</div>
+
+    <h2>4. Add Features</h2>
+    <div class="code-block">hyper> Add email validation to the User model in src/models/user.rs</div>
+
+    <h2>5. Check Code Health</h2>
+    <div class="code-block">hyper> /health</div>
+
+    <h2>6. Manage Teams</h2>
+    <div class="code-block">hyper> /org init "My Company" admin@company.com
+hyper> /org team add dev@company.com</div>
+
+    <h2>7. Schedule Tasks</h2>
+    <div class="code-block">hyper> /schedule add "0 9 * * 1" "Run health check"
+hyper> /schedule list</div>
+  </div>
+  <footer>
+    <p><a href="https://github.com/nick-zhang-1991/HyperAgent">GitHub</a> · HyperAgent © 2026</p>
+  </footer>
+</body>
+</html>

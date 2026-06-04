@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Installation — HyperAgent</title>
+  <link rel="stylesheet" href="../assets/docs.css">
+</head>
+<body>
+  <nav>
+    <a href="/" class="logo">HyperAgent</a>
+    <a href="/">Home</a>
+    <a href="quickstart.html">Quickstart</a>
+    <a href="commands.html">Commands</a>
+  </nav>
+  <div class="container">
+    <h1>Installation</h1>
+    <p>HyperAgent is distributed as a single static binary with zero runtime dependencies.</p>
+
+    <h2>Prerequisites</h2>
+    <ul>
+      <li>macOS 10.15+, Linux (x86_64), Windows 10+</li>
+      <li>An LLM API key (DeepSeek, OpenAI, Anthropic, or OpenRouter)</li>
+      <li>Git (for version control integration)</li>
+    </ul>
+
+    <h2>Quick Install (macOS/Linux)</h2>
+    <div class="code-block">curl -fsSL https://raw.githubusercontent.com/nick-zhang-1991/HyperAgent/master/scripts/install.sh | bash</div>
+
+    <h2>Homebrew (macOS)</h2>
+    <div class="code-block">brew tap nick-zhang-1991/hyperagent<br>brew install hyperagent</div>
+
+    <h2>npm (experimental)</h2>
+    <div class="code-block">npm install -g hyperagent-cli</div>
+
+    <h2>From Source</h2>
+    <div class="code-block">git clone https://github.com/nick-zhang-1991/HyperAgent.git<br>cd HyperAgent<br>cargo build --release<br>cp target/release/hyperagent /usr/local/bin/hyper</div>
+
+    <h2>Verify Installation</h2>
+    <div class="code-block">hyper --version<br>hyper help</div>
+
+    <h2>Configuration</h2>
+    <p>On first run, HyperAgent will prompt you to configure an LLM provider. You can also set environment variables:</p>
+    <div class="code-block">export HYPER_LLM_API_KEY="sk-your-key-here"<br>export HYPER_LLM_BASE_URL="https://api.deepseek.com/v1"<br><br># Or create ~/.hyper/config.toml:<br>[provider]<br>api_key = "sk-your-key-here"<br>base_url = "https://api.deepseek.com/v1"<br>model = "deepseek-chat"</div>
+  </div>
+  <footer>
+    <p><a href="https://github.com/nick-zhang-1991/HyperAgent">GitHub</a> · HyperAgent © 2026</p>
+  </footer>
+</body>
+</html>

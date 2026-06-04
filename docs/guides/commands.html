@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Commands — HyperAgent REFERENCE</title>
+  <link rel="stylesheet" href="../assets/docs.css">
+</head>
+<body>
+  <nav>
+    <a href="/" class="logo">HyperAgent</a>
+    <a href="/">Home</a>
+    <a href="installation.html">Install</a>
+    <a href="quickstart.html">Quickstart</a>
+  </nav>
+  <div class="container">
+    <h1>Command Reference</h1>
+
+    <h2>CLI Commands</h2>
+    <table>
+      <tr><th>Command</th><th>Description</th></tr>
+      <tr><td><code>hyper run &lt;prompt&gt;</code></td><td>Run a coding task (reads from stdin if no prompt)</td></tr>
+      <tr><td><code>hyper init</code></td><td>Build code index for the current project</td></tr>
+      <tr><td><code>hyper review &lt;ref&gt;</code></td><td>Review code changes from git diff</td></tr>
+      <tr><td><code>hyper eval --task &lt;name&gt;</code></td><td>Run a benchmark task</td></tr>
+      <tr><td><code>hyper eval --list</code></td><td>List available benchmark tasks</td></tr>
+      <tr><td><code>hyper auth login</code></td><td>Configure LLM provider credentials</td></tr>
+      <tr><td><code>hyper auth status</code></td><td>Show current auth state</td></tr>
+      <tr><td><code>hyper kanban</code></td><td>View kanban board</td></tr>
+      <tr><td><code>hyper diff</code></td><td>Show changes from the last run</td></tr>
+      <tr><td><code>hyper mcp-server</code></td><td>Start MCP server for tool composability</td></tr>
+      <tr><td><code>hyper schedule</code></td><td>Manage scheduled cron jobs</td></tr>
+      <tr><td><code>hyper checkpoint</code></td><td>Snapshot-based undo system</td></tr>
+    </table>
+
+    <h2>REPL Commands</h2>
+    <table>
+      <tr><th>Command</th><th>Description</th></tr>
+      <tr><td><code>/exit</code> / <code>/quit</code></td><td>Exit the REPL</td></tr>
+      <tr><td><code>/clear</code> / <code>/cls</code></td><td>Clear screen</td></tr>
+      <tr><td><code>/help</code></td><td>Show help</td></tr>
+      <tr><td><code>/stats</code></td><td>Show session statistics</td></tr>
+      <tr><td><code>/memory</code></td><td>Show memory context</td></tr>
+      <tr><td><code>/reindex</code></td><td>Force-rebuild the code index</td></tr>
+      <tr><td><code>/budget</code></td><td>Show session budget status</td></tr>
+      <tr><td><code>/telemetry</code></td><td>Show usage telemetry (7 days)</td></tr>
+      <tr><td><code>/plugins</code></td><td>List installed plugins</td></tr>
+      <tr><td><code>/health</code></td><td>Run codebase health check</td></tr>
+      <tr><td><code>/repo</code></td><td>Multi-repository management</td></tr>
+      <tr><td><code>/org</code></td><td>Organization management</td></tr>
+    </table>
+  </div>
+  <footer>
+    <p><a href="https://github.com/nick-zhang-1991/HyperAgent">GitHub</a> · HyperAgent © 2026</p>
+  </footer>
+</body>
+</html>
