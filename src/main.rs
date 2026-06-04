@@ -48,6 +48,7 @@ mod scaffold;
 mod scheduler;
 mod security;
 mod session;
+mod skills;
 mod spinner;
 mod swe_bench;
 mod telemetry;

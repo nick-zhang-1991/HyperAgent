@@ -159,6 +159,10 @@ pub enum Commands {
     #[clap(subcommand)]
     Kanban(KanbanAction),
 
+    /// Manage reusable skills (learned workflows and patterns)
+    #[clap(subcommand)]
+    Skills(SkillsAction),
+
     /// Manage lifecycle hooks
     #[clap(subcommand)]
     Hooks(HooksAction),
@@ -653,6 +657,35 @@ pub enum KanbanAction {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum SkillsAction {
+    /// List all installed skills
+    List,
+    /// Show details of a skill
+    Show {
+        /// Skill name
+        name: String,
+    },
+    /// Create a new skill
+    Create {
+        /// Skill name (lowercase, hyphens)
+        name: String,
+        /// Description
+        description: String,
+        /// Category (e.g., software-development, devops)
+        #[arg(short, long, default_value = "general")]
+        category: String,
+        /// Tags (comma-separated)
+        #[arg(short, long)]
+        tags: Option<String>,
+    },
+    /// Delete a skill
+    Delete {
+        /// Skill name
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum HooksAction {
     /// List registered hooks
     List,
@@ -728,6 +761,8 @@ impl Cli {
             Some(Commands::Mcp(action)) => self.handle_mcp(action).await,
 
             Some(Commands::Kanban(action)) => self.handle_kanban(action).await,
+
+            Some(Commands::Skills(action)) => self.handle_skills(action).await,
 
             Some(Commands::Hooks(action)) => self.handle_hooks(action).await,
 
@@ -2177,6 +2212,66 @@ impl Cli {
                 let root = dir.clone();
                 drop(board); // Release the local board, web_ui creates its own
                 crate::web_ui::serve(*port, &root).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_skills(&self, action: &SkillsAction) -> Result<()> {
+        let home_dir = dirs_next::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+        let registry = crate::skills::SkillsRegistry::new(&home_dir);
+
+        match action {
+            SkillsAction::List => {
+                println!("{}", registry.render());
+            }
+            SkillsAction::Show { name } => {
+                match registry.get(name) {
+                    Some(skill) => {
+                        println!("━━━ {} ━━━", skill.name);
+                        if !skill.description.is_empty() {
+                            println!("   {}", skill.description);
+                        }
+                        println!("   Path: {}", skill.path.display());
+                        if let Some(cat) = &skill.category {
+                            println!("   Category: {cat}");
+                        }
+                        if !skill.tags.is_empty() {
+                            println!("   Tags: {}", skill.tags.join(", "));
+                        }
+                        println!();
+                        println!("{}", skill.content.trim());
+                    }
+                    None => {
+                        eprintln!("❌ Skill '{name}' not found.");
+                        eprintln!("   Run `hyper skills list` to see available skills.");
+                    }
+                }
+            }
+            SkillsAction::Create { name, description, category, tags } => {
+                let parsed_tags: Vec<String> = tags.as_ref()
+                    .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
+                    .unwrap_or_default();
+
+                // Check if skill already exists
+                if registry.get(name).is_some() {
+                    eprintln!("❌ Skill '{name}' already exists. Delete it first or choose another name.");
+                    return Ok(());
+                }
+
+                // Create with empty body — user can edit the file
+                let path = registry.save(
+                    name, description, category, &parsed_tags,
+                    "# {name}\n\n## Description\n\n{description}\n\n## When to use\n\n\n\n## Steps\n\n1. \n2. \n3. \n\n## Pitfalls\n\n- \n"
+                )?;
+                println!("✅ Skill '{name}' created at {}\n", path.display());
+                println!("   Edit the SKILL.md file to add content, then use `hyper skills show {name}` to view.");
+            }
+            SkillsAction::Delete { name } => {
+                match registry.delete(name) {
+                    Ok(_) => println!("✅ Skill '{name}' deleted."),
+                    Err(e) => eprintln!("❌ {e}"),
+                }
             }
         }
         Ok(())
