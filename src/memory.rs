@@ -577,6 +577,54 @@ impl MemoryManager {
     pub fn store(&self) -> &dyn MemoryStore {
         &*self.store
     }
+
+    /// Export memories to a JSON file for sharing or backup
+    pub fn export_to_file(&self, path: &Path) -> anyhow::Result<()> {
+        let all_entries = self.recall("", 9999)?;
+        let json = serde_json::to_string_pretty(&all_entries)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Import memories from a JSON file into the current store
+    pub fn import_from_file(&self, path: &Path, source_label: &str) -> anyhow::Result<usize> {
+        let content = std::fs::read_to_string(path)?;
+        let entries: Vec<MemoryEntry> = serde_json::from_str(&content)?;
+        let mut imported = 0;
+        for mut entry in entries {
+            entry.content = format!("[shared from {source_label}] {}", entry.content);
+            entry.id = Uuid::new_v4().to_string();
+            entry.consolidated = false;
+            if let Err(e) = self.store().insert(entry) {
+                eprintln!("   ⚠️  Import error: {e}");
+            } else {
+                imported += 1;
+            }
+        }
+        Ok(imported)
+    }
+
+    /// Share memory with another .hyper directory
+    pub fn share_with(&self, target_dir: &Path) -> anyhow::Result<usize> {
+        let target_path = target_dir.join(".hyper").join("memory.db");
+        if !target_path.exists() {
+            anyhow::bail!("Target project has no memory database");
+        }
+        let store = crate::memory::SqliteMemoryStore::new(&target_path)?;
+        let entries = self.recall("", 100)?;
+        let mut shared = 0;
+        for mut entry in entries {
+            entry.id = Uuid::new_v4().to_string();
+            entry.consolidated = false;
+            if store.insert(entry).is_ok() {
+                shared += 1;
+            }
+        }
+        Ok(shared)
+    }
 }
 
 #[cfg(test)]
