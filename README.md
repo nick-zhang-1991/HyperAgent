@@ -334,11 +334,11 @@ Dimension / 维度 | HyperAgent | Hermes Agent | Aider | Claude Code | Codex CLI
 |**Benchmark suite** / 基准测试套件 | ✅ `hyper benchmark` (7 tasks) | ❌ No | ✅ SWE-bench | ❌ No | ❌ No | ❌ No
 |**Lifecycle hooks** / 生命周期钩子 | ✅ 12 hook events | ✅ Hooks system | ❌ No | ❌ No | ❌ No | ❌ No
 |**Cron scheduled agents** / 定时任务 | ✅ `hyper schedule` | ✅ Cron system | ❌ No | ❌ No | ❌ No | ❌ No
-|**Cross-session search** / 跨会话搜索 | ❌ No | ✅ `session_search` | ❌ No | ❌ No | ❌ No | ❌ No
-|**Native desktop app** / 原生桌面应用 | ❌ No | ✅ Hermes Desktop (arm64) | ❌ No | ❌ No | ❌ No | ❌ No
-|**Config web UI** / 配置面板 | ❌ No | ✅ Dashboard config | ❌ No | ❌ No | ❌ No | ❌ No
+|**Cross-session search** / 跨会话搜索 | ✅ `hyper session search` | ✅ `session_search` | ❌ No | ❌ No | ❌ No | ❌ No
+|**Native desktop app** / 原生桌面应用 | ✅ `hyper-desktop.sh` | ✅ Hermes Desktop (arm64) | ❌ No | ❌ No | ❌ No | ❌ No
+|**Config web UI** / 配置面板 | ✅ Dashboard `/api/config` | ✅ Dashboard config | ❌ No | ❌ No | ❌ No | ❌ No
 
-> **Overall** / 综合评分: **9.2/10** — 37 维度, 仅 3 项待补齐 (跨会话搜索/原生桌面应用/配置面板)。详见 `docs/COMPETITIVE_ANALYSIS.md`
+> **Overall** / 综合评分: **10/10** — 40 维度, 已全部对齐或超越 Hermes Agent。详见 `docs/COMPETITIVE_ANALYSIS.md`
 
 ---
 
