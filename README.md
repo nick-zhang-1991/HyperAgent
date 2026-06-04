@@ -243,6 +243,17 @@ HyperAgent 的多智能体流水线在一个命令内完成 **规划 → 编码 
 | **Knowledge base** / 知识库 | `hyper knowledge build/search` — SQLite-backed BM25, no external API |
 | **MCP server** / MCP 服务端 | `hyper mcp-server` — expose HyperAgent as MCP tool server for other AI agents |
 
+### 🧠 Smart Memory / 智能记忆
+
+| Feature / 特性 | Description / 描述 |
+|---------------|-------------------|
+| **Graph entity memory** / 图实体记忆 | One-hop entity graph traversal: query "AuthService" returns related EntityManager too |
+| **MCP memory tools** / MCP 记忆工具 | `hyper mcp-server` exposes `memory_remember` & `memory_recall` as MCP tools — any agent can call them |
+| **Tiered context** / 分级上下文 | L0=prefs (always), L1=task-relevant (graph-enhanced), L2=archive (on-demand) |
+| **Hybrid search** / 混合检索 | BM25 keyword + vector embedding + entity graph + importance ranking |
+| **Auto-consolidation** / 自动合并 | MemoryCurator archives old entries, merges duplicates, reports stats |
+| **Persistent SQLite** / 持久化 | SQLite with `memory_entities` join table for entity-to-memory relationships |
+
 ### 🖥️ Desktop & Remote / 桌面与远程
 
 | Feature / 特性 | Description / 描述 |
@@ -303,7 +314,10 @@ Dimension / 维度 | HyperAgent | Hermes Agent | Aider | Claude Code | Codex CLI
 |**Auto lint-fix loop** / 自动修复 | ✅ 3-round | ✅ Skill-driven | ✅ Yes | ⚠️ Limited | ❌ No | ❌ No
 |**Multi-provider failover** / 多提供商故障转移 | ✅ Pool + cooldown | ✅ Custom providers | ❌ Single | ❌ Single | ❌ Single | ⚠️ Manual
 |**PageRank code index** / PageRank 代码索引 | ✅ 4-strategy | ✅ CodeGraph AST | ✅ Repomap | ⚠️ Basic | ✅ Yes | ❌ No
-|**Persistent memory** / 持久化记忆 | ✅ SQLite + vector | ✅ memory.md + user.md | ❌ No | ❌ No | ❌ No | ❌ No
+|**Persistent memory** / 持久化记忆 | ✅ SQLite + vector + GraphRAG | ✅ memory.md + user.md | ❌ No | ❌ No | ❌ No | ❌ No
+|**Graph entity memory** / 图实体记忆 | ✅ One-hop entity graph traversal | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
+|**MCP memory server** / MCP 记忆服务 | ✅ `hyper mcp-server` exposes remember/recall tools | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
+|**Tiered memory context** / 分级上下文 | ✅ L0 (prefs) / L1 (task) / L2 (archive) | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
 |**MCP native function calling** / MCP 原生函数调用 | ✅ Native `tools` param | ✅ Native MCP | ❌ Prompt injection | ✅ Yes | ✅ Yes | ✅ Yes
 |**Diff output mode** / 差异输出模式 | ✅ ~60% savings | ❌ Full rewrite | ✅ Yes | ✅ Yes | ❌ No | ❌ No
 |**Side-by-side diff** / 并排差异对比 | ✅ ANSI color | ❌ No | ❌ No | ✅ Yes | ❌ No | ❌ No
@@ -338,7 +352,7 @@ Dimension / 维度 | HyperAgent | Hermes Agent | Aider | Claude Code | Codex CLI
 |**Native desktop app** / 原生桌面应用 | ✅ `hyper-desktop.sh` | ✅ Hermes Desktop (arm64) | ❌ No | ❌ No | ❌ No | ❌ No
 |**Config web UI** / 配置面板 | ✅ Dashboard `/api/config` | ✅ Dashboard config | ❌ No | ❌ No | ❌ No | ❌ No
 
-> **Overall** / 综合评分: **10/10** — 40 维度, 已全部对齐或超越 Hermes Agent。详见 `docs/COMPETITIVE_ANALYSIS.md`
+> **Overall** / 综合评分: **10/10** — 43 维度, 已全部对齐或超越 Hermes Agent。详见 `docs/COMPETITIVE_ANALYSIS.md`
 
 ---
 
