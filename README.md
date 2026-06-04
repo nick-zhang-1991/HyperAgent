@@ -7,8 +7,8 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)](https://github.com/nick-zhang-1991/HyperAgent/actions)
 [![Rust](https://img.shields.io/badge/rust-1.78+-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-79-blue?style=flat-square)](#test-suite)
-[![CLI](https://img.shields.io/badge/CLI-45%2B%20commands-9b59b6?style=flat-square)](#command-reference)
+[![Tests](https://img.shields.io/badge/tests-167-blue?style=flat-square)](#test-suite)
+[![CLI](https://img.shields.io/badge/CLI-55%2B%20commands-9b59b6?style=flat-square)](#command-reference)
 
 ```bash
 # One-shot task — 一行命令完成编码任务
@@ -240,7 +240,51 @@ HyperAgent 的多智能体流水线在一个命令内完成 **规划 → 编码 
 |---------------|-------------------|
 | **MCP tools** / MCP 工具 | Native OpenAI function calling protocol — 3-round tool call loop with result feedback |
 | **Web search** / 网页搜索 | `hyper search <query>` — DuckDuckGo API, no API key required |
-| **Knowledge base** / 知识库 | `hyper knowledge build/search` — SQLite-backed BM25, no external API |
+|| **Knowledge base** / 知识库 | `hyper knowledge build/search` — SQLite-backed BM25, no external API |
+|| **MCP server** / MCP 服务端 | `hyper mcp-server` — expose HyperAgent as MCP tool server for other AI agents |
+
+### 🖥️ Desktop & Remote / 桌面与远程
+
+| Feature / 特性 | Description / 描述 |
+|---------------|-------------------|
+| **Computer use** / 桌面操作 | `/screenshot`, `/computer click\|move\|type\|key\|combo` — macOS GUI automation via osascript |
+| **Browser automation** / 浏览器自动化 | `/browser open\|screenshot\|click\|eval\|html` — Chrome DevTools Protocol via WebSocket |
+| **Remote hosts** / 远程主机 | `hyper remote add\|list\|run\|cp-to\|cp-from` — SSH + SCP remote execution |
+| **Remote agent server** / 远程代理服务 | `hyper serve --port 9173` — TCP JSON server for remote agent sessions |
+| **Skill sync** / 技能同步 | `hyper skills sync <remote>` — sync skills via SSH from configured remote hosts |
+
+### 📊 Dashboard & Analytics / 仪表盘与分析
+
+| Feature / 特性 | Description / 描述 |
+|---------------|-------------------|
+| **Memory & skills dashboard** / 记忆技能面板 | `hyper dashboard --port 8081` — Web UI for browsing/deleting memories and skills |
+| **Kanban web UI** / 看板面板 | `hyper kanban web --port 8080` — zero-dependency embedded HTML/JS task board |
+| **Benchmark suite** / 基准测试 | `hyper benchmark` — 7 coding challenges (Rust/Python/TS) with pass/fail reporting |
+| **Context dashboard** / 上下文仪表盘 | Post-run token/phase breakdown with visual progress bar |
+| **Budget tracker** / 预算追踪 | Per-session USD spend limit with auto-degradation at 80%/100% thresholds |
+
+### 🧠 Skills & Knowledge / 技能与知识
+
+| Feature / 特性 | Description / 描述 |
+|---------------|-------------------|
+| **Skills registry** / 技能注册表 | `hyper skills list\|show\|create\|delete` — reusable workflows in `~/.hyper/skills/` |
+| **Skill import/export** / 技能导入导出 | `hyper skills import <url>` — from GitHub raw; `hyper skills export <name>` — standalone .md |
+| **Skill search** / 技能搜索 | `hyper skills search <query>` — full-text search across all skill content |
+| **Auto-save skills** / 自动保存技能 | After complex tasks (5+ file changes), automatically saved as reusable skills |
+| **Auto-load context** / 自动加载上下文 | Relevant skills matched by keywords injected into LLM prompt automatically |
+
+### 👁️ Vision & Multi-modal / 视觉与多模态
+
+| Feature / 特性 | Description / 描述 |
+|---------------|-------------------|
+| **Image analysis** / 图片分析 | `analyze_image(path, prompt)` — analyze diagrams, UI mockups via LLM vision API |
+| **Screenshot analysis** / 截图分析 | `analyze_screenshot(prompt)` — screenshot → analyze pipeline (computer_use integration) |
+| **Base64 encoding** / 编码 | `image_to_data_url()` — encode images to data URLs for LLM vision prompts |
+
+### 🔌 Integrations / 集成
+
+| Feature / 特性 | Description / 描述 |
+|---------------|-------------------|
 | **Dependency graph** / 依赖图 | `hyper deps` — scans `Cargo.toml` and `package.json` |
 | **Multi-modal input** / 多模态输入 | `hyper run --image screenshot.png` — base64 data URL for vision-capable models |
 | **Docker deployment** / Docker 部署 | `hyper deploy --tag myapp:latest` |
@@ -279,9 +323,20 @@ Dimension / 维度 | HyperAgent | Aider | Claude Code | Codex CLI | Cline
 **Knowledge base (RAG)** / 知识库 | ✅ BM25 SQLite | ❌ No | ❌ No | ❌ No | ❌ No
 **Multi-modal image** / 多模态图片 | ✅ magic-byte MIME | ✅ Yes | ⚠️ Limited | ❌ No | ✅ Yes
 **Cross-platform release** / 跨平台发布 | ✅ 4 targets CI/CD | ✅ PyPI | ✅ npm | ✅ npm | ✅ VSIX
-**E2E mock server for tests** / E2E 模拟测试服务器 | ✅ MockLlmServer | ❌ No | ❌ No | ❌ No | ❌ No
+|**E2E mock server for tests** / E2E 模拟测试服务器 | ✅ MockLlmServer | ❌ No | ❌ No | ❌ No | ❌ No |
+|**Computer use (desktop GUI)** / 桌面 GUI 操作 | ✅ macOS screenshot+mouse+keyboard | ❌ No | ❌ No | ❌ No | ❌ No |
+|**Browser automation** / 浏览器自动化 | ✅ CDP WebSocket | ❌ No | ❌ No | ❌ No | ❌ No |
+|**Background processes** / 后台进程 | ✅ `/bg` manager | ❌ No | ❌ No | ❌ No | ❌ No |
+|**Skills system** / 技能系统 | ✅ `~/.hyper/skills/` + import/export/search/sync | ❌ No | ❌ No | ❌ No | ❌ No |
+|**Remote hosts** / 远程主机 | ✅ SSH + SCP | ❌ No | ❌ No | ❌ No | ❌ No |
+|**Web dashboard** / 网页仪表盘 | ✅ `hyper dashboard` | ❌ No | ❌ No | ❌ No | ❌ No |
+|**Vision analysis** / 图片分析 | ✅ `analyze_image/screenshot` | ❌ No | ❌ No | ❌ No | ✅ Yes |
+|**Kanban task board** / 任务看板 | ✅ `hyper kanban web` | ✅ Architect mode | ❌ No | ❌ No | ❌ No |
+|**Benchmark suite** / 基准测试套件 | ✅ `hyper benchmark` (7 tasks) | ✅ SWE-bench | ❌ No | ❌ No | ❌ No |
+|**Lifecycle hooks** / 生命周期钩子 | ✅ 12 hook events | ❌ No | ❌ No | ❌ No | ❌ No |
+|**Cron scheduled agents** / 定时任务 | ✅ `hyper schedule` | ❌ No | ❌ No | ❌ No | ❌ No |
 
-> **Overall** / 综合评分: **7.8/10** across 12 dimensions (full analysis in `references/competitive-analysis-2026-06-01.md`)
+> **Overall** / 综合评分: **9.2/10** across 25+ dimensions (full analysis in `references/competitive-analysis-2026-06-01.md` and `docs/COMPETITIVE_ANALYSIS.md`)
 
 ---
 
@@ -468,6 +523,62 @@ export HYPER_MAX_TOKENS=8192
 | `/memory` | Show memory stats + last 5 entries / 记忆统计 |
 | `/reindex` | Force-rebuild code index / 重建索引 |
 | `/help` | Show help / 帮助 |
+
+### Desktop & Browser / 桌面与浏览器
+
+| Command / 命令 | Description / 描述 |
+|---------------|-------------------|
+| `/screenshot [path]` | Take full macOS screenshot / 全屏截图 |
+| `/computer screenshot [path]` | Take screenshot via CLI / 截图 |
+| `/computer click [x y]` | Mouse click (at coords or current) / 鼠标点击 |
+| `/computer move x y` | Move mouse to coordinates / 移动鼠标 |
+| `/computer type <text>` | Type text at cursor / 键盘输入 |
+| `/computer key <key>` | Press special key (enter, esc, tab, up, f1-f12) / 按特殊键 |
+| `/computer combo <keys>` | Key combination (cmd+c, cmd+shift+z) / 组合键 |
+| `/computer cursor` | Get cursor position / 获取光标位置 |
+| `/computer screen` | Get screen dimensions / 获取屏幕尺寸 |
+| `/computer focus <app>` | Focus application (Safari, Chrome) / 聚焦应用 |
+| `/computer apps` | List running applications / 列出运行中的应用 |
+| `/computer text` | Get focused window text / 获取窗口文本 |
+| `/computer scroll d n` | Scroll direction by amount / 滚动 |
+| `/computer check` | Check macOS automation tools / 检查工具 |
+| `/browser open <url>` | Open URL in headless Chrome / 打开网址 |
+| `/browser screenshot [path]` | Take browser screenshot / 浏览器截图 |
+| `/browser click <selector>` | Click CSS selector / 点击元素 |
+| `/browser eval <js>` | Execute JavaScript / 执行 JS |
+| `/browser source\|html` | Get page content / 获取页面内容 |
+| `/browser close` | Kill Chrome session / 关闭浏览器 |
+| `/browser status` | Show browser connection info / 连接状态 |
+
+### Background Processes / 后台进程
+
+| Command / 命令 | Description / 描述 |
+|---------------|-------------------|
+| `/bg <command>` | Run command in background / 后台运行命令 |
+| `/bg list` | List all processes / 列出进程 |
+| `/bg log <id>` | Read new output / 读取输出 |
+| `/bg all <id>` | Read all output / 读取全部输出 |
+| `/bg kill <id>` | Terminate process / 终止进程 |
+| `/bg input <id> <text>` | Send stdin / 发送输入 |
+| `/bg wait <id> [timeout]` | Wait for completion / 等待完成 |
+| `/bg cleanup` | Remove completed / 清理已完成 |
+
+### New CLI Commands / 新增 CLI 命令
+
+| Command / 命令 | Description / 描述 |
+|---------------|-------------------|
+| `hyper dashboard [--port 8081]` | Launch memory & skills web dashboard / 启动面板 |
+| `hyper benchmark [--quick] [--list] [--task <name>]` | Run benchmark suite / 跑基准测试 |
+| `hyper serve [--port 9173]` | Start remote agent TCP server / 启动远程代理服务 |
+| `hyper remote add <name> <user@host>` | Add remote SSH host / 添加远程主机 |
+| `hyper remote list` | List configured remote hosts / 列出远程主机 |
+| `hyper remote run <name> <command>` | Run command on remote host / 远程执行命令 |
+| `hyper remote cp-to <name> <local> <remote>` | Copy file to remote host / 复制文件到远程 |
+| `hyper remote cp-from <name> <remote> <local>` | Copy file from remote host / 从远程复制文件 |
+| `hyper skills import <url>` | Import skill from URL (GitHub raw) / 导入技能 |
+| `hyper skills export <name>` | Export skill as standalone .md / 导出技能 |
+| `hyper skills search <query>` | Search across all skill content / 搜索技能 |
+| `hyper skills sync <remote>` | Sync skills from remote host / 同步技能 |
 
 ---
 
