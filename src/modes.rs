@@ -24,6 +24,8 @@ pub enum ModeKind {
     Architect,
     /// Answer questions about the codebase (read-only)
     Ask,
+    /// General-purpose assistant — coding, writing, analysis, translation, brainstorming
+    General,
     /// Root-cause analysis, add tracing, fix bugs
     Debug,
     /// User-defined custom mode
@@ -36,6 +38,7 @@ impl std::fmt::Display for ModeKind {
             ModeKind::Code => write!(f, "code"),
             ModeKind::Architect => write!(f, "architect"),
             ModeKind::Ask => write!(f, "ask"),
+            ModeKind::General => write!(f, "general"),
             ModeKind::Debug => write!(f, "debug"),
             ModeKind::Custom(name) => write!(f, "custom:{name}"),
         }
@@ -171,6 +174,15 @@ impl Default for ModeRegistry {
             temperature: Some(0.2),
         });
 
+        modes.insert("general".to_string(), ModeConfig {
+            name: "General".into(),
+            description: "General-purpose assistant — coding, writing, analysis, translation, brainstorming".into(),
+            system_prompt: GENERAL_MODE_PROMPT.into(),
+            permissions: ModePermissions::default(),
+            model: None,
+            temperature: Some(0.3),
+        });
+
         modes.insert("debug".to_string(), ModeConfig {
             name: "Debug".into(),
             description: "Root-cause analysis, add trace logs, isolate bugs, fix issues".into(),
@@ -258,14 +270,26 @@ Guidelines:
 6. **Consider migrations** — if changing existing systems, plan the migration path.
 7. **Use Mermaid/ASCII diagrams** — communicate structure visually."#;
 
-const ASK_MODE_PROMPT: &str = r#"You are in **Ask Mode** — answer questions about the codebase.
+const ASK_MODE_PROMPT: &str = r#"You are in **Ask Mode** — a knowledgeable assistant for questions and explanations.
 
 Guidelines:
-1. **Read first** — search the codebase before answering. Cite specific files/lines.
-2. **Be accurate** — if you're not sure, say so. Don't make up APIs.
-3. **Explain why** — not just what the code does, but why it was done that way.
-4. **Keep it concise** — answer the question directly, then offer to elaborate.
-5. **No edits** — this mode is read-only. Don't modify files or run commands."#;
+1. **Read first** — search the codebase before answering about code. Cite specific files/lines.
+2. **Be accurate** — if you're not sure, say so. Don't make up APIs or facts.
+3. **Explain why** — not just what, but why.
+4. **Keep it concise** — answer directly, then offer to elaborate.
+5. **No edits** — this mode is read-only. Don't modify files or run commands.
+6. **General queries welcome** — answer non-coding questions (writing, analysis, translation, etc.) using your knowledge."#;
+
+const GENERAL_MODE_PROMPT: &str = r#"You are in **General Mode** — a versatile assistant for any task.
+
+Guidelines:
+1. **Be helpful and accurate** — handle coding, writing, analysis, translation, brainstorming, research, and more.
+2. **Use tools when available** — if MCP tools, web search, or knowledge base are available, use them proactively.
+3. **Be concise but complete** — answer the question directly, offer depth when asked.
+4. **Adapt to context** — if the user is in a project directory, reference the codebase. If not, just help.
+5. **Format well** — use markdown, code blocks, lists, and tables as appropriate.
+6. **Multimodal aware** — if the user provides images, analyze them carefully and reference visual details.
+7. **Language** — answer in the same language as the user's question."#;
 
 const DEBUG_MODE_PROMPT: &str = r#"You are in **Debug Mode** — find and fix bugs.
 

@@ -71,21 +71,59 @@ pub struct ChatChoice {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatResponseMessage {
+    #[serde(default)]
     pub content: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
     pub tool_calls: Vec<ToolCall>,
 }
 
+impl ChatResponseMessage {
+    pub fn text_content(&self) -> String {
+        self.content.clone().unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
-    pub content: String,
+    #[serde(alias = "content")]
+    pub parts: Vec<ContentPart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ContentPart {
+    Text { r#type: String, text: String },
+    ImageUrl { r#type: String, image_url: ImageUrl },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUrl {
+    pub url: String,
+}
+
+impl Message {
+    pub fn text(role: &str, text: impl Into<String>) -> Self {
+        Self {
+            role: role.to_string(),
+            parts: vec![ContentPart::Text {
+                r#type: "text".to_string(),
+                text: text.into(),
+            }],
+        }
+    }
+    pub fn text_content(&self) -> String {
+        self.parts.iter().filter_map(|p| match p {
+            ContentPart::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        }).collect()
+    }
 }
 
 /// Adaptive max_tokens based on prompt complexity
 fn adaptive_max_tokens(messages: &[Message]) -> u32 {
-    let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+    let total_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
     let estimated = (total_chars / 4 * 3 / 10).clamp(1024, 16384);
     estimated as u32
 }
@@ -256,7 +294,7 @@ impl LlmProvider {
 
     pub async fn chat(&self, messages: Vec<Message>) -> Result<String> {
         let result = self.chat_with_tools(messages, None).await?;
-        Ok(result.content.unwrap_or_default())
+        Ok(result.text_content())
     }
 
     pub async fn chat_stream(

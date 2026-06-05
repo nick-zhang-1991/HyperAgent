@@ -166,14 +166,8 @@ Numbers are 0-based indices of the proposed changes."#
         );
 
         let messages = vec![
-            Message { 
-                role: "system".to_string(),
-                content: system_prompt,
-            },
-            Message { 
-                role: "user".to_string(),
-                content: review_input.to_string(),
-            },
+            Message::text("system", system_prompt),
+            Message::text("user", review_input.to_string()),
         ];
         (messages, quality_instruction)
     }

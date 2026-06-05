@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use crate::diff::FileChange;
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::index::{FileContext, HyperIndex};
-use crate::llm::{LlmProvider, Message, ProviderPool};
+use crate::llm::{LlmProvider, Message, ProviderPool, ContentPart, ImageUrl};
 use crate::memory::{MemoryManager, MemoryType};
 
 use super::apply_agent::ApplyAgent;
@@ -57,6 +57,7 @@ pub struct Orchestrator {
     mcp: Option<crate::mcp::McpRegistry>,
     mode_registry: Option<crate::modes::ModeRegistry>,
     use_worktree: bool,
+    pending_image: Option<String>,
 }
 
 impl Orchestrator {
@@ -84,11 +85,16 @@ impl Orchestrator {
             plan_provider: None,
             review_provider: None,
             use_worktree: false,
+            pending_image: None,
         }
     }
 
     pub fn with_worktree(mut self) -> Self {
         self.use_worktree = true;
+        self
+    }
+    pub fn with_image(mut self, path: impl Into<String>) -> Self {
+        self.pending_image = Some(path.into());
         self
     }
 
@@ -390,24 +396,10 @@ impl Orchestrator {
                             "Fix compile errors in the changed files", &fix_files, &errors
                         );
 
+                        let fix_system_prompt = "You are a code fixer. The following compile errors were found after applying changes.\n                                 Output ONLY the corrected file content in JSON format:\n                                 {{\"file\": \"relative/path\", \"content\": \"COMPLETE corrected file content\"}}\n                                 RULES:\n                                 - Output one JSON object per file that needs fixing\n                                 - Do NOT change anything beyond what is needed to fix the errors\n                                 - Keep the existing code structure intact\n                                 - Each JSON must be on its own line";
                         let fix_response = self.provider.chat(vec![
-                            crate::llm::Message {
-                                role: "system".to_string(),
-                                content: format!(
-                                    "You are a code fixer. The following compile errors were found after applying changes.\n\
-                                     Output ONLY the corrected file content in JSON format:\n\
-                                     {{\"file\": \"relative/path\", \"content\": \"COMPLETE corrected file content\"}}\n\n\
-                                     RULES:\n\
-                                     - Output one JSON object per file that needs fixing\n\
-                                     - Do NOT change anything beyond what's needed to fix the errors\n\
-                                     - Keep the existing code structure intact\n\
-                                     - Each JSON must be on its own line"
-                                ),
-                            },
-                            crate::llm::Message {
-                                role: "user".to_string(),
-                                content: review_input,
-                            },
+                            Message::text("system", fix_system_prompt),
+                            Message::text("user", review_input),
                         ]).await;
 
                         match fix_response {
@@ -538,37 +530,60 @@ impl Orchestrator {
     ) -> Result<RunResult> {
         println!("   🤔 Answering question...");
 
-        let file_context = self.build_ask_file_context(relevant_files);
+        let is_general = self.mode == "general";
+        let file_context = if is_general {
+            String::new()
+        } else {
+            self.build_ask_file_context(relevant_files)
+        };
         let mem_context = self.load_memory_context(prompt).await;
 
-        let mut system_prompt = format!(
-            "You are HyperAgent's ASK mode — a helpful coding assistant.\n\
-            Answer the user's question about the codebase concisely and accurately.\n\n\
-            Relevant files from the project:\n{}\n\n\
-            Past context about this project:\n{}\n\n\
-            Rules:\n\
-            - Be concise but complete\n\
-            - Reference specific file paths and function names when relevant\n\
-            - If the answer requires code changes, say so but DO NOT propose edits\n\
-            - Format code blocks with ```language\n\
-            - Answer in the same language as the question",
-            file_context,
-            if mem_context.is_empty() { "None".to_string() } else { mem_context }
-        );
+        let system_prompt = if is_general {
+            format!(
+                "You are HyperAgent's General mode — a knowledgeable, versatile assistant.\n\
+                Help with coding, writing, analysis, translation, brainstorming, research, and more.\n\
+                Be concise but thorough. Use markdown formatting when helpful.\n\
+                Answer in the same language as the question.\n\
+                If the user attaches an image, analyze it carefully and reference what you see.\n\
+                Past context:\n{}\n\
+                Rules:\n\
+                - Be concise but complete\n\
+                - Format code blocks with ```language\n\
+                - Answer in the same language as the question",
+                if mem_context.is_empty() { "None".to_string() } else { mem_context }
+            )
+        } else {
+            format!(
+                "You are HyperAgent's ASK mode — a helpful coding assistant.\n\
+                Answer the user's question about the codebase concisely and accurately.\n\
+                Relevant files from the project:\n{}\n\
+                Past context about this project:\n{}\n\
+                Rules:\n\
+                - Be concise but complete\n\
+                - Reference specific file paths and function names when relevant\n\
+                - If the answer requires code changes, say so but DO NOT propose edits\n\
+                - Format code blocks with ```language\n\
+                - Answer in the same language as the question",
+                file_context,
+                if mem_context.is_empty() { "None".to_string() } else { mem_context }
+            )
+        };
 
-        // Add MCP tools context if available — use native OpenAI function calling
+        // Add MCP tools context if available
         let mcp_tool_defs: Vec<crate::llm::provider::ToolDefinition> = if let Some(ref mcp) = self.mcp {
             let defs = mcp.to_tool_definitions().await;
             if !defs.is_empty() {
-                system_prompt.push_str("\n\nYou have access to MCP tools listed below. Use them when needed to gather information or perform actions.");
+                let mut tools_note = String::from("\n\nYou have access to MCP tools listed below. Use them when needed.");
                 for def in &defs {
                     let desc = if def.function.description.len() > 80 {
                         format!("{}...", &def.function.description[..77])
                     } else {
                         def.function.description.clone()
                     };
-                    system_prompt.push_str(&format!("\n  - {}: {desc}", def.function.name));
+                    tools_note.push_str(&format!("\n  - {}: {desc}", def.function.name));
                 }
+                let mut sp = system_prompt.clone();
+                sp.push_str(&tools_note);
                 defs
             } else {
                 Vec::new()
@@ -577,32 +592,54 @@ impl Orchestrator {
             Vec::new()
         };
 
+        let system_prompt_final = if mcp_tool_defs.is_empty() {
+            system_prompt
+        } else {
+            let mut sp = system_prompt;
+            sp.push_str("\n\nYou have access to MCP tools listed below. Use them when needed to gather information or perform actions.");
+            for def in &mcp_tool_defs {
+                let desc = if def.function.description.len() > 80 {
+                    format!("{}...", &def.function.description[..77])
+                } else {
+                    def.function.description.clone()
+                };
+                sp.push_str(&format!("\n  - {}: {desc}", def.function.name));
+            }
+            sp
+        };
+
         let mut messages = vec![
-            Message { 
-                role: "system".to_string(),
-                content: system_prompt,
-            },
+            Message::text("system", system_prompt_final),
         ];
 
-        // Inject conversation history so the model knows what was discussed
+        // Inject conversation history
         for (prev_user, prev_assistant) in &self.conversation_history {
-            messages.push(Message { 
-                role: "user".to_string(),
-                content: prev_user.clone(),
-            });
-            messages.push(Message { 
-                role: "assistant".to_string(),
-                content: prev_assistant.clone(),
-            });
+            messages.push(Message::text("user", prev_user.clone()));
+            messages.push(Message::text("assistant", prev_assistant.clone()));
         }
 
-        // Add the user prompt
-        messages.push(Message { 
-            role: "user".to_string(),
-            content: prompt.to_string(),
-        });
+        // Build user message with optional image attachment
+        let user_msg = if let Some(ref img_path) = self.pending_image {
+            let image_url = format!("data:image/png;base64,{}", img_path);  // placeholder — actual base64 encoding done at call site
+            Message {
+                role: "user".to_string(),
+                parts: vec![
+                    ContentPart::Text {
+                        r#type: "text".to_string(),
+                        text: prompt.to_string(),
+                    },
+                    ContentPart::ImageUrl {
+                        r#type: "image_url".to_string(),
+                        image_url: crate::llm::provider::ImageUrl { url: image_url },
+                    },
+                ],
+            }
+        } else {
+            Message::text("user", prompt.to_string())
+        };
+        messages.push(user_msg);
 
-        // Max 3 tool call rounds — use native OpenAI function calling when tools exist
+        // Max 3 tool call rounds
         let max_rounds = if mcp_tool_defs.is_empty() { 1 } else { 3 };
         let has_tools = !mcp_tool_defs.is_empty();
         let mut response_text = String::new();
@@ -611,7 +648,6 @@ impl Orchestrator {
             print!("   📝 (round {}/{}) ", round + 1, max_rounds);
             std::io::Write::flush(&mut std::io::stdout()).ok();
 
-            // Use native function calling with tools, or fallback to plain chat
             let response_msg = if has_tools {
                 match self.provider.chat_with_tools(
                     messages.clone(),
@@ -619,7 +655,6 @@ impl Orchestrator {
                 ).await {
                     Ok(msg) => msg,
                     Err(e) => {
-                        // Fallback: try plain chat
                         match self.chat_with_failover(messages.clone()).await {
                             Ok(r) => {
                                 print!("{r}");
@@ -631,7 +666,6 @@ impl Orchestrator {
                             }
                             Err(e2) => {
                                 if round == 0 {
-                                    // Try streaming as last resort
                                     if let Ok(stream) = self.chat_stream_with_failover(messages.clone()).await {
                                         let mut rx = stream.into_receiver();
                                         let mut full = String::new();
@@ -672,7 +706,7 @@ impl Orchestrator {
                             content: Some(r),
                             tool_calls: vec![],
                         }
-                    },
+                    }
                     Err(e) => {
                         if round == 0 {
                             if let Ok(stream) = self.chat_stream_with_failover(messages.clone()).await {
@@ -709,7 +743,6 @@ impl Orchestrator {
             // Process native tool calls
             if !response_msg.tool_calls.is_empty() {
                 for tool_call in &response_msg.tool_calls {
-                    // Parse the tool name: "server.tool_name" → tool_name
                     let tool_name = tool_call.function.name.clone();
                     let args: serde_json::Value = match serde_json::from_str(&tool_call.function.arguments) {
                         Ok(v) => v,
@@ -725,25 +758,17 @@ impl Orchestrator {
                         Ok(value) => {
                             let result_str = serde_json::to_string_pretty(&value)
                                 .unwrap_or_else(|_| "{}".to_string());
-                            messages.push(Message {
-                                role: "tool".to_string(),
-                                content: result_str,
-                            });
+                            messages.push(Message::text("tool", result_str));
                             println!("   🔧 Called MCP tool '{}'", tool_name);
                         }
                         Err(e) => {
-                            messages.push(Message {
-                                role: "tool".to_string(),
-                                content: format!("Error: {e}"),
-                            });
-                            eprintln!("   ⚠️  MCP tool '{tool_name}' failed: {e}");
+                            messages.push(Message::text("tool", format!("Error: {e}")));
+                            eprintln!("   ⚠️  MCP tool '{}' failed: {e}", tool_name);
                         }
                     }
                 }
-                // Continue loop for next round with tool results
             } else {
-                // No tool calls — this is the final response
-                response_text = response_msg.content.unwrap_or_default();
+                response_text = response_msg.text_content();
                 break;
             }
         }
@@ -753,14 +778,13 @@ impl Orchestrator {
         }
 
         self.record_memory(
-            &format!("Ask response for '{}': {}", &prompt[..prompt.char_indices().nth(100).map(|(i,_)|i).unwrap_or(prompt.len())], 
+            &format!("Ask response for '{}': {}", &prompt[..prompt.char_indices().nth(100).map(|(i,_)|i).unwrap_or(prompt.len())],
                      &response_text[..response_text.char_indices().nth(200).map(|(i,_)|i).unwrap_or(response_text.len())]),
             MemoryType::Decision,
         ).await;
 
         self.fire_hook(HookEvent::PostRun, "ask complete").await;
 
-        // Consolidate memories
         if let Some(ref mem) = self.memory {
             if let Ok(uncon) = mem.store().get_unconsolidated(20) {
                 if !uncon.is_empty() {

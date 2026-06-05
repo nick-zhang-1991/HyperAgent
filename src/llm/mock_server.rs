@@ -156,7 +156,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(async {
             provider.chat(vec![
-                Message { role: "user".to_string(), content: "hello".to_string() }
+                Message::text("user", "hello")
             ]).await
         });
 
@@ -181,7 +181,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(async {
             provider.chat_stream(vec![
-                Message { role: "user".to_string(), content: "stream test".to_string() }
+                Message::text("user", "stream test")
             ]).await
         });
 

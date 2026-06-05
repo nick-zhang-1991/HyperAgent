@@ -156,7 +156,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Commands:  /exit  /mode <ask|code|debug|architect>  /help  /clear");
+    println!("  Commands:  /exit  /mode <ask|code|debug|architect|general>  /image <path>  /help  /clear");
     println!();
 
     // REPL loop
@@ -202,7 +202,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  Commands:");
                     println!("  ───────────────────────────────────────");
                     println!("  /exit, /quit       Exit the REPL");
-                    println!("  /mode <mode>       Switch mode (ask/code/debug/architect)");
+                    println!("  /mode <mode>       Switch mode (ask/code/debug/architect/general)");
                     println!("  /mode              Show current mode");
                     println!("  /clear, /cls       Clear screen");
                     println!("  /help              Show this help");
@@ -270,17 +270,20 @@ pub async fn run_repl() -> anyhow::Result<()> {
                 cmd if cmd.starts_with("/mode ") => {
                     let new_mode = cmd[6..].trim().to_lowercase();
                     match new_mode.as_str() {
-                        "ask" | "code" | "debug" | "architect" => {
+                        "ask" | "code" | "debug" | "architect" | "general" => {
                             current_mode = new_mode;
                             println!("  ✅ Mode switched to: {}", current_mode);
                         }
                         _ => {
                             println!(
-                                "  ⚠️  Unknown mode: {}. Use: ask, code, debug, architect",
+                                "  ⚠️  Unknown mode: {}. Use: ask, code, debug, architect, general",
                                 new_mode
                             );
                         }
                     }
+                }
+                "/image" => {
+                    println!("  📷 Usage: /image <path> — attach an image to your next message");
                 }
                 "/reindex" => {
                     println!("  Rebuilding index...");

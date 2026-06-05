@@ -40,14 +40,8 @@ Generate the test functions:"#,
 
     let response = provider
         .chat(vec![
-            Message { 
-                role: "system".to_string(),
-                content: system_prompt,
-            },
-            Message { 
-                role: "user".to_string(),
-                content: format!("Generate tests{}:", function_context),
-            },
+            Message::text("system", system_prompt),
+            Message::text("user", format!("Generate tests{}:", function_context)),
         ])
         .await?;
 
