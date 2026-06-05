@@ -39,6 +39,7 @@ pub struct Skill {
     pub description: String,
     pub category: Option<String>,
     pub tags: Vec<String>,
+    pub depends: Vec<String>, // Skills that this skill depends on
     pub content: String,
     pub path: PathBuf,
 }
@@ -71,6 +72,7 @@ impl Skill {
             description: String::new(),
             category: None,
             tags: Vec::new(),
+            depends: Vec::new(),
             content: body.unwrap_or(&content).to_string(),
             path: path.to_path_buf(),
         };
@@ -95,6 +97,14 @@ impl Skill {
                             if !tag.is_empty() {
                                 skill.tags.push(tag.to_string());
                             }
+                        }
+                    }
+                } else if let Some(val) = line.strip_prefix("depends: ") {
+                    let depends_str = val.trim().trim_matches('"');
+                    for d in depends_str.split(',') {
+                        let d = d.trim().trim_matches('"');
+                        if !d.is_empty() {
+                            skill.depends.push(d.to_string());
                         }
                     }
                 }
