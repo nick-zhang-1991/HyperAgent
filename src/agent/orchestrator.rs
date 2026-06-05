@@ -600,6 +600,22 @@ impl Orchestrator {
             }
         }
 
+        // Phase 5e: Reflexion — analyze failures, store lessons for future retries
+        if total_memories > 0 && extraction_count == 0 && changed_files.len() < 3 {
+            if let Some(ref mem) = self.memory {
+                let outcome = format!(
+                    "Task: {prompt}\nFiles changed: {}\nDuration: {:.1}s",
+                    changed_files.len(),
+                    start.elapsed().as_secs_f64()
+                );
+                if let Ok(reflection) = mem.reflect(prompt, &outcome, &[]) {
+                    if !reflection.is_empty() {
+                        println!("   💡 Reflexion: learned from experience");
+                    }
+                }
+            }
+        }
+
 	// Phase 6: Auto-save as skill after complex tasks (5+ changes)
 	if changed_files.len() >= 5 {
 		let home_dir = dirs_next::home_dir();

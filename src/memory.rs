@@ -930,6 +930,68 @@ impl MemoryManager {
         &*self.store
     }
 
+    /// Reflect on a task outcome: analyze why it failed, store the lesson as a memory,
+    /// and return a reflection summary that can be injected into retry attempts.
+    /// This implements the Reflexion pattern: "fail → reflect → learn → retry with memory".
+    pub fn reflect(&self, task: &str, outcome: &str, errors: &[String]) -> anyhow::Result<String> {
+        // Build a structured reflection prompt
+        let error_summary = if errors.is_empty() {
+            "No specific errors captured.".to_string()
+        } else {
+            let mut s = String::new();
+            for e in errors.iter().take(5) {
+                s.push_str(&format!("- {e}\n"));
+            }
+            s
+        };
+
+        // Build a reflection analysis (rule-based for now, can be LLM-powered later)
+        let mut lessons = Vec::new();
+
+        // Check for common failure patterns
+        let outcome_lower = outcome.to_lowercase();
+        let errors_text = error_summary.to_lowercase();
+
+        if outcome_lower.contains("compilation error") || errors_text.contains("error[") {
+            lessons.push(format!(
+                "Task '{task}' failed due to compilation errors. Notable issues:\n{}",
+                error_summary
+            ));
+        }
+        if outcome_lower.contains("test failed") || errors_text.contains("test result: failed") {
+            lessons.push(format!(
+                "Tests failed for task '{task}'. Check test expectations and implementation:\n{}",
+                error_summary
+            ));
+        }
+        if outcome_lower.contains("timeout") || errors_text.contains("timed out") {
+            lessons.push(format!(
+                "Task '{task}' timed out. Consider splitting into smaller sub-tasks."
+            ));
+        }
+        if outcome_lower.contains("lint") || errors_text.contains("warning") {
+            lessons.push(format!(
+                "Lint warnings in task '{task}'. Fix warnings before declaring completion." 
+            ));
+        }
+
+        // If no specific pattern matched, generate a generic reflection
+        if lessons.is_empty() {
+            lessons.push(format!(
+                "Task '{task}' did not reach expected outcome. Error context:\n{}",
+                if error_summary.len() > 5 { &error_summary } else { outcome }
+            ));
+        }
+
+        // Store the reflection as a learned memory for future reference
+        for lesson in &lessons {
+            let _ = self.remember(lesson, crate::memory::MemoryType::Learned);
+        }
+
+        // Return the reflection summary
+        Ok(lessons.join("\n---\n"))
+    }
+
     /// Export memories to a JSON file for sharing or backup
     pub fn export_to_file(&self, path: &Path) -> anyhow::Result<()> {
         let all_entries = self.recall("", 9999)?;
