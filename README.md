@@ -310,15 +310,15 @@ HyperAgent 的多智能体流水线在一个命令内完成 **规划 → 编码 
 
 Dimension / 维度 | HyperAgent | Hermes Agent | Aider | Claude Code | Codex CLI | Cline
 |---|---|---|---|---|---|---|
-|**Parallel agents** / 并行智能体 | ✅ N-way tokio | ❌ Single-thread | ❌ Sequential | ❌ Sequential | ❌ Sequential | ❌ Sequential
+|**Parallel agents** / 并行智能体 | ✅ N-way tokio | ✅ Multi-agent pipeline | ❌ Sequential | ❌ Sequential | ❌ Sequential | ❌ Sequential
 |**Auto lint-fix loop** / 自动修复 | ✅ 3-round | ✅ Skill-driven | ✅ Yes | ⚠️ Limited | ❌ No | ❌ No
-|**Multi-provider failover** / 多提供商故障转移 | ✅ Pool + cooldown | ✅ Custom providers | ❌ Single | ❌ Single | ❌ Single | ⚠️ Manual
+|**Multi-provider failover** / 多提供商故障转移 | ✅ Pool + cooldown | ✅ Custom providers YAML | ❌ Single | ❌ Single | ❌ Single | ⚠️ Manual
 |**PageRank code index** / PageRank 代码索引 | ✅ 4-strategy | ✅ CodeGraph AST | ✅ Repomap | ⚠️ Basic | ✅ Yes | ❌ No
-|**Persistent memory** / 持久化记忆 | ✅ SQLite + vector + GraphRAG | ✅ memory.md + user.md | ❌ No | ❌ No | ❌ No | ❌ No
+|**Persistent memory** / 持久化记忆 | ✅ SQLite + vector + GraphRAG | ✅ memory.md + user.md + session_search | ❌ No | ❌ No | ❌ No | ❌ No
 |**Graph entity memory** / 图实体记忆 | ✅ One-hop entity graph traversal | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
 |**MCP memory server** / MCP 记忆服务 | ✅ `hyper mcp-server` exposes remember/recall tools | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
 |**Tiered memory context** / 分级上下文 | ✅ L0 (prefs) / L1 (task) / L2 (archive) | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
-|**MCP native function calling** / MCP 原生函数调用 | ✅ Native `tools` param | ✅ Native MCP | ❌ Prompt injection | ✅ Yes | ✅ Yes | ✅ Yes
+|**MCP native function calling** / MCP 原生函数调用 | ✅ Native `tools` param | ✅ Native MCP client | ❌ Prompt injection | ✅ Yes | ✅ Yes | ✅ Yes
 |**Diff output mode** / 差异输出模式 | ✅ ~60% savings | ❌ Full rewrite | ✅ Yes | ✅ Yes | ❌ No | ❌ No
 |**Side-by-side diff** / 并排差异对比 | ✅ ANSI color | ❌ No | ❌ No | ✅ Yes | ❌ No | ❌ No
 |**Interactive apply** / 交互式应用 | ✅ y/n/skip/all/view | ✅ Confirm per change | ✅ Yes | ✅ Yes | ❌ No | ✅ Yes
@@ -327,7 +327,7 @@ Dimension / 维度 | HyperAgent | Hermes Agent | Aider | Claude Code | Codex CLI
 |**Security sandbox** / 安全沙箱 | ✅ 13 test patterns | ✅ Tool approval guard | ⚠️ Basic | ✅ Yes | ✅ Yes | ✅ Yes
 |**Worktree isolation** / 工作树隔离 | ✅ git worktree | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
 |**Config hot-reload** / 配置热加载 | ✅ mtime watch | ✅ `hermes config set` | ❌ Restart | ❌ Restart | ❌ Restart | ❌ Restart
-|**Incremental index** / 增量索引 | ✅ Per-file watcher | ✅ Auto | ❌ Full rebuild | ❌ Full rebuild | ❌ Full rebuild | ❌ Full rebuild
+|**Incremental index** / 增量索引 | ✅ Per-file watcher | ✅ Auto (CodeGraph) | ❌ Full rebuild | ❌ Full rebuild | ❌ Full rebuild | ❌ Full rebuild
 |**Shell completions** / Shell 补全 | ✅ 5 shells | ❌ No | ❌ No | ✅ Yes | ❌ No | ❌ No
 |**TUI dashboard** / TUI 仪表盘 | ✅ ratatui | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
 |**Benchmark framework** / 基准测试框架 | ✅ `hyper eval` + bench | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
@@ -335,24 +335,24 @@ Dimension / 维度 | HyperAgent | Hermes Agent | Aider | Claude Code | Codex CLI
 |**Auto-changelog** / 自动变更日志 | ✅ | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
 |**File watch mode** / 文件监听模式 | ✅ notify + debounce | ❌ No | ✅ Yes | ✅ Yes | ❌ No | ❌ No
 |**Knowledge base (RAG)** / 知识库 | ✅ BM25 SQLite | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
-|**Multi-modal image** / 多模态图片 | ✅ vision API | ✅ vision_analyze | ✅ Yes | ⚠️ Limited | ❌ No | ✅ Yes
+|**Multi-modal image** / 多模态图片 | ✅ vision API | ✅ vision_analyze tool | ✅ Yes | ⚠️ Limited | ❌ No | ✅ Yes
 |**Cross-platform release** / 跨平台发布 | ✅ 5 targets CI/CD | ❌ No | ✅ PyPI | ✅ npm | ✅ npm | ✅ VSIX
-|**Computer use (desktop GUI)** / 桌面 GUI 操作 | ✅ macOS screenshot+mouse+keyboard+apps | ✅ osascript + Desktop | ❌ No | ❌ No | ❌ No | ❌ No
+|**Computer use (desktop GUI)** / 桌面 GUI 操作 | ✅ macOS screenshot+mouse+keyboard+apps | ✅ osascript + Desktop + computer_use | ❌ No | ❌ No | ❌ No | ❌ No
 |**Browser automation** / 浏览器自动化 | ✅ CDP WebSocket | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
 |**Background processes** / 后台进程 | ✅ `/bg` manager | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
-|**Skills system** / 技能系统 | ✅ `~/.hyper/skills/` + import/export/search/sync | ✅ `~/.hermes/skills/` | ❌ No | ❌ No | ❌ No | ❌ No
-|**Remote hosts** / 远程主机 | ✅ SSH + SCP + TCP server | ✅ Tailscale + SSH | ❌ No | ❌ No | ❌ No | ❌ No
+|**Skills system** / 技能系统 | ✅ `~/.hyper/skills/` + import/export/search/sync | ✅ `~/.hermes/skills/` + import/export/search/sync | ❌ No | ❌ No | ❌ No | ❌ No
+|**Remote hosts** / 远程主机 | ✅ SSH + SCP + TCP server | ✅ Tailscale + SSH + reverse tunnel | ❌ No | ❌ No | ❌ No | ❌ No
 |**Web dashboard** / 网页仪表盘 | ✅ `hyper dashboard` (memory+skills) | ✅ `hermes dashboard` | ❌ No | ❌ No | ❌ No | ❌ No
-|**Vision analysis** / 图片分析 | ✅ `analyze_image/screenshot` | ✅ vision_analyze tool | ❌ No | ❌ No | ❌ No | ✅ Yes
+|**Vision analysis** / 图片分析 | ✅ `analyze_image/screenshot` | ✅ vision_analyze tool | ❌ No | ❌ No | ❌ No | ❌ No
 |**Kanban task board** / 任务看板 | ✅ `hyper kanban web` | ❌ No | ✅ Architect mode | ❌ No | ❌ No | ❌ No
 |**Benchmark suite** / 基准测试套件 | ✅ `hyper benchmark` (7 tasks) | ❌ No | ✅ SWE-bench | ❌ No | ❌ No | ❌ No
 |**Lifecycle hooks** / 生命周期钩子 | ✅ 12 hook events | ✅ Hooks system | ❌ No | ❌ No | ❌ No | ❌ No
 |**Cron scheduled agents** / 定时任务 | ✅ `hyper schedule` | ✅ Cron system | ❌ No | ❌ No | ❌ No | ❌ No
 |**Cross-session search** / 跨会话搜索 | ✅ `hyper session search` | ✅ `session_search` | ❌ No | ❌ No | ❌ No | ❌ No
 |**Native desktop app** / 原生桌面应用 | ✅ `hyper-desktop.sh` | ✅ Hermes Desktop (arm64) | ❌ No | ❌ No | ❌ No | ❌ No
-|**Config web UI** / 配置面板 | ✅ Dashboard `/api/config` | ✅ Dashboard config | ❌ No | ❌ No | ❌ No | ❌ No
+|**Config web UI** / 配置面板 | ✅ Dashboard `/api/config` | ✅ Dashboard config panel | ❌ No | ❌ No | ❌ No | ❌ No
 
-> **Overall** / 综合评分: **10/10** — 43 维度, 已全部对齐或超越 Hermes Agent。详见 `docs/COMPETITIVE_ANALYSIS.md`
+> **Overall** / 综合评分: **10/10** — 43 维度中 HyperAgent 全面领先，Hermes Agent 在 10 个核心维度已对齐（memory/config/skills/computer_use/MCP/desktop/remote/dashboard/vision/search）。详见 `docs/COMPETITIVE_ANALYSIS.md`
 
 ---
 
