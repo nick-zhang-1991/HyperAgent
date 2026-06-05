@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use crate::diff::FileChange;
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::index::{FileContext, HyperIndex};
-use crate::llm::{LlmProvider, Message, ProviderPool, ContentPart, ImageUrl};
+use crate::llm::{ContentPart, ImageUrl, LlmProvider, Message, ProviderPool};
 use crate::memory::{MemoryManager, MemoryType};
 
 use super::apply_agent::ApplyAgent;
@@ -93,7 +93,7 @@ impl Orchestrator {
         self.use_worktree = true;
         self
     }
-    pub fn with_image(mut self, path: impl Into<String>) -> Self {
+    pub fn with_image(&mut self, path: impl Into<String>) -> &mut Self {
         self.pending_image = Some(path.into());
         self
     }
@@ -776,6 +776,9 @@ impl Orchestrator {
         if !response_text.is_empty() {
             println!();
         }
+
+        // Reset pending image so it doesn't leak to next turn
+        self.pending_image = None;
 
         self.record_memory(
             &format!("Ask response for '{}': {}", &prompt[..prompt.char_indices().nth(100).map(|(i,_)|i).unwrap_or(prompt.len())],

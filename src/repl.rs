@@ -16,6 +16,7 @@ use crate::hooks::HookRegistry;
 use crate::index::HyperIndex;
 use crate::llm::LlmProvider;
 use crate::memory::{MemoryManager, SqliteMemoryStore};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use crate::router::ModelRouter;
 use std::path::Path;
 use std::time::Instant;
@@ -133,6 +134,9 @@ pub async fn run_repl() -> anyhow::Result<()> {
 
     // Current mode
     let mut current_mode = "ask".to_string();
+
+    // Orchestrator state across turns (for /image attachment)
+    let mut orchestrator: Option<crate::agent::orchestrator::Orchestrator> = None;
 
     // Setup rustyline with persistent history
     let history_path = dir.join(".hyper").join("history.txt");
@@ -282,8 +286,44 @@ pub async fn run_repl() -> anyhow::Result<()> {
                         }
                     }
                 }
+                cmd if cmd.starts_with("/image ") => {
+                    match orchestrator.as_mut() {
+                        Some(orch) => {
+                            let path = cmd[7..].trim();
+                            if path.is_empty() {
+                                println!("  Usage: /image <path-to-image>");
+                                println!("  Example: /image screenshot.png");
+                                println!("  Supported formats: PNG, JPG, JPEG, GIF, WEBP");
+                                continue;
+                            }
+                            match std::fs::read(path) {
+                                Ok(bytes) => {
+                                    let encoded = STANDARD.encode(&bytes);
+                                    let mime = match std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+                                        Some("jpg") | Some("jpeg") => "image/jpeg",
+                                        Some("gif") => "image/gif",
+                                        Some("webp") => "image/webp",
+                                        _ => "image/png",
+                                    };
+                                    let data_url = format!("data:{mime};base64,{encoded}");
+                                    let _ = orch.with_image(data_url);
+                                    println!("  📷 Image attached: {path} ({} bytes, base64-encoded)", bytes.len());
+                                    println!("  It will be sent with your next message.");
+                                }
+                                Err(e) => {
+                                    eprintln!("  ❌ Failed to read image: {e}");
+                                }
+                            }
+                        }
+                        None => {
+                            eprintln!("  ⚠️  Agent not initialized yet. Type a message first.");
+                        }
+                    }
+                }
                 "/image" => {
-                    println!("  📷 Usage: /image <path> — attach an image to your next message");
+                    println!("  Usage: /image <path-to-image>");
+                    println!("  Example: /image screenshot.png");
+                    println!("  Supported formats: PNG, JPG, JPEG, GIF, WEBP");
                 }
                 "/reindex" => {
                     println!("  Rebuilding index...");
