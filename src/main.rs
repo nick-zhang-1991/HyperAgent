@@ -33,6 +33,7 @@ mod kanban;
 mod knowledge;
 mod llm;
 mod mcp;
+mod goals;
 mod mcp_server;
 mod memory;
 mod memory_web;

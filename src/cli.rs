@@ -271,6 +271,20 @@ pub enum Commands {
         task: Option<String>,
     },
 
+    /// Goal mode — time-budget self-improvement loop
+    Goal {
+        /// The goal description (e.g., "optimize error handling")
+        goal: Vec<String>,
+
+        /// Time budget in minutes
+        #[arg(short, long, default_value_t = 10)]
+        budget: u64,
+
+        /// Maximum iterations
+        #[arg(short, long, default_value_t = 10)]
+        max_iterations: u32,
+    },
+
     /// List and run available agents
     Agents {
         /// Agent name to run (lists all if not provided)
@@ -1011,6 +1025,13 @@ impl Cli {
                     let report = crate::benchmark::run_all(*quick).await;
                     println!("{}", report.summary());
                 }
+                Ok(())
+            }
+
+            Some(Commands::Goal { goal, budget, max_iterations }) => {
+                let goal_text = goal.join(" ");
+                let budget_dur = std::time::Duration::from_secs(budget * 60);
+                crate::goals::run_goal(&goal_text, budget_dur, Some(*max_iterations), false).await?;
                 Ok(())
             }
 
