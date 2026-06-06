@@ -56,6 +56,13 @@ impl IndexCache {
             CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
             CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
             CREATE INDEX IF NOT EXISTS idx_ref_edges_from ON ref_edges(from_file);
+            CREATE TABLE IF NOT EXISTS file_snapshots (
+                path TEXT PRIMARY KEY,
+                mtime INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_snapshots_path ON file_snapshots(path);
             ",
         )?;
 
@@ -261,6 +268,76 @@ impl IndexCache {
         Ok(())
     }
 
+    /// Record a file snapshot for change detection
+    pub fn snapshot_file(&self, path: &str, mtime: i64, content_hash: &str, size: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO file_snapshots (path, mtime, content_hash, size_bytes) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![path, mtime, content_hash, size],
+        )?;
+        Ok(())
+    }
+
+    /// Detect changed, new, and deleted files by comparing snapshots
+    pub fn detect_changes(&self, current_files: &[(String, i64, String, i64)]) -> Result<ChangeSet> {
+        let conn = self.conn.lock().unwrap();
+
+        // Load existing snapshots
+        let mut stmt = conn.prepare("SELECT path, mtime, content_hash, size_bytes FROM file_snapshots")?;
+        let existing: std::collections::HashMap<String, (i64, String, i64)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .map(|(p, m, h, s)| (p, (m, h, s)))
+            .collect();
+
+        let current_map: std::collections::HashMap<String, (i64, String, i64)> = current_files
+            .iter()
+            .map(|(p, m, h, s)| (p.clone(), (*m, h.clone(), *s)))
+            .collect();
+
+        let mut new_files = Vec::new();
+        let mut changed_files = Vec::new();
+        let mut deleted_files = Vec::new();
+
+        // Find new and changed
+        for (path, (mtime, hash, size)) in &current_map {
+            match existing.get(path) {
+                None => {
+                    // New file
+                    new_files.push((path.clone(), *mtime, hash.clone(), *size));
+                }
+                Some((old_mtime, old_hash, _old_size)) => {
+                    if old_mtime != mtime || old_hash != hash {
+                        // Changed file
+                        changed_files.push((path.clone(), *mtime, hash.clone(), *size));
+                    }
+                }
+            }
+        }
+
+        // Find deleted
+        for path in existing.keys() {
+            if !current_map.contains_key(path) {
+                deleted_files.push(path.clone());
+            }
+        }
+
+        Ok(ChangeSet {
+            new_files,
+            changed_files,
+            deleted_files,
+            total_existing: existing.len(),
+            total_current: current_map.len(),
+        })
+    }
+
     /// Invalidate cache by deleting the database — forces full rebuild
     pub fn invalidate(&self) -> Result<()> {
         let _ = std::fs::remove_file(&self.db_path);
@@ -282,5 +359,33 @@ pub fn symbol_kind_from_str(s: &str) -> super::SymbolKind {
         "import" => super::SymbolKind::Import,
         "macro" => super::SymbolKind::Macro,
         _ => super::SymbolKind::Other(s.to_string()),
+    }
+}
+
+/// Result of change detection
+#[derive(Debug, Clone)]
+pub struct ChangeSet {
+    /// New files not in previous snapshot
+    pub new_files: Vec<(String, i64, String, i64)>,
+    /// Files whose mtime or hash changed
+    pub changed_files: Vec<(String, i64, String, i64)>,
+    /// Files that existed in snapshot but are gone now
+    pub deleted_files: Vec<String>,
+    /// Total files in previous snapshot
+    pub total_existing: usize,
+    /// Total files in current scan
+    pub total_current: usize,
+}
+
+impl ChangeSet {
+    /// Total number of files that need re-indexing
+    pub fn total_affected(&self) -> usize {
+        self.new_files.len() + self.changed_files.len() + self.deleted_files.len()
+    }
+
+    /// Whether incremental update is worthwhile (>0 changes but <50% of files)
+    pub fn should_incremental(&self) -> bool {
+        let affected = self.total_affected();
+        affected > 0 && (self.total_current == 0 || affected < self.total_current / 2)
     }
 }

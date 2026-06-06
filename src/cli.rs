@@ -21,6 +21,7 @@ use crate::index::HyperIndex;
 use crate::llm::LlmProvider;
 use crate::memory::{MemoryManager, SqliteMemoryStore};
 use crate::session::{Session, SessionManager};
+use crate::updater::Updater;
 
 /// HyperAgent - Ultra-Fast CLI Coding Agent
 ///
@@ -111,6 +112,14 @@ pub enum Commands {
         /// Force rebuild (alias: --reindex)
         #[arg(long, alias = "reindex")]
         force: bool,
+
+        /// Generate project from template (rust-cli, python-fastapi, react-vite-ts, etc.)
+        #[arg(long, short)]
+        template: Option<String>,
+
+        /// List available project templates
+        #[arg(long)]
+        list_templates: bool,
     },
 
     /// Show index statistics
@@ -165,7 +174,11 @@ pub enum Commands {
     },
 
     /// Interactive setup wizard (first-time configuration)
-    Setup,
+    Setup {
+        /// Run the interactive tutorial (first-time user onboarding)
+        #[arg(long)]
+        tutorial: bool,
+    },
 
     /// List and run available agents
     Agents {
@@ -438,6 +451,100 @@ pub enum Commands {
         #[arg(long)]
         model: Option<String>,
     },
+
+    /// Check for and install HyperAgent updates from GitHub Releases
+    SelfUpdate {
+        /// Only check for updates (don't install)
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// View usage analytics and statistics
+    Analytics {
+        /// Serve analytics web dashboard
+        #[arg(long, short)]
+        web: bool,
+
+        /// Port for web dashboard (default: 8099)
+        #[arg(long, default_value_t = 8099)]
+        port: u16,
+
+        /// Output as JSON for external BI tools
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Manage billing, subscription, and license
+    #[clap(subcommand)]
+    Billing(BillingAction),
+
+    /// Sync memories, skills, and config to/from cloud
+    #[clap(subcommand)]
+    Sync(SyncAction),
+
+    /// Manage team workspace
+    #[clap(subcommand)]
+    Team(TeamAction),
+
+    /// Start SaaS web server (browser-based agent)
+    Saas {
+        /// Port to listen on
+        #[arg(long, short, default_value_t = 3000)]
+        port: u16,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BillingAction {
+    /// Show current plan and usage
+    Status,
+    /// Upgrade to Pro/Team/Enterprise (opens Stripe Checkout)
+    Upgrade {
+        /// Target tier: pro, team, enterprise
+        tier: String,
+    },
+    /// Activate a license key
+    License {
+        /// License key to activate
+        key: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TeamAction {
+    /// Initialize a team workspace
+    Init {
+        /// Team name
+        name: String,
+        /// Admin email
+        #[arg(long)]
+        email: String,
+    },
+    /// List team members
+    Members,
+    /// Invite a member
+    Invite {
+        /// Member email
+        email: String,
+        /// Role: admin, member, viewer
+        #[arg(long, default_value = "member")]
+        role: String,
+    },
+    /// Remove a member
+    Remove {
+        /// Member email
+        email: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SyncAction {
+    /// Push local data to cloud
+    Push,
+    /// Pull cloud data to local
+    Pull,
+    /// Show sync status
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
@@ -592,7 +699,23 @@ impl Cli {
                 self.review_diff(against, dir, model.as_deref()).await
             }
 
-            Some(Commands::Init { dir, force }) => self.build_index(dir, *force).await,
+            Some(Commands::Init { dir, force, template, list_templates }) => {
+                if *list_templates {
+                    crate::scaffold_templates::list_templates();
+                    Ok(())
+                } else if let Some(tmpl_name) = template {
+                    if let Some(tmpl) = crate::scaffold_templates::Template::from_name(tmpl_name) {
+                        tmpl.generate(dir)?;
+                        Ok(())
+                    } else {
+                        eprintln!("Unknown template: {}", tmpl_name);
+                        crate::scaffold_templates::list_templates();
+                        Ok(())
+                    }
+                } else {
+                    self.build_index(dir, *force).await
+                }
+            }
 
             Some(Commands::Stats { dir }) => self.show_stats(dir).await,
 
@@ -642,8 +765,14 @@ impl Cli {
                 }
             }
 
-            Some(Commands::Setup) => {
-                run_setup();
+            Some(Commands::Setup { tutorial }) => {
+                if *tutorial {
+                    let mut t = crate::onboarding::Tutorial::new();
+                    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                    t.run(&cwd)?;
+                } else {
+                    run_setup();
+                }
                 Ok(())
             }
 
@@ -1145,6 +1274,73 @@ impl Cli {
                 println!("{}", response);
                 Ok(())
             }
+
+            Some(Commands::SelfUpdate { check }) => {
+                let version = env!("CARGO_PKG_VERSION");
+                let mut updater = Updater::new(version)?;
+
+                match updater.check_for_update() {
+                    Ok(Some(info)) => {
+                        println!();
+                        println!("🔔  Update available!");
+                        println!("    Current: {}", info.current_version);
+                        println!("    Latest:  {}", info.latest_version);
+                        if !info.release_name.is_empty() {
+                            println!("    Release: {}", info.release_name);
+                        }
+                        if !info.release_notes.is_empty() {
+                            let notes = info.release_notes.lines().take(8).collect::<Vec<_>>().join("\n");
+                            println!("    Notes:\n{}", notes);
+                        }
+                        println!();
+
+                        if *check {
+                            println!("    Run 'hyper self-update' to install.");
+                            return Ok(());
+                        }
+
+                        // Ask for confirmation
+                        use std::io::{stdin, stdout, Write};
+                        print!("    Download and install? [Y/n]: ");
+                        stdout().flush().ok();
+                        let mut answer = String::new();
+                        stdin().read_line(&mut answer).ok();
+                        if !answer.trim().to_lowercase().starts_with('n') {
+                            Updater::download_and_install(&info)?;
+                        } else {
+                            println!("    Update skipped.");
+                        }
+                    }
+                    Ok(None) => {
+                        println!("✅ HyperAgent is up to date ({})", version);
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️  Update check failed: {}", e);
+                    }
+                }
+                Ok(())
+            }
+
+            Some(Commands::Analytics { web, port, json }) => {
+                if *json {
+                    crate::analytics::print_json_report()?;
+                } else if *web {
+                    crate::analytics::serve_dashboard(*port).await?;
+                } else {
+                    crate::analytics::print_terminal_summary()?;
+                }
+                Ok(())
+            }
+
+            Some(Commands::Billing(action)) => self.handle_billing(action).await,
+
+            Some(Commands::Sync(action)) => self.handle_sync(action).await,
+
+            Some(Commands::Team(action)) => self.handle_team(action).await,
+
+            Some(Commands::Saas { port }) => crate::saas::serve(crate::saas::SaasConfig::new(
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            )).await,
 
             // No subcommand → interactive REPL
             None => crate::repl::run_repl().await,
@@ -2255,6 +2451,133 @@ impl Cli {
         Ok(())
     }
 
+    async fn handle_team(&self, action: &TeamAction) -> Result<()> {
+        match action {
+            TeamAction::Init { name, email } => {
+                crate::team::TeamConfig::init(name, email)?;
+            }
+            TeamAction::Members => {
+                if let Some(team) = crate::team::TeamConfig::load()? {
+                    team.print_members();
+                } else {
+                    println!("  No team initialized. Use 'hyper team init <name> --email <email>'");
+                }
+            }
+            TeamAction::Invite { email, role } => {
+                let mut team = crate::team::TeamConfig::load()?
+                    .ok_or_else(|| anyhow::anyhow!("No team. Run 'hyper team init' first"))?;
+                let role = match role.as_str() {
+                    "admin" => crate::team::MemberRole::Admin,
+                    "member" => crate::team::MemberRole::Member,
+                    "viewer" => crate::team::MemberRole::Viewer,
+                    _ => anyhow::bail!("Unknown role: {}. Use: admin, member, viewer", role),
+                };
+                team.add_member(email, role)?;
+            }
+            TeamAction::Remove { email } => {
+                let mut team = crate::team::TeamConfig::load()?
+                    .ok_or_else(|| anyhow::anyhow!("No team. Run 'hyper team init' first"))?;
+                team.remove_member(email)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_sync(&self, action: &SyncAction) -> Result<()> {
+        let config = crate::sync::SyncConfig::load()?;
+        match action {
+            SyncAction::Push => {
+                println!("☁️  Pushing to cloud...");
+                let report = crate::sync::push(&config).await?;
+                report.print();
+            }
+            SyncAction::Pull => {
+                println!("☁️  Pulling from cloud...");
+                let report = crate::sync::pull(&config).await?;
+                report.print();
+            }
+            SyncAction::Status => {
+                println!();
+                println!("  ☁️  Sync Status");
+                println!("  {}", "─".repeat(40));
+                println!("  Endpoint:    {}", config.endpoint);
+                println!("  Configured:  {}", if config.is_configured() { "✅" } else { "❌" });
+                println!("  Auto-sync:   {}", if config.auto_sync { "✅" } else { "❌" });
+                println!();
+                println!("  Syncing: memories={} skills={} config={} rules={}",
+                    if config.sync_memories { "✅" } else { "❌" },
+                    if config.sync_skills { "✅" } else { "❌" },
+                    if config.sync_config { "✅" } else { "❌" },
+                    if config.sync_rules { "✅" } else { "❌" },
+                );
+                if !config.is_configured() {
+                    println!();
+                    println!("  To configure: export HYPER_SYNC_KEY=<your-key>");
+                }
+                println!();
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_billing(&self, action: &BillingAction) -> Result<()> {
+        match action {
+            BillingAction::Status => {
+                let billing = crate::billing::BillingState::load_or_create()?;
+                billing.print_status();
+            }
+            BillingAction::Upgrade { tier } => {
+                let target_tier = match tier.to_lowercase().as_str() {
+                    "pro" => crate::billing::Tier::Pro,
+                    "team" => crate::billing::Tier::Team,
+                    "enterprise" => crate::billing::Tier::Enterprise,
+                    _ => {
+                        eprintln!("Unknown tier: {}. Available: pro, team, enterprise", tier);
+                        return Ok(());
+                    }
+                };
+                let url = crate::billing::stripe_checkout_url(
+                    target_tier,
+                    "https://hyperagent.dev/success",
+                    "https://hyperagent.dev/cancel",
+                )?;
+                println!();
+                println!("  \x1b[1;33m💳 Upgrade to {}\x1b[0m", target_tier.name());
+                println!();
+                println!("  Open this URL to complete checkout:");
+                println!("  \x1b[36m{}\x1b[0m", url);
+                println!();
+                println!("  In production, this opens your browser automatically.");
+                if cfg!(target_os = "macos") {
+                    let _ = std::process::Command::new("open").arg(&url).spawn();
+                }
+            }
+            BillingAction::License { key } => {
+                let secret = std::env::var("HYPER_BILLING_SECRET")
+                    .unwrap_or_else(|_| "hyperagent-default-secret".to_string());
+                match crate::billing::parse_license(key, &secret) {
+                    Ok(payload) => {
+                        let mut billing = crate::billing::BillingState::load_or_create()?;
+                        billing.activate_license(&payload)?;
+                        println!();
+                        println!("  \x1b[1;32m✅ License activated!\x1b[0m");
+                        println!("  Plan: \x1b[1;33m{}\x1b[0m", payload.tier().name());
+                        if let Some(days) = payload.days_remaining() {
+                            println!("  Days remaining: {}", days);
+                        } else {
+                            println!("  Expiry: Never (perpetual license)");
+                        }
+                        println!();
+                    }
+                    Err(e) => {
+                        eprintln!("\n  \x1b[1;31m❌ Invalid license: {}\x1b[0m\n", e);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn handle_knowledge(&self, action: &str, query: &Option<Vec<String>>, dir: &Path) -> Result<()> {
         let kb = crate::knowledge::KnowledgeBase::new(dir);
         match action {
@@ -2298,7 +2621,7 @@ impl Cli {
 
         // Ask to append
         print!("   Append to file? [Y/n] ");
-        use std::io::{stdout, stdin, Write};
+        use std::io::{stdin, Write};
         std::io::stdout().flush().ok();
         let mut input = String::new();
         stdin().read_line(&mut input).ok();

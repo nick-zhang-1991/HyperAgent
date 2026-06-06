@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use crate::diff::FileChange;
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::index::{FileContext, HyperIndex};
-use crate::llm::{ContentPart, ImageUrl, LlmProvider, Message, ProviderPool};
+use crate::llm::{ContentPart, LlmProvider, Message, ProviderPool};
 use crate::memory::{MemoryManager, MemoryType};
 
 use super::apply_agent::ApplyAgent;

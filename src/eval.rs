@@ -10,7 +10,7 @@
 //!   cargo run -- eval --list             # List available tasks
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 use serde::{Serialize, Deserialize};
 
