@@ -7,7 +7,7 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)](https://github.com/nick-zhang-1991/HyperAgent/actions)
 [![Rust](https://img.shields.io/badge/rust-1.78+-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-79-blue?style=flat-square)](#test-suite)
+[![Tests](https://img.shields.io/badge/tests-120-blue?style=flat-square)](#test-suite)
 [![CLI](https://img.shields.io/badge/CLI-45%2B%20commands-9b59b6?style=flat-square)](#command-reference)
 
 ```bash
@@ -548,7 +548,7 @@ hyper eval --task gen-fibonacci  # Run single benchmark
 
 ## Test Suite / 测试套件
 
-**79 tests** across 13 modules, all passing. Binary-only crate (no `lib.rs` required).
+**120 tests** across 25 modules, all passing. Binary-only crate (no `lib.rs` required).
 
 ```bash
 # Run all tests — 运行全部测试
@@ -568,12 +568,16 @@ cargo test -- --nocapture
 | Module / 模块 | Tests / 数量 | What's Covered / 覆盖内容 |
 |--------------|-------------|------------------------|
 | `security` / 安全 | 13 | Dangerous cmds, git safety, safe cmds, policy enforcement |
+| `scaffold_templates` / 脚手架模板 | 10 | Template parsing, generation, all names, react/rust templates |
 | `refactor` / 重构 | 8 | Symbol replacement, cross-file references, preview, dry-run |
 | `orchestrator` / 编排器 | 7 | Construction, chunking, cost, budget, mode, builders |
+| `updater` / 自动更新 | 7 | Version comparison, platform asset names |
 | `code_agent` / 编码智能体 | 6 | Diff/parse/create/multiple/empty/non-JSON responses |
 | `diff` / 差异 | 6 | Hunk parsing, application, serialization round-trip |
 | `diff_view` / 差异视图 | 6 | Truncation, colorization, empty input, side-by-side |
 | `router` / 路由 | 6 | Provider selection, agent config, mode/permission parsing |
+| `sync` / 云同步 | 3 | Config default, with key, report printing |
+| `team` / 团队 | 3 | Member roles, add member |
 | `pool` / 连接池 | 5 | Creation, empty key filtering, cooldown, exponential backoff |
 | `parser` / 解析器 | 5 | Rust/Python/JS/Go symbol detection |
 | `memory` / 记忆 | 4 | Entity extraction, importance scoring |
@@ -583,7 +587,7 @@ cargo test -- --nocapture
 
 ### CI Pipeline / 持续集成
 
-`.github/workflows/ci.yml` — Push/PR to master:
+`.github/workflows/ci.yml` — Push/PR to main:
 
 ```yaml
 matrix: [stable, 1.78.0]      # MSRV check
