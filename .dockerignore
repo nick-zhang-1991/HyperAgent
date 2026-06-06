@@ -1,0 +1,14 @@
+**/.git
+**/target
+**/dist
+**/node_modules
+**/.next
+**/.cache
+**/*.log
+**/*.tmp
+**/.DS_Store
+**/Thumbs.db
+**/*.rs.bk
+**/Cargo.lock
+**/.env
+**/.env.*

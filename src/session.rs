@@ -1,3 +1,4 @@
+#![allow(unused)]
 /// Session management for HyperAgent
 /// 
 /// Sessions store the conversation history and state so you can
@@ -229,7 +230,7 @@ impl SessionManager {
         };
 
         let mut output = String::new();
-        output.push_str(&format!("📋 Session Tree\n\n"));
+        output.push_str("📋 Session Tree\n\n");
         output.push_str(&format!("  {} ─ {}\n", root.id, root.summary_line()));
 
         let children: Vec<&Session> = sessions.iter()

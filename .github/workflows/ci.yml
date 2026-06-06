@@ -40,6 +40,9 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: cargo audit
+        run: cargo audit
+
       - name: cargo test
         run: cargo test --all-targets
 

@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! HyperAgent Orchestrator — the engine that makes everything work end-to-end
 //!
 //! Full pipeline:
@@ -654,7 +655,7 @@ impl Orchestrator {
                     Some(mcp_tool_defs.clone()),
                 ).await {
                     Ok(msg) => msg,
-                    Err(e) => {
+                    Err(_e) => {
                         match self.chat_with_failover(messages.clone()).await {
                             Ok(r) => {
                                 print!("{r}");
@@ -1242,9 +1243,9 @@ impl ContextBudget {
             return;
         }
 
-        let per_file_budget = (self.available_for_files / total).min(2_000).max(100);
+        let per_file_budget = (self.available_for_files / total).clamp(100, 2_000);
 
-        for (i, file) in files.iter_mut().enumerate().take(total) {
+        for (_i, file) in files.iter_mut().enumerate().take(total) {
             let file_tokens = _estimate_chars_to_tokens(&file.content);
 
             if file_tokens > per_file_budget {

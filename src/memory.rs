@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Smart Memory System — inspired by mem0 + codex memories
 //!
 //! Design:
@@ -127,7 +128,10 @@ impl SqliteMemoryStore {
         let conn = rusqlite::Connection::open(db_path)?;
 
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS memories (
+            "PRAGMA journal_mode=WAL;
+             PRAGMA busy_timeout=5000;
+             PRAGMA cache_size=-64000;
+             CREATE TABLE IF NOT EXISTS memories (
                 id               TEXT PRIMARY KEY,
                 agent_id         TEXT NOT NULL,
                 session_id       TEXT,

@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! LLM Semantic Cache — Save tokens and money by caching LLM responses.
 //!
 //! For 100M users, caching is critical:
@@ -224,6 +225,7 @@ impl LlmCache {
     }
 
     /// Store a response in the cache
+    #[allow(clippy::too_many_arguments)]
     pub fn set(
         &mut self,
         prompt: &str,

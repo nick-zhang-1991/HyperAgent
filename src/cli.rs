@@ -11,8 +11,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, CommandFactory};
-use clap_complete::{Generator, Shell};
-use std::io::Write;
+use clap_complete::Shell;
 use std::path::{Path, PathBuf};
 
 use crate::agent::orchestrator::Orchestrator;
@@ -1073,7 +1072,7 @@ impl Cli {
 
                 // Generate title from branch name if not provided
                 let pr_title = title.clone().unwrap_or_else(|| {
-                    branch.replace('-', " ").replace('_', " ")
+                    branch.replace(['-', '_'], " ")
                         .split_whitespace().map(|w| {
                             let mut c = w.chars();
                             c.next().map(|f| f.to_uppercase().to_string() + c.as_str()).unwrap_or_default()
@@ -1136,7 +1135,7 @@ impl Cli {
                 // Create PR via gh CLI
                 println!("   🔧 Creating PR...");
                 let mut gh_cmd = std::process::Command::new("gh");
-                gh_cmd.args(["pr", "create", "--base", &base, "--title", &pr_title, "--body", &description])
+                gh_cmd.args(["pr", "create", "--base", base, "--title", &pr_title, "--body", &description])
                     .current_dir(&canonical_dir);
 
                 match gh_cmd.output() {
@@ -1237,7 +1236,7 @@ impl Cli {
 
             Some(Commands::Explain { target, dir, model }) => {
                 let provider = crate::llm::LlmProvider::from_env_or(model.clone(), None, None)?;
-                let target_path = dir.join(&target);
+                let target_path = dir.join(target);
                 let content = if target_path.exists() && target_path.is_file() {
                     std::fs::read_to_string(&target_path)
                         .map_err(|e| anyhow::anyhow!("Cannot read {}: {e}", target_path.display()))?
@@ -1248,7 +1247,7 @@ impl Cli {
                     // Try to search for the function
                     println!("   🔍 Searching for '{}' in codebase...", target);
                     let excludes = ["target", ".git", "node_modules"];
-                    let refs = crate::refactor::find_references(dir, &target, &excludes)?;
+                    let refs = crate::refactor::find_references(dir, target, &excludes)?;
                     if refs.is_empty() {
                         anyhow::bail!("No file or symbol '{}' found in project", target);
                     }
@@ -1338,7 +1337,7 @@ impl Cli {
 
             Some(Commands::Team(action)) => self.handle_team(action).await,
 
-            Some(Commands::Saas { port }) => crate::saas::serve(crate::saas::SaasConfig::new(
+            Some(Commands::Saas { port: _ }) => crate::saas::serve(crate::saas::SaasConfig::new(
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             )).await,
 
@@ -2713,7 +2712,7 @@ fn run_setup() {
 
     // Try env var first, then ask
     let api_key = std::env::var(default_key).ok();
-    if let Some(ref key) = api_key {
+    if let Some(ref _key) = api_key {
         println!("   Using {} from environment", default_key);
     } else {
         println!("   Enter your {} API key (or leave empty to use env var later):", provider_name);

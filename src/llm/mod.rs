@@ -5,5 +5,5 @@ pub mod pool;
 pub mod mock_server;
 
 pub use provider::LlmProvider;
-pub use provider::{ContentPart, ImageUrl, Message};
+pub use provider::{ContentPart, Message};
 pub use pool::ProviderPool;

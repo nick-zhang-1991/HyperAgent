@@ -65,8 +65,8 @@ pub fn show_side_by_side_diff(diff_text: &str) {
                 render_hunk_side_by_side(&hunk_lines, half, &file_path);
                 hunk_lines.clear();
             }
-            if line.starts_with("--- ") {
-                file_path = line[4..].trim().to_string();
+            if let Some(stripped) = line.strip_prefix("--- ") {
+                file_path = stripped.trim().to_string();
             }
             in_hunk = false;
         } else if line.starts_with("@@") {
@@ -79,10 +79,10 @@ pub fn show_side_by_side_diff(diff_text: &str) {
             println!("\x1b[36m {}\x1b[0m", line);
             in_hunk = true;
         } else if in_hunk {
-            if line.starts_with('-') {
-                hunk_lines.push(('-', line[1..].to_string()));
-            } else if line.starts_with('+') {
-                hunk_lines.push(('+', line[1..].to_string()));
+            if let Some(stripped) = line.strip_prefix('-') {
+                hunk_lines.push(('-', stripped.to_string()));
+            } else if let Some(stripped) = line.strip_prefix('+') {
+                hunk_lines.push(('+', stripped.to_string()));
             } else {
                 hunk_lines.push((' ', line.to_string()));
             }

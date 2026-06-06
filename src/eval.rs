@@ -344,7 +344,7 @@ fn run_single_task(task: &EvalTask, temp_dir: &Path, hyper_binary: &Path) -> Eva
     }
 
     // Run HyperAgent on the task
-    let agent_output = std::process::Command::new(hyper_binary)
+    let _agent_output = std::process::Command::new(hyper_binary)
         .args(["run", "--yes", "--mode", "code", &task.prompt])
         .current_dir(temp_dir)
         .output()
@@ -467,7 +467,7 @@ pub fn run_all_benchmarks(
 /// List available benchmark tasks
 pub fn list_tasks(tasks: &[EvalTask]) {
     println!("\n📋 Available Benchmark Tasks:\n");
-    println!("  {:<25} {:<12} {}", "Name", "Category", "Prompt");
+    println!("  {:<25} {:<12} Prompt", "Name", "Category");
     println!("  {:-<25} {:-<12} {:-<50}", "", "", "");
     for task in tasks {
         let cat_str = match task.category {
