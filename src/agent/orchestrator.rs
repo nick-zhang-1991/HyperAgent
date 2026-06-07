@@ -15,6 +15,7 @@
 use anyhow::Result;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use crate::diff::FileChange;
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::index::{FileContext, HyperIndex};
 use crate::llm::{ContentPart, LlmProvider, Message, ProviderPool};
@@ -1069,247 +1070,7 @@ impl Orchestrator {
         })
     }
 
-    /// Built-in tool definitions for general-purpose task execution
-    fn builtin_tool_definitions(mode: &str, with_memory: bool) -> Vec<ToolDefinition> {
-        let is_code_mode = matches!(mode, "task" | "code" | "general");
-        let mut tools = vec![
-            ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "web_search".into(),
-                    description: "Search the web for current information. Use for research, news, documentation, and fact-checking.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "The search query"
-                            }
-                        },
-                        "required": ["query"]
-                    }),
-                },
-            },
-            ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "read_file".into(),
-                    description: "Read a file from the project directory. Use to examine code, configs, or documentation.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Relative path from project root (e.g. 'src/main.rs')"
-                            }
-                        },
-                        "required": ["path"]
-                    }),
-                },
-            },
-            ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "run_bash".into(),
-                    description: "Execute a bash command in the project directory. Use for compilation, testing, file operations, or exploring the filesystem.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "command": {
-                                "type": "string",
-                                "description": "The bash command to execute"
-                            }
-                        },
-                        "required": ["command"]
-                    }),
-                },
-            },
-            ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "knowledge_search".into(),
-                    description: "Search the project's local knowledge base for relevant documentation. Use to find information about the codebase without reading full files.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search query"
-                            }
-                        },
-                        "required": ["query"]
-                    }),
-                },
-            },
-            ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "memory_search".into(),
-                    description: "Search persistent memory for past decisions, preferences, code patterns, or project facts. Use to recall context from earlier sessions or tasks.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search query describing what to recall"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of results (default: 5)",
-                                "default": 5
-                            }
-                        },
-                        "required": ["query"]
-                    }),
-                },
-            },
-            ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "memory_add".into(),
-                    description: "Add a fact or observation to persistent memory. The agent will remember it across sessions. Use to save user preferences, project conventions, important decisions, and patterns discovered during work.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "content": {
-                                "type": "string",
-                                "description": "The fact or observation to remember"
-                            },
-                            "memory_type": {
-                                "type": "string",
-                                "description": "Type: \'user_preference\' (user likes/dislikes/habits), \'codebase_fact\' (code architecture/patterns), \'decision\' (design decisions made), \'bug_fix\' (bug and how it was fixed), \'learned\' (general knowledge), \'ephemeral\' (temporary note)",
-                                "enum": ["user_preference", "codebase_fact", "decision", "skill", "personal_context", "ephemeral"]
-                            }
-                        },
-                        "required": ["content"]
-                    }),
-                },
-            },
-            ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "python_repl".into(),
-                    description: "Execute Python code in a persistent REPL sandbox. State (variables, imports, functions) persists across calls. Supports data analysis, visualization, scripting, and computations. Prefer this over run_bash for Python work.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "code": {
-                                "type": "string",
-                                "description": "Python code to execute. Variables persist between calls."
-                            }
-                        },
-                        "required": ["code"]
-                    }),
-                },
-            },
-            ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "read_document".into(),
-                    description: "Read and parse a document file (PDF, Word .docx, Excel .xlsx/.xls, or plain text). Uses system tools (pdftotext) or Python libraries to extract text content. Handles tables, formatting, and multi-page documents.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Path to the document file (relative to project root or absolute)"
-                            }
-                        },
-                        "required": ["path"]
-                    }),
-                },
-            },
-            ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "browser".into(),
-                    description: "Control a headless Chrome browser. Commands: open <url> (navigate & get page text), screenshot (capture visual), source (get full HTML), eval <js> (run JavaScript), close (kill browser). State persists across calls within the same session.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "command": {
-                                "type": "string",
-                                "description": "The browser command: 'open' (navigate to URL and get text), 'screenshot' (capture screenshot), 'source' (get HTML source), 'eval' (run JavaScript expression), 'close' (kill browser process)"
-                            },
-                            "url": {
-                                "type": "string",
-                                "description": "URL to navigate to (required for 'open' command)"
-                            },
-                            "js": {
-                                "type": "string",
-                                "description": "JavaScript expression to evaluate (required for 'eval' command)"
-                            }
-                        },
-                        "required": ["command"]
-                    }),
-                },
-            },
-            ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "platform_setup".into(),
-                    description: "Check available tools (Python, Chrome, pdftotext) and get install instructions for the current operating system (macOS/Linux/Windows). Use this when a tool is missing or to verify the environment.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "description": "'check' to detect available tools, 'guide' to show install instructions, 'install_python_pkg' to pip install a specific package (e.g. 'pandas','openpyxl','python-docx','pymupdf','websocket-client')"
-                            },
-                            "package": {
-                                "type": "string",
-                                "description": "Python package name to install (required when action='install_python_pkg')"
-                            }
-                        },
-                        "required": ["action"]
-                    }),
-                },
-            },
-            ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "analyze_image".into(),
-                    description: "Analyze an image file using vision AI. Supports PNG, JPEG, GIF, WebP. Describe what you see, read text in images, identify objects, analyze screenshots, or extract visual information. Path can be absolute or relative to project root.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Path to the image file (absolute or relative to project root)"
-                            },
-                            "prompt": {
-                                "type": "string",
-                                "description": "Optional specific question about the image (default: 'Describe this image in detail')"
-                            }
-                        },
-                        "required": ["path"]
-                    }),
-                },
-            },
-        ];
 
-        if with_memory {
-            tools.push(ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "memory_remove".into(),
-                    description: "Remove a memory entry by its ID. Use to delete outdated or incorrect memories.".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "id": {
-                                "type": "string",
-                                "description": "The memory ID to remove"
-                            }
-                        },
-                        "required": ["id"]
-                    }),
-                },
-            });
-        }
-
-        tools
-    }
 
     /// Execute a built-in tool and return the result as a string
     async fn execute_builtin_tool(&self, name: &str, args: &serde_json::Value) -> String {
@@ -2012,7 +1773,7 @@ impl Orchestrator {
         );
 
         // Build tool definitions (built-in + MCP if available)
-        let mut tool_defs = Self::builtin_tool_definitions(&self.mode, self.memory.is_some());
+        let mut tool_defs = crate::agent::tools::builtin_tool_definitions(&self.mode, self.memory.is_some());
 
         // Add MCP tools if available
         let mcp_tool_defs: Vec<ToolDefinition> = if let Some(ref mcp) = self.mcp {
@@ -2314,7 +2075,7 @@ impl Orchestrator {
         let mem_context = self.load_memory_context(prompt).await;
         let mut accumulated_context = String::new();
         let mut final_response = String::new();
-        let mut all_tool_defs = Self::builtin_tool_definitions(&self.mode, self.memory.is_some());
+        let mut all_tool_defs = crate::agent::tools::builtin_tool_definitions(&self.mode, self.memory.is_some());
 
         // Add MCP tools if available
         if let Some(ref mcp) = self.mcp {
@@ -3124,5 +2885,87 @@ edition = "2021"
 
         assert!(orch.project_context.is_some());
         assert_eq!(orch.conversation_history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_tool_definitions_ask_mode() {
+        // Ask mode should only have read/search tools
+        let tools = crate::agent::tools::builtin_tool_definitions("ask", false);
+        for t in &tools {
+            let name = t.function.name.as_str();
+            assert!(
+                matches!(name,
+                    "web_search" | "read_file" | "knowledge_search"
+                    | "memory_search" | "read_document" | "browser"
+                    | "analyze_image" | "platform_setup"
+                ),
+                "Unexpected tool '{name}' in ask mode"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tool_definitions_task_mode() {
+        // Task/code mode should have execution tools
+        let tools = crate::agent::tools::builtin_tool_definitions("task", false);
+        let names: std::collections::HashSet<&str> =
+            tools.iter().map(|t| t.function.name.as_str()).collect();
+
+        assert!(names.contains("run_bash"), "task mode should have run_bash");
+        assert!(names.contains("web_search"), "task mode should have web_search");
+        assert!(names.contains("memory_add"), "task mode should have memory_add");
+        assert!(names.contains("python_repl"), "task mode should have python_repl");
+    }
+
+    #[tokio::test]
+    async fn test_tool_definitions_with_memory() {
+        // With memory=true, should include memory_remove
+        let tools = crate::agent::tools::builtin_tool_definitions("general", true);
+        let names: std::collections::HashSet<&str> =
+            tools.iter().map(|t| t.function.name.as_str()).collect();
+
+        assert!(names.contains("memory_remove"), "with_memory should include memory_remove");
+        assert!(names.contains("memory_add"), "should always have memory_add");
+    }
+
+    #[tokio::test]
+    async fn test_tool_definitions_without_memory() {
+        // Without memory, should NOT include memory_remove
+        let tools = crate::agent::tools::builtin_tool_definitions("general", false);
+        let names: std::collections::HashSet<&str> =
+            tools.iter().map(|t| t.function.name.as_str()).collect();
+
+        assert!(!names.contains("memory_remove"), "no memory_remove without memory");
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_mode_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        create_test_project(&root);
+
+        let mut index = HyperIndex::new(&root).unwrap();
+        index.build().unwrap();
+
+        let provider = LlmProvider::new(
+            "test".to_string(),
+            "http://localhost:9999/v1".to_string(),
+            "test-key".to_string(),
+        ).unwrap();
+
+        // Default mode check
+        let orch = Orchestrator::new(index, provider, root, 2, true);
+        assert_eq!(orch.mode, "code", "default mode should be 'code'");
+    }
+
+    #[tokio::test]
+    async fn test_tool_definitions_unique_names() {
+        // All tool definitions should have unique names
+        let tools = crate::agent::tools::builtin_tool_definitions("general", true);
+        let mut seen = std::collections::HashSet::new();
+        for t in &tools {
+            let name = t.function.name.as_str();
+            assert!(seen.insert(name), "duplicate tool name: '{name}'");
+        }
     }
 }

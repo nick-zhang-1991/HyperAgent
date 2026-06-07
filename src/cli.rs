@@ -166,6 +166,23 @@ pub enum Commands {
         verbose: bool,
     },
 
+    /// Set a config value (e.g. hyper config set llm.model gpt-4)
+    ConfigSet {
+        /// Config key path (e.g. "llm.model", "agent.confirm")
+        key: String,
+        /// Config value
+        value: String,
+    },
+
+    /// Get a config value
+    ConfigGet {
+        /// Config key path
+        key: String,
+    },
+
+    /// List all available config keys
+    ConfigList,
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for (bash, zsh, fish, powershell, elvish)
@@ -735,6 +752,32 @@ impl Cli {
             Some(Commands::Doctor) => self.run_doctor().await,
 
             Some(Commands::Config { verbose }) => self.show_config(*verbose),
+
+            Some(Commands::ConfigSet { key, value }) => {
+                let mut cfg = crate::config::AppConfig::load();
+                cfg.set(key, value)?;
+                cfg.save()?;
+                println!("   Set {} = {}", key, cfg.get(key).unwrap_or_default());
+                Ok(())
+            }
+
+            Some(Commands::ConfigGet { key }) => {
+                let cfg = crate::config::AppConfig::load();
+                match cfg.get(key) {
+                    Some(val) => println!("   {} = {}", key, val),
+                    None => eprintln!("   Unknown config key: {key}"),
+                }
+                Ok(())
+            }
+
+            Some(Commands::ConfigList) => {
+                println!("\nAvailable config keys:\n");
+                for (key, desc) in crate::config::AppConfig::list_keys() {
+                    println!("  {:<30} {}", key, desc);
+                }
+                println!();
+                Ok(())
+            }
 
             Some(Commands::Completions { shell }) => {
                 generate_completions(shell);

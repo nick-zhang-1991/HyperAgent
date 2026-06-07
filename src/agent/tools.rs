@@ -11,7 +11,6 @@ use crate::llm::provider::{ToolDefinition, ToolFunction};
 /// - `ask` mode: only read/search tools (no execution)
 /// - `general`/`task`/`code` mode: all tools
 pub fn builtin_tool_definitions(mode: &str, with_memory: bool) -> Vec<ToolDefinition> {
-    let is_code_mode = matches!(mode, "task" | "code" | "general");
     let mut tools = vec![
         ToolDefinition {
             tool_type: "function".into(),

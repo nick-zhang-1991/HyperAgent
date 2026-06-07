@@ -13,6 +13,7 @@ mod analytics;
 mod billing;
 mod cli;
 mod computer_use_cross;
+mod config;
 mod dep_graph;
 mod diff;
 mod diff_view;

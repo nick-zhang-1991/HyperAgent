@@ -24,6 +24,15 @@ struct ChatRequest {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<ResponseFormatValue>,
+}
+
+/// For "json_object" or "json_schema" response format (OpenAI-compatible)
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum ResponseFormatValue {
+    Simple { r#type: String },
 }
 
 /// OpenAI-compatible tool/function definition
@@ -256,6 +265,7 @@ impl LlmProvider {
             temperature: Some(0.1),
             max_tokens: Some(max_tokens),
             tools,
+            response_format: None,
         };
 
         let req = client
@@ -297,6 +307,59 @@ impl LlmProvider {
         Ok(result.text_content())
     }
 
+    /// Chat with JSON mode enabled — forces LLM to output valid JSON.
+    /// Uses `response_format: { "type": "json_object" }` from the API.
+    pub async fn chat_json(&self, messages: Vec<Message>) -> Result<String> {
+        let model = self.model.clone();
+        let base_url = self.base_url.trim_end_matches('/').to_string();
+        let api_key = self.api_key.clone();
+        let client = self.client.clone();
+        let max_tokens = adaptive_max_tokens(&messages);
+
+        let body = ChatRequest {
+            model,
+            messages,
+            stream: false,
+            temperature: Some(0.1),
+            max_tokens: Some(max_tokens),
+            tools: None,
+            response_format: Some(ResponseFormatValue::Simple { r#type: "json_object".into() }),
+        };
+
+        let req = client
+            .post(format!("{}/chat/completions", base_url))
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json");
+
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .context("LLM JSON request failed")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            let hint = match status.as_u16() {
+                401 => "Check your API key",
+                403 => "API key lacks permissions",
+                429 => "Rate limited — reduce request frequency",
+                _ => "Unexpected API error",
+            };
+            anyhow::bail!("LLM JSON API error {status}: {text} ({hint})");
+        }
+
+        let chat_resp: ChatResponse = resp
+            .json()
+            .await
+            .context("Failed to parse LLM JSON response")?;
+
+        Ok(chat_resp.choices.into_iter()
+            .next()
+            .map(|c| c.message.text_content())
+            .unwrap_or_default())
+    }
+
     pub async fn chat_stream(
         &self,
         messages: Vec<Message>,
@@ -308,6 +371,7 @@ impl LlmProvider {
             temperature: Some(0.1),
             max_tokens: Some(16384),
             tools: None,
+            response_format: None,
         };
 
         let resp = self
