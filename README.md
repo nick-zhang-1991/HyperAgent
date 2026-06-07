@@ -9,6 +9,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 | [![Tests](https://img.shields.io/badge/tests-130-blue?style=flat-square)](#test-suite)
 [![CLI](https://img.shields.io/badge/CLI-45%2B%20commands-9b59b6?style=flat-square)](#command-reference)
+[![Desktop](https://img.shields.io/badge/Desktop-Tauri_2-40bcd8?style=flat-square&logo=tauri)](https://github.com/nick-zhang-1991/HyperAgent/releases/latest)
 
 ```bash
 # One-shot task — 一行命令完成编码任务
@@ -313,6 +314,17 @@ Dimension / 维度 | HyperAgent | Hermes Agent | Aider | Claude Code | Codex CLI
 ### Desktop App / 桌面应用
 
 HyperAgent Desktop is a native cross-platform GUI built with [Tauri v2](https://v2.tauri.app) + React. Full chat interface, file browser, session management, and memory dashboard.
+
+**Downloads** (latest release): [![GitHub Release](https://img.shields.io/github/v/release/nick-zhang-1991/HyperAgent?label=release&style=flat-square)](https://github.com/nick-zhang-1991/HyperAgent/releases/latest)
+
+| Platform / 平台 | Format / 格式 | Download |
+|----------------|---------------|----------|
+| macOS (Intel) | `.dmg` | `hyperagent-desktop-macos-x86_64.dmg` |
+| macOS (Apple Silicon) | `.dmg` | `hyperagent-desktop-macos-aarch64.dmg` |
+| Linux (x86_64) | `.AppImage` | `hyperagent-desktop-linux-x86_64.AppImage` |
+| Windows (x86_64) | `.msi` | `hyperagent-desktop-windows-x86_64.msi` |
+
+All assets available on the [Releases page](https://github.com/nick-zhang-1991/HyperAgent/releases/latest).
 
 **Source**: [`gui/`](gui/) directory
 
