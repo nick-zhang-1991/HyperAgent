@@ -76,7 +76,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: gui
-        run: pnpm install --frozen-lockfile
+        run: pnpm install
 
       - name: Build frontend (Vite + TypeScript)
         working-directory: gui
