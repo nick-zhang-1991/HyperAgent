@@ -30,6 +30,11 @@ impl KnowledgeBase {
 
     /// Build or rebuild the knowledge base from project files
     pub fn build(&self, root: &Path) -> Result<usize> {
+        // Ensure the .hyper directory exists before SQLite tries to create
+        // the DB file (otherwise SQLITE_CANTOPEN on a fresh project root).
+        if let Some(parent) = self.db_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
         let conn = rusqlite::Connection::open(&self.db_path)?;
 
         conn.execute_batch(

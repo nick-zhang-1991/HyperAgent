@@ -58,7 +58,7 @@ pub enum ToolAccess {
 }
 
 /// Tool group permissions for a mode
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModePermissions {
     pub edit_files: ToolAccess,
     pub read_files: ToolAccess,
@@ -120,7 +120,7 @@ impl ModePermissions {
 }
 
 /// A complete mode definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModeConfig {
     /// Display name
     pub name: String,
@@ -301,3 +301,289 @@ Guidelines:
 5. **One fix at a time** — apply the minimal fix, verify it, then move on.
 6. **Clean up** — remove any temporary debug logging after fixing.
 7. **Document root cause** — explain what caused the bug in the fix PR."#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── ModeKind Display ───────────────────────────────────────
+
+    #[test]
+    fn mode_kind_display_built_in_variants() {
+        assert_eq!(ModeKind::Code.to_string(), "code");
+        assert_eq!(ModeKind::Architect.to_string(), "architect");
+        assert_eq!(ModeKind::Ask.to_string(), "ask");
+        assert_eq!(ModeKind::General.to_string(), "general");
+        assert_eq!(ModeKind::Debug.to_string(), "debug");
+    }
+
+    #[test]
+    fn mode_kind_display_custom_includes_prefix() {
+        let m = ModeKind::Custom("reviewer".into());
+        assert_eq!(m.to_string(), "custom:reviewer");
+    }
+
+    // ── ModeKind serde (kebab-case) ────────────────────────────
+
+    #[test]
+    fn mode_kind_serializes_kebab_case() {
+        let v = serde_json::to_value(ModeKind::Code).unwrap();
+        assert_eq!(v, serde_json::json!("code"));
+        let v = serde_json::to_value(ModeKind::Architect).unwrap();
+        assert_eq!(v, serde_json::json!("architect"));
+        let v = serde_json::to_value(ModeKind::Custom("reviewer".into())).unwrap();
+        assert_eq!(v, serde_json::json!("reviewer"));
+    }
+
+    #[test]
+    fn mode_kind_deserializes_kebab_case() {
+        let m: ModeKind = serde_json::from_value(serde_json::json!("code")).unwrap();
+        assert_eq!(m, ModeKind::Code);
+        let m: ModeKind = serde_json::from_value(serde_json::json!("debug")).unwrap();
+        assert_eq!(m, ModeKind::Debug);
+        let m: ModeKind = serde_json::from_value(serde_json::json!("my-custom")).unwrap();
+        assert_eq!(m, ModeKind::Custom("my-custom".into()));
+    }
+
+    #[test]
+    fn mode_kind_round_trip() {
+        for kind in [ModeKind::Code, ModeKind::Architect, ModeKind::Ask, ModeKind::General, ModeKind::Debug] {
+            let v = serde_json::to_value(&kind).unwrap();
+            let back: ModeKind = serde_json::from_value(v).unwrap();
+            assert_eq!(kind, back);
+        }
+    }
+
+    // ── ToolAccess serde ───────────────────────────────────────
+
+    #[test]
+    fn tool_access_serializes_kebab_case() {
+        assert_eq!(serde_json::to_value(ToolAccess::Denied).unwrap(), serde_json::json!("denied"));
+        assert_eq!(serde_json::to_value(ToolAccess::ReadOnly).unwrap(), serde_json::json!("read-only"));
+        assert_eq!(serde_json::to_value(ToolAccess::Allowed).unwrap(), serde_json::json!("allowed"));
+    }
+
+    // ── Default permission matrix ──────────────────────────────
+
+    #[test]
+    fn default_permissions_all_allowed() {
+        let p = ModePermissions::default();
+        assert_eq!(p.edit_files, ToolAccess::Allowed);
+        assert_eq!(p.read_files, ToolAccess::Allowed);
+        assert_eq!(p.run_commands, ToolAccess::Allowed);
+        assert_eq!(p.network, ToolAccess::Allowed);
+        assert_eq!(p.git, ToolAccess::Allowed);
+        assert_eq!(p.search, ToolAccess::Allowed);
+    }
+
+    #[test]
+    fn ask_permissions_lock_down_writes_and_commands() {
+        let p = ModePermissions::ask();
+        assert_eq!(p.edit_files, ToolAccess::Denied);
+        assert_eq!(p.run_commands, ToolAccess::Denied);
+        assert_eq!(p.network, ToolAccess::ReadOnly);
+        assert_eq!(p.git, ToolAccess::ReadOnly);
+        assert_eq!(p.read_files, ToolAccess::Allowed);
+        assert_eq!(p.search, ToolAccess::Allowed);
+    }
+
+    #[test]
+    fn architect_permissions_can_read_design_but_not_edit() {
+        let p = ModePermissions::architect();
+        assert_eq!(p.edit_files, ToolAccess::ReadOnly);
+        assert_eq!(p.run_commands, ToolAccess::ReadOnly);
+        assert_eq!(p.read_files, ToolAccess::Allowed);
+        assert_eq!(p.network, ToolAccess::Allowed);
+        assert_eq!(p.git, ToolAccess::Allowed);
+        assert_eq!(p.search, ToolAccess::Allowed);
+    }
+
+    #[test]
+    fn debug_permissions_allow_commands_readonly_edits() {
+        let p = ModePermissions::debug();
+        assert_eq!(p.edit_files, ToolAccess::ReadOnly);
+        assert_eq!(p.run_commands, ToolAccess::Allowed);
+        assert_eq!(p.network, ToolAccess::ReadOnly);
+        assert_eq!(p.git, ToolAccess::ReadOnly);
+        assert_eq!(p.read_files, ToolAccess::Allowed);
+        assert_eq!(p.search, ToolAccess::Allowed);
+    }
+
+    // ── Built-in registry ──────────────────────────────────────
+
+    #[test]
+    fn default_registry_contains_five_built_in_modes() {
+        let r = ModeRegistry::default();
+        assert_eq!(r.default_mode, "code");
+        assert!(r.modes.contains_key("code"));
+        assert!(r.modes.contains_key("architect"));
+        assert!(r.modes.contains_key("ask"));
+        assert!(r.modes.contains_key("general"));
+        assert!(r.modes.contains_key("debug"));
+        assert!(r.modes.contains_key("code")); // not 6+ extra
+        assert_eq!(r.modes.len(), 5);
+    }
+
+    #[test]
+    fn default_registry_get_returns_config() {
+        let r = ModeRegistry::default();
+        let code = r.get("code").unwrap();
+        assert_eq!(code.name, "Code");
+        assert!(!code.system_prompt.is_empty());
+    }
+
+    #[test]
+    fn default_registry_get_missing_returns_none() {
+        let r = ModeRegistry::default();
+        assert!(r.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn default_registry_list_returns_all() {
+        let r = ModeRegistry::default();
+        let v = r.list();
+        assert_eq!(v.len(), 5);
+    }
+
+    #[test]
+    fn default_modes_have_nonempty_prompts() {
+        let r = ModeRegistry::default();
+        for mode in r.list() {
+            assert!(!mode.system_prompt.is_empty(), "{} prompt empty", mode.name);
+            assert!(!mode.description.is_empty(), "{} desc empty", mode.name);
+        }
+    }
+
+    #[test]
+    fn code_mode_is_default_and_has_full_permissions() {
+        let r = ModeRegistry::default();
+        let code = r.get("code").unwrap();
+        assert_eq!(code.permissions, ModePermissions::default());
+    }
+
+    #[test]
+    fn ask_mode_uses_ask_permissions() {
+        let r = ModeRegistry::default();
+        let ask = r.get("ask").unwrap();
+        assert_eq!(ask.permissions, ModePermissions::ask());
+    }
+
+    #[test]
+    fn architect_mode_uses_architect_permissions() {
+        let r = ModeRegistry::default();
+        let arch = r.get("architect").unwrap();
+        assert_eq!(arch.permissions, ModePermissions::architect());
+    }
+
+    #[test]
+    fn debug_mode_uses_debug_permissions() {
+        let r = ModeRegistry::default();
+        let dbg = r.get("debug").unwrap();
+        assert_eq!(dbg.permissions, ModePermissions::debug());
+    }
+
+    // ── Custom mode registration ───────────────────────────────
+
+    #[test]
+    fn register_custom_mode_adds_to_registry() {
+        let mut r = ModeRegistry::default();
+        let custom = ModeConfig {
+            name: "Reviewer".into(),
+            description: "Code review specialist".into(),
+            system_prompt: "You review code carefully.".into(),
+            permissions: ModePermissions::ask(),
+            model: Some("gpt-4".into()),
+            temperature: Some(0.0),
+        };
+        r.register("reviewer".into(), custom.clone());
+        let fetched = r.get("reviewer").unwrap();
+        assert_eq!(fetched.name, "Reviewer");
+        assert_eq!(fetched.model, Some("gpt-4".into()));
+    }
+
+    #[test]
+    fn register_can_override_built_in_mode() {
+        let mut r = ModeRegistry::default();
+        let mut custom = ModeConfig {
+            name: "Code (custom)".into(),
+            description: "Override".into(),
+            system_prompt: "Custom code prompt".into(),
+            permissions: ModePermissions::default(),
+            model: None,
+            temperature: None,
+        };
+        custom.permissions = ModePermissions::architect();
+        r.register("code".into(), custom);
+        let fetched = r.get("code").unwrap();
+        assert_eq!(fetched.name, "Code (custom)");
+        assert_eq!(fetched.permissions.edit_files, ToolAccess::ReadOnly);
+    }
+
+    #[test]
+    fn load_from_config_bulk_inserts() {
+        let mut r = ModeRegistry::default();
+        let mut custom = HashMap::new();
+        for name in ["a", "b", "c"] {
+            custom.insert(name.into(), ModeConfig {
+                name: name.to_uppercase(),
+                description: format!("{name} mode"),
+                system_prompt: format!("prompt for {name}"),
+                permissions: ModePermissions::default(),
+                model: None,
+                temperature: None,
+            });
+        }
+        r.load_from_config(custom);
+        assert!(r.get("a").is_some());
+        assert!(r.get("b").is_some());
+        assert!(r.get("c").is_some());
+        // Built-ins still present
+        assert!(r.get("code").is_some());
+        assert_eq!(r.modes.len(), 8);
+    }
+
+    // ── build_prompt ───────────────────────────────────────────
+
+    #[test]
+    fn build_prompt_includes_mode_name_and_permissions() {
+        let r = ModeRegistry::default();
+        let p = r.build_prompt("ask", None);
+        assert!(p.contains("Ask"), "should include mode name in prompt: {p}");
+        assert!(p.contains("edit_files: denied")
+            || p.contains("Edit files: denied")
+            || p.contains("Edit files: Denied"),
+            "should include permission summary: {p}");
+    }
+
+    #[test]
+    fn build_prompt_includes_base_instructions() {
+        let r = ModeRegistry::default();
+        let p = r.build_prompt("code", Some("PROJECT: hyperagent\n"));
+        assert!(p.starts_with("PROJECT: hyperagent"), "base should lead: {p}");
+    }
+
+    #[test]
+    fn build_prompt_falls_back_to_code_for_unknown_mode() {
+        let r = ModeRegistry::default();
+        let p = r.build_prompt("totally-fake-mode", None);
+        // Should fall back to "code" mode's name in the prompt
+        assert!(p.contains("Code"), "should fall back to code: {p}");
+    }
+
+    // ── ModeConfig serde round trip ────────────────────────────
+
+    #[test]
+    fn mode_config_round_trips_through_serde() {
+        let cfg = ModeConfig {
+            name: "X".into(),
+            description: "d".into(),
+            system_prompt: "p".into(),
+            permissions: ModePermissions::debug(),
+            model: Some("m".into()),
+            temperature: Some(0.7),
+        };
+        let v = serde_json::to_value(&cfg).unwrap();
+        let back: ModeConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(back, cfg);
+    }
+}

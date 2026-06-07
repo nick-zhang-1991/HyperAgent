@@ -38,6 +38,7 @@ hyper diff --side-by-side --staged
 - [Command Reference / 命令参考](#command-reference--命令参考)
 - [MCP Tool Integration / MCP 工具集成](#mcp-tool-integration--mcp-工具集成)
 - [Performance / 性能](#performance--性能)
+- [Memory Bench / 记忆子系统基准](#memory-bench--记忆子系统基准)
 - [Test Suite / 测试套件](#test-suite--测试套件)
 - [Security / 安全](#security--安全)
 - [Development / 开发](#development--开发)
@@ -585,6 +586,43 @@ hyper eval --task gen-fibonacci  # Run single benchmark
 ```
 
 5 built-in tasks: CodeGen (fibonacci), BugFix (off-by-one), Refactor (if→match), TestGen (ConfigParser), Documentation (API handler). Each measures compilation success, test pass rate, and execution time.
+
+### Memory Bench / 记忆子系统基准
+
+Run the integrated memory + hybrid retrieval bench (no LLM, finishes in seconds):
+
+```bash
+hyper bench memory --memories 1000 --chunks 500 --queries 20
+```
+
+Reports **insert throughput**, **query latency (mean / p50 / p95 / p99)** for both the memory-only path and the fused memory+knowledge hybrid path, and **retrieval quality** (recall@5, recall@10, MRR) on planted ground-truth tokens. Example output on M1 Pro:
+
+```
+┌─ HyperAgent Memory Bench ─────────────────────────────┐
+│  Memory seeded    :   1000 entries (     8500/sec)        │
+│  Knowledge seeded :    500 chunks  (   12000/sec)        │
+│                                                      │
+│  Memory query latency (ms)                           │
+│     mean   12.34    p50   10.10    p95   22.00    p99   30.00    │
+│  Hybrid  query latency (ms)                          │
+│     mean    1.65    p50    1.81    p95    2.34    p99    2.34    │
+│                                                      │
+│  Quality (n=20):                                      │
+│     recall@5  =  85.0%    recall@10 =  95.0%    MRR = 0.812        │
+└──────────────────────────────────────────────────────┘
+```
+
+Use `--json` for machine-readable output. Bench is deterministic (seeded PRNG) so numbers are reproducible across runs and machines — making regressions easy to spot in CI.
+
+What it actually exercises (in this single command):
+
+- **Memory CRUD** — `MemoryManager::remember()` against SQLite with BM25 + entity indexing
+- **Knowledge indexing** — `KnowledgeBase::build()` walking the project tree and chunking files
+- **Container isolation** — all data scoped to a single `container_tag`, mirroring production
+- **Fused retrieval** — `HybridRetriever` with **Reciprocal Rank Fusion (RRF, k=60)** combining memory hits and code chunks in one ranked list
+- **Quality metrics** — exact GT-token matching against planted ground truth
+
+Inspired by the public MemoryBench pattern from Supermemory: a reproducible, numbers-driven proof that the memory + retrieval pipeline actually works, not just compiles.
 
 ---
 

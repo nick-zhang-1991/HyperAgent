@@ -10,6 +10,7 @@
 mod agent;
 mod agent_graph;
 mod analytics;
+mod bench;
 mod billing;
 mod cli;
 mod computer_use_cross;
@@ -24,16 +25,19 @@ mod hooks;
 mod i18n;
 mod index;
 mod kanban;
+mod keychain;
 mod knowledge;
 mod llm;
 mod llm_cache;
 mod mcp;
 mod memory;
+mod metrics;
 mod modes;
 mod onboarding;
 mod plugin;
 mod refactor;
 mod repl;
+mod retrieval;
 mod router;
 mod sandbox;
 mod scaffold;
@@ -65,6 +69,9 @@ async fn main() -> Result<()> {
 
     // Initialize i18n (locale detection from LANG env or HYPER_LANG override)
     crate::i18n::init(crate::i18n::Locale::detect());
+
+    // Initialize metrics
+    crate::metrics::Metrics::init();
 
     let cli = cli::Cli::parse();
     cli.run().await

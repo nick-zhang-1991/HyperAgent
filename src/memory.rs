@@ -204,6 +204,11 @@ pub struct MemoryEntry {
     pub consolidated: bool,
     /// Optional embedding vector (semantic search). Stored as BLOB.
     pub embedding: Option<Vec<f32>>,
+    /// Container tag for memory isolation (per-project, per-user, per-customer).
+    /// Inspired by supermemory's containerTag — separates memory namespaces so
+    /// different projects/users don't pollute each other's recall.
+    /// Default: "_default" (legacy single-namespace mode).
+    pub container_tag: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -258,6 +263,10 @@ pub struct MemoryQuery {
     pub vector_weight: f64,
     /// Pre-computed query embedding for semantic search
     pub query_embedding: Option<Vec<f32>>,
+    /// Optional container tag filter — if set, only memories in this
+    /// container are returned. When None, no filter is applied (all tags).
+    /// MemoryManager::recall_fused sets this from self.container_tag automatically.
+    pub container_tag: Option<String>,
 }
 
 impl Default for MemoryQuery {
@@ -274,6 +283,7 @@ impl Default for MemoryQuery {
             importance_weight: 0.10,
             vector_weight: 0.30,
             query_embedding: None,
+            container_tag: None,
         }
     }
 }
@@ -330,7 +340,16 @@ pub struct SqliteMemoryStore {
 impl SqliteMemoryStore {
     pub fn new(db_path: &Path) -> anyhow::Result<Self> {
         let conn = rusqlite::Connection::open(db_path)?;
+        Self::build_schema(&conn)?;
+        // Apply additive migrations for pre-existing databases.
+        Self::migrate_add_container_tag(&conn);
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
 
+    /// Build the schema for a fresh memory database.
+    fn build_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA busy_timeout=5000;
@@ -349,7 +368,8 @@ impl SqliteMemoryStore {
                 created_at       TEXT NOT NULL,
                 last_accessed    TEXT NOT NULL,
                 access_count     INTEGER NOT NULL DEFAULT 0,
-                consolidated     INTEGER NOT NULL DEFAULT 0
+                consolidated     INTEGER NOT NULL DEFAULT 0,
+                container_tag    TEXT NOT NULL DEFAULT '_default'
              );
 
             CREATE TABLE IF NOT EXISTS memory_entities (
@@ -400,10 +420,28 @@ impl SqliteMemoryStore {
             CREATE INDEX IF NOT EXISTS idx_entity_cooccurrence_b ON entity_cooccurrence(entity_b);
             CREATE INDEX IF NOT EXISTS idx_doc_terms_doc ON doc_terms(doc_id);",
         )?;
+        Ok(())
+    }
 
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+    /// In-place schema migration: add container_tag to pre-existing tables.
+    /// Safe to call repeatedly (duplicate-column error is swallowed).
+    /// No-op for new tables created with the column in their CREATE TABLE.
+    fn migrate_add_container_tag(conn: &rusqlite::Connection) {
+        let _ = conn.execute(
+            "ALTER TABLE memories ADD COLUMN container_tag TEXT NOT NULL DEFAULT '_default'",
+            [],
+        );
+        // Backfill any pre-existing NULL-like rows (shouldn't happen with NOT NULL DEFAULT,
+        // but defensive for databases created before the column existed).
+        let _ = conn.execute(
+            "UPDATE memories SET container_tag = '_default' WHERE container_tag IS NULL OR container_tag = ''",
+            [],
+        );
+        // Index for fast per-container recall.
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_container_tag ON memories(container_tag)",
+            [],
+        );
     }
 
     // ═══════════════════════════════════════════
@@ -764,6 +802,7 @@ impl SqliteMemoryStore {
                 .unwrap_or_else(|_| Utc::now()),
             access_count: row.get(11)?,
             consolidated: row.get::<_, u32>(12)? != 0,
+            container_tag: row.get::<_, String>(13).unwrap_or_else(|_| "_default".to_string()),
         })
     }
 
@@ -863,8 +902,8 @@ impl MemoryStore for SqliteMemoryStore {
         });
 
         conn.execute(
-            "INSERT INTO memories (id, agent_id, session_id, content, memory_type, memory_layer, entities, importance, embedding, created_at, last_accessed, access_count, consolidated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO memories (id, agent_id, session_id, content, memory_type, memory_layer, entities, importance, embedding, created_at, last_accessed, access_count, consolidated, container_tag)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
                 entry.id,
                 entry.agent_id,
@@ -879,6 +918,7 @@ impl MemoryStore for SqliteMemoryStore {
                 entry.last_accessed.to_rfc3339(),
                 entry.access_count,
                 entry.consolidated as u32,
+                entry.container_tag,
             ],
         )?;
 
@@ -897,7 +937,7 @@ impl MemoryStore for SqliteMemoryStore {
     fn query(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = String::from(
-            "SELECT id, agent_id, session_id, content, memory_type, memory_layer, entities, importance, created_at, last_accessed, access_count, consolidated
+            "SELECT id, agent_id, session_id, content, memory_type, memory_layer, entities, importance, embedding, created_at, last_accessed, access_count, consolidated, container_tag
              FROM memories WHERE 1=1"
         );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -906,6 +946,12 @@ impl MemoryStore for SqliteMemoryStore {
         if let Some(ref mem_type) = query.memory_type {
             sql.push_str(&format!(" AND memory_type = ?{}", param_values.len() + 1));
             param_values.push(Box::new(mem_type.to_string()));
+        }
+
+        // Container-tag filter
+        if let Some(ref tag) = query.container_tag {
+            sql.push_str(&format!(" AND container_tag = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(tag.clone()));
         }
 
         // Entity filter
@@ -1020,7 +1066,7 @@ impl MemoryStore for SqliteMemoryStore {
         let mut sql = String::from(
             "SELECT m.id, m.agent_id, m.session_id, m.content, m.memory_type,
                      m.memory_layer, m.entities, m.importance, m.embedding, m.created_at, m.last_accessed,
-                     m.access_count, m.consolidated
+                     m.access_count, m.consolidated, m.container_tag
              FROM memories m WHERE 1=1",
         );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -1028,6 +1074,11 @@ impl MemoryStore for SqliteMemoryStore {
         if let Some(ref mem_type) = query.memory_type {
             sql.push_str(&format!(" AND m.memory_type = ?{}", param_values.len() + 1));
             param_values.push(Box::new(mem_type.to_string()));
+        }
+
+        if let Some(ref tag) = query.container_tag {
+            sql.push_str(&format!(" AND m.container_tag = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(tag.clone()));
         }
 
         if let Some(ref max_age) = query.max_age {
@@ -1354,6 +1405,10 @@ pub struct MemoryManager {
     store: Box<dyn MemoryStore>,
     agent_id: String,
     session_id: Option<String>,
+    /// Container tag namespace. All `remember()` calls write into this tag;
+    /// all `recall()` calls filter to this tag by default. Inspired by
+    /// supermemory's containerTag — isolates memory per project / user / customer.
+    container_tag: String,
     /// Bounded query result cache for background prefetch.
     query_cache: Arc<Mutex<QueryCache>>,
     /// Optional session lifecycle hooks.
@@ -1366,9 +1421,25 @@ impl MemoryManager {
             store,
             agent_id: agent_id.to_string(),
             session_id: None,
+            container_tag: "_default".to_string(),
             query_cache: Arc::new(Mutex::new(QueryCache::new())),
             hooks: Arc::new(Mutex::new(SessionHooks::new())),
         }
+    }
+
+    /// Bind this manager to a specific container tag.
+    /// Subsequent `remember()` and `recall()` calls will be scoped to this tag.
+    /// Equivalent to supermemory's `new Supermemory({ containerTag: ... })`.
+    #[allow(dead_code)]
+    pub fn with_container(mut self, tag: impl Into<String>) -> Self {
+        self.container_tag = tag.into();
+        self
+    }
+
+    /// Get the current container tag.
+    #[allow(dead_code)]
+    pub fn container_tag(&self) -> &str {
+        &self.container_tag
     }
 
     #[allow(dead_code)]
@@ -1449,6 +1520,7 @@ impl MemoryManager {
             access_count: 0,
             consolidated: false,
             embedding: None,
+            container_tag: self.container_tag.clone(),
         };
 
         let id = entry.id.clone();
@@ -1461,6 +1533,7 @@ impl MemoryManager {
         let q = MemoryQuery {
             text: query.to_string(),
             limit,
+            container_tag: Some(self.container_tag.clone()),
             ..Default::default()
         };
         self.store.query(&q)
@@ -1477,10 +1550,11 @@ impl MemoryManager {
             }
         }
 
-        // Cache miss — run query
+        // Cache miss — run query (auto-scoped to self.container_tag)
         let q = MemoryQuery {
             text: query.to_string(),
             limit,
+            container_tag: Some(self.container_tag.clone()),
             ..Default::default()
         };
         let results = self.store.fused_search(&q)?;
@@ -1526,6 +1600,43 @@ impl MemoryManager {
             ..Default::default()
         };
         self.store.query(&q)
+    }
+
+    /// Build a static "user identity" profile from long-lived facts
+    /// (UserPreference + CodebaseFact + Decision) inside this container.
+    /// Mirrors supermemory's `profile.static` view — the stable knowledge
+    /// that should be injected into every prompt.
+    ///
+    /// Format: one fact per line, grouped by type, capped at `max_facts` total
+    /// (oldest-accessed first to prevent profile drift toward recency).
+    pub fn profile(&self, max_facts: usize) -> anyhow::Result<String> {
+        let mut out = String::new();
+        out.push_str("# User Profile (static)\n");
+
+        for (label, mem_type) in [
+            ("preferences", MemoryType::UserPreference),
+            ("codebase_facts", MemoryType::CodebaseFact),
+            ("decisions", MemoryType::Decision),
+        ] {
+            let q = MemoryQuery {
+                memory_type: Some(mem_type),
+                limit: max_facts,
+                ..Default::default()
+            };
+            let entries = self.store.query(&q)?;
+            if entries.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("\n## {}\n", label));
+            for e in entries.iter().take(max_facts) {
+                out.push_str(&format!("- {}\n", e.content));
+            }
+        }
+
+        if out.trim() == "# User Profile (static)" {
+            return Ok(String::new());
+        }
+        Ok(out)
     }
 
     /// Access the underlying memory store (for low-level operations).
@@ -1753,6 +1864,7 @@ impl MemoryManager {
                 access_count: 1,
                 consolidated: true,
                 embedding: None,
+                container_tag: self.container_tag.clone(),
             };
             if self.store.insert(summary).is_ok() {
                 // Fire pre-compress event for the merged source memories
@@ -1884,6 +1996,101 @@ mod tests {
 
         let ctx = manager.build_context("test query", 5).unwrap();
         assert_eq!(ctx, "", "Empty store should produce empty context");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_container_tag_isolation() {
+        // Two managers backed by the SAME SQLite file but scoped to
+        // different container tags must never see each other's memories.
+        let temp_dir = std::env::temp_dir().join("test_memory_container_tag");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let db_path = temp_dir.join("test.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        // Write into container "alpha"
+        let store_a = SqliteMemoryStore::new(&db_path).unwrap();
+        let mut mgr_a = MemoryManager::new(Box::new(store_a), "agent-a");
+        mgr_a = mgr_a.with_container("alpha");
+        mgr_a
+            .remember("Project Alpha uses Rust and tokio", MemoryType::UserPreference)
+            .unwrap();
+
+        // Write into container "beta" via the SAME on-disk file
+        let store_b = SqliteMemoryStore::new(&db_path).unwrap();
+        let mut mgr_b = MemoryManager::new(Box::new(store_b), "agent-b");
+        mgr_b = mgr_b.with_container("beta");
+        mgr_b
+            .remember("Project Beta uses Python and FastAPI", MemoryType::UserPreference)
+            .unwrap();
+
+        // Manager A should only see Alpha content
+        let alpha = mgr_a.recall("rust", 10).unwrap();
+        assert_eq!(alpha.len(), 1, "alpha container should have 1 hit");
+        assert!(alpha[0].content.contains("Alpha"));
+        assert!(alpha[0].container_tag == "alpha");
+
+        // Manager B should only see Beta content
+        let beta = mgr_b.recall("python", 10).unwrap();
+        assert_eq!(beta.len(), 1, "beta container should have 1 hit");
+        assert!(beta[0].content.contains("Beta"));
+        assert!(beta[0].container_tag == "beta");
+
+        // Cross-leak: B asking for "rust" must return nothing
+        let leak = mgr_b.recall("rust", 10).unwrap();
+        assert!(leak.is_empty(), "beta must not see alpha's memories");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_profile_static_view() {
+        let db_path = std::env::temp_dir().join(format!(
+            "hyperagent_profile_test_{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&db_path);
+
+        let store = SqliteMemoryStore::new(&db_path).unwrap();
+        let mgr = MemoryManager::new(Box::new(store), "agent").with_container("profile-test");
+
+        // Empty profile: should return empty string
+        assert_eq!(mgr.profile(10).unwrap(), "");
+
+        // Plant static facts
+        mgr.remember(
+            "User prefers Rust for systems work",
+            MemoryType::UserPreference,
+        )
+        .unwrap();
+        mgr.remember(
+            "This project uses SQLite + BM25 for retrieval",
+            MemoryType::CodebaseFact,
+        )
+        .unwrap();
+        mgr.remember(
+            "Decision: tokio runtime for async I/O",
+            MemoryType::Decision,
+        )
+        .unwrap();
+        // Dynamic fact — should NOT show in static profile
+        mgr.remember(
+            "Today I debugged a flaky test",
+            MemoryType::ActionOutcome,
+        )
+        .unwrap();
+
+        let profile = mgr.profile(10).unwrap();
+        assert!(profile.contains("User Profile (static)"));
+        assert!(profile.contains("preferences"));
+        assert!(profile.contains("Rust for systems work"));
+        assert!(profile.contains("codebase_facts"));
+        assert!(profile.contains("SQLite + BM25"));
+        assert!(profile.contains("decisions"));
+        assert!(profile.contains("tokio runtime"));
+        // Dynamic fact must be filtered out
+        assert!(!profile.contains("flaky test"));
 
         let _ = std::fs::remove_file(&db_path);
     }

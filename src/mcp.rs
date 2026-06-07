@@ -292,3 +292,375 @@ impl McpRegistry {
             .collect()
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  MCP SERVER — expose HyperAgent memory to any MCP-compatible client
+// ═══════════════════════════════════════════════════════════════════
+//
+// Speaks JSON-RPC 2.0 over newline-delimited stdio (the transport
+// Claude Desktop / goose / Cursor expect). Exposes three tools:
+//
+//   memory_add      — write a memory entry
+//   memory_recall   — top-N search over the container, scored
+//   memory_context  — get a formatted prompt block for LLM injection
+//
+// All calls are auto-scoped to the --container tag passed at startup
+// (matches supermemory's containerTag isolation model).
+
+use crate::memory::MemoryType;
+
+/// Default schema-version of the MCP server (in initialize response)
+const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
+const MCP_SERVER_NAME: &str = "hyperagent-memory";
+const MCP_SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Tool definitions returned by `tools/list`
+fn memory_tool_definitions() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "name": "memory_add",
+            "description": "Persist a memory entry. Auto-scoped to the server's container tag.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The fact / preference / observation to remember"
+                    },
+                    "memory_type": {
+                        "type": "string",
+                        "enum": ["user_preference", "codebase_fact", "action_outcome", "decision", "bug_fix", "learned", "ephemeral"],
+                        "description": "Type of memory (default: learned)"
+                    },
+                    "importance": {
+                        "type": "number",
+                        "description": "0.0-1.0, how important is this (default: auto-scored from content)"
+                    }
+                },
+                "required": ["content"]
+            }
+        },
+        {
+            "name": "memory_recall",
+            "description": "Search the container's memories. Returns scored hits sorted by relevance.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural-language search query"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results to return (default: 5)"
+                    }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "memory_context",
+            "description": "Get a formatted context block of the most relevant memories for a query, ready to be injected into an LLM prompt.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural-language query describing the context you need"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max memories to include (default: 8)"
+                    }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "memory_profile",
+            "description": "Return the container's static 'user identity' profile: stable preferences, codebase facts, and decisions. Inject this into every prompt for consistent behaviour.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "max_facts_per_section": {
+                        "type": "integer",
+                        "description": "Cap on facts per section (preferences / codebase_facts / decisions). Default: 20."
+                    }
+                }
+            }
+        }
+    ])
+}
+
+/// Run the MCP memory server on stdio. Blocks until stdin closes.
+pub async fn serve_stdio(container: &str, db: Option<&str>) -> anyhow::Result<()> {
+    use crate::memory::{MemoryManager, SqliteMemoryStore};
+    use std::io::{BufRead, Write};
+
+    // Resolve DB path (default: ~/.hyper/memory.db)
+    let db_path = match db {
+        Some(p) => std::path::PathBuf::from(p),
+        None => {
+            let home = dirs_next::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("could not resolve home dir; pass --db"))?;
+            home.join(".hyper").join("memory.db")
+        }
+    };
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+
+    eprintln!("🔌 HyperAgent MCP memory server starting");
+    eprintln!("   container: {container}");
+    eprintln!("   db:        {}", db_path.display());
+
+    // Build the manager (Box<dyn MemoryStore> -> MemoryManager)
+    let store = SqliteMemoryStore::new(&db_path)?;
+    let mgr = MemoryManager::new(Box::new(store), "mcp-server").with_container(container);
+
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    let mut input = stdin.lock();
+
+    let mut buf = String::new();
+    loop {
+        buf.clear();
+        let n = input.read_line(&mut buf)?;
+        if n == 0 {
+            // EOF — caller closed stdin, exit cleanly
+            break;
+        }
+        let line = buf.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let response = handle_request(line, &mgr);
+        writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
+        stdout.flush()?;
+    }
+
+    eprintln!("🔌 MCP memory server stopped");
+    Ok(())
+}
+
+/// Handle a single JSON-RPC 2.0 request and produce a response
+fn handle_request(line: &str, mgr: &crate::memory::MemoryManager) -> serde_json::Value {
+    let req: serde_json::Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(e) => return jsonrpc_error(None, -32700, format!("parse error: {e}")),
+    };
+
+    let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    let method = req["method"].as_str().unwrap_or("");
+    let params = &req["params"];
+
+    match method {
+        "initialize" => jsonrpc_ok(id, serde_json::json!({
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "capabilities": { "tools": {} },
+            "serverInfo": { "name": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION }
+        })),
+        "notifications/initialized" => {
+            // Notification — no response expected, but we must not error
+            serde_json::Value::Null
+        }
+        "tools/list" => jsonrpc_ok(id, serde_json::json!({
+            "tools": memory_tool_definitions()
+        })),
+        "tools/call" => {
+            let tool_name = params["name"].as_str().unwrap_or("");
+            let args = &params["arguments"];
+            match call_memory_tool(tool_name, args, mgr) {
+                Ok(content) => jsonrpc_ok(id, serde_json::json!({
+                    "content": [{ "type": "text", "text": content }],
+                    "isError": false
+                })),
+                Err(e) => jsonrpc_ok(id, serde_json::json!({
+                    "content": [{ "type": "text", "text": format!("error: {e}") }],
+                    "isError": true
+                })),
+            }
+        }
+        "ping" => jsonrpc_ok(id, serde_json::json!({})),
+        other => jsonrpc_error(Some(id.clone()), -32601, format!("method not found: {other}")),
+    }
+}
+
+/// Dispatch a `tools/call` to the right memory backend call
+fn call_memory_tool(
+    name: &str,
+    args: &serde_json::Value,
+    mgr: &crate::memory::MemoryManager,
+) -> anyhow::Result<String> {
+    match name {
+        "memory_add" => {
+            let content = args["content"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'content'"))?;
+            let mem_type = match args["memory_type"].as_str() {
+                Some("user_preference") => MemoryType::UserPreference,
+                Some("codebase_fact") => MemoryType::CodebaseFact,
+                Some("action_outcome") => MemoryType::ActionOutcome,
+                Some("decision") => MemoryType::Decision,
+                Some("bug_fix") => MemoryType::BugFix,
+                Some("ephemeral") => MemoryType::Ephemeral,
+                _ => MemoryType::Learned,
+            };
+            let id = mgr.remember(content, mem_type)?;
+            Ok(format!("stored memory id={id}"))
+        }
+        "memory_recall" => {
+            let query = args["query"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'query'"))?;
+            let limit = args["limit"].as_u64().unwrap_or(5) as usize;
+            let hits = mgr.recall(query, limit)?;
+            let mut out = String::new();
+            for (i, h) in hits.iter().enumerate() {
+                out.push_str(&format!(
+                    "{}. [{} | {}%] {}\n",
+                    i + 1,
+                    h.container_tag,
+                    (h.importance * 100.0) as u32,
+                    h.content
+                ));
+            }
+            if out.is_empty() {
+                out = "(no memories found in this container)".into();
+            }
+            Ok(out)
+        }
+        "memory_context" => {
+            let query = args["query"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'query'"))?;
+            let limit = args["limit"].as_u64().unwrap_or(8) as usize;
+            let ctx = mgr.build_context(query, limit)?;
+            if ctx.is_empty() {
+                Ok("(no relevant memories in this container)".into())
+            } else {
+                Ok(ctx)
+            }
+        }
+        "memory_profile" => {
+            let max = args["max_facts_per_section"].as_u64().unwrap_or(20) as usize;
+            let profile = mgr.profile(max)?;
+            if profile.is_empty() {
+                Ok("(no static profile facts in this container yet)".into())
+            } else {
+                Ok(profile)
+            }
+        }
+        other => anyhow::bail!("unknown tool: {other}"),
+    }
+}
+
+fn jsonrpc_ok(id: serde_json::Value, result: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result })
+}
+
+fn jsonrpc_error(id: Option<serde_json::Value>, code: i32, message: String) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(serde_json::Value::Null),
+        "error": { "code": code, "message": message }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::{MemoryManager, MemoryType, SqliteMemoryStore};
+
+    /// Drive the in-process JSON-RPC dispatcher without spawning a real
+    /// stdio server — fast and hermetic.
+    #[test]
+    fn mcp_server_roundtrip() {
+        // Temp DB
+        let tmp = std::env::temp_dir().join(format!(
+            "hyperagent_mcp_test_{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&tmp);
+        let store = SqliteMemoryStore::new(&tmp).unwrap();
+        let mgr = MemoryManager::new(Box::new(store), "test-agent").with_container("mcp-test");
+
+        // ── initialize ──
+        let r = handle_request(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            &mgr,
+        );
+        assert_eq!(r["result"]["serverInfo"]["name"], MCP_SERVER_NAME);
+
+        // ── tools/list ──
+        let r = handle_request(
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            &mgr,
+        );
+        let tool_names: Vec<String> = r["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(tool_names.contains(&"memory_add".into()));
+        assert!(tool_names.contains(&"memory_recall".into()));
+        assert!(tool_names.contains(&"memory_context".into()));
+
+        // ── memory_add ──
+        let r = handle_request(
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_add","arguments":{"content":"User prefers Rust for systems work","memory_type":"user_preference"}}}"#,
+            &mgr,
+        );
+        assert_eq!(r["result"]["isError"], false);
+        assert!(r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("stored memory id="));
+
+        // ── memory_recall ──
+        let r = handle_request(
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"rust","limit":3}}}"#,
+            &mgr,
+        );
+        let text = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Rust"), "recall should find the Rust fact: {text}");
+
+        // ── memory_context ──
+        let r = handle_request(
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"memory_context","arguments":{"query":"language preferences","limit":3}}}"#,
+            &mgr,
+        );
+        let text = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Rust") || !text.contains("no relevant memories"));
+
+        // ── isolation: writing into a DIFFERENT container must not show
+        //    up in our recall. Use a second manager on the same DB. ──
+        let store2 = SqliteMemoryStore::new(&tmp).unwrap();
+        let mgr2 = MemoryManager::new(Box::new(store2), "other-agent")
+            .with_container("other-container");
+        mgr2
+            .remember("completely unrelated python fact", MemoryType::Learned)
+            .unwrap();
+
+        let r = handle_request(
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"python","limit":5}}}"#,
+            &mgr,
+        );
+        let text = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            !text.contains("unrelated"),
+            "container isolation must prevent leak: {text}"
+        );
+
+        // ── error: unknown method ──
+        let r = handle_request(
+            r#"{"jsonrpc":"2.0","id":7,"method":"foo/bar","params":{}}"#,
+            &mgr,
+        );
+        assert_eq!(r["error"]["code"], -32601);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
