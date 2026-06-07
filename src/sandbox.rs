@@ -12,8 +12,6 @@
 //! ```
 
 use anyhow::{Context, Result, bail};
-use std::path::Path;
-use std::time::Duration;
 
 /// Result of a sandboxed command execution
 #[derive(Debug, Clone)]
@@ -94,7 +92,7 @@ impl Sandbox {
             bail!("Docker sandbox is not available. Install Docker Desktop or disable sandbox mode.");
         }
 
-        let timeout = self.config.timeout_secs.min(timeout_secs);
+        let _timeout = self.config.timeout_secs.min(timeout_secs);
         let container_name = format!("hyper-sandbox-{}", std::process::id());
 
         // Build docker run command

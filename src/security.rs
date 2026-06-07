@@ -1,4 +1,5 @@
 #![allow(unused)]
+#![allow(unused_imports)]
 //! Security module — dangerous command detection and policy enforcement
 //!
 //! Protects against accidental or malicious destructive operations:
@@ -17,7 +18,9 @@
 //!   }
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 
 /// Verdict from a safety check
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -610,8 +613,6 @@ pub fn is_tool_auto_approved(tool_name: &str, mode: &str, yes_mode: bool) -> boo
 /// Simple encrypted credential vault using machine-local key.
 /// Stores credentials in `.hyper/credentials.json` encrypted with AES-like XOR
 /// using a key derived from machine identity (/etc/machine-id or generated).
-use std::collections::HashMap;
-use std::path::PathBuf;
 
 /// Credential vault for storing secrets (API keys, tokens, passwords)
 pub struct CredentialVault {

@@ -15,8 +15,6 @@
 use anyhow::Result;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-
-use crate::diff::FileChange;
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::index::{FileContext, HyperIndex};
 use crate::llm::{ContentPart, LlmProvider, Message, ProviderPool};
