@@ -19,22 +19,36 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact_name: hyperagent-linux-x86_64
+            ext: tar.gz
+            pkg_cmd: tar czf
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact_name: hyperagent-linux-aarch64
+            ext: tar.gz
+            pkg_cmd: tar czf
           - target: x86_64-apple-darwin
             os: macos-13
             artifact_name: hyperagent-macos-x86_64
+            ext: tar.gz
+            pkg_cmd: tar czf
           - target: aarch64-apple-darwin
             os: macos-14
             artifact_name: hyperagent-macos-aarch64
+            ext: tar.gz
+            pkg_cmd: tar czf
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact_name: hyperagent-windows-x86_64
+            ext: zip
+            pkg_cmd: 7z a
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust ${{ matrix.target }}
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Install cross-compilation deps (Linux ARM64)
@@ -49,7 +63,8 @@ jobs:
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Strip binary
+      - name: Strip binary (Unix)
+        if: matrix.os != 'windows-latest'
         run: |
           if [[ "${{ matrix.target }}" == *-apple-* ]]; then
             strip target/${{ matrix.target }}/release/hyperagent
@@ -57,21 +72,31 @@ jobs:
             strip target/${{ matrix.target }}/release/hyperagent
           fi
 
-      - name: Package binary
+      - name: Package binary (Unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf hyperagent-${{ matrix.artifact_name }}.tar.gz hyperagent
-          echo "package_name=hyperagent-${{ matrix.artifact_name }}.tar.gz" >> $GITHUB_ENV
+          ${{ matrix.pkg_cmd }} ${{ matrix.artifact_name }}.${{ matrix.ext }} hyperagent
+          echo "package_name=${{ matrix.artifact_name }}.${{ matrix.ext }}" >> $GITHUB_ENV
+
+      - name: Package binary (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a ${{ matrix.artifact_name }}.${{ matrix.ext }} hyperagent.exe
+          echo "package_name=${{ matrix.artifact_name }}.${{ matrix.ext }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: target/${{ matrix.target }}/release/hyperagent-${{ matrix.artifact_name }}.tar.gz
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}.${{ matrix.ext }}
 
   release:
     name: Create Release
-    needs: build
+    needs: [build, build-desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -85,7 +110,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          for f in */hyperagent-*.tar.gz; do
+          for f in */hyperagent-*.tar.gz */hyperagent-*.zip; do
             sha256sum "$f" >> checksums.txt
           done
 
@@ -96,7 +121,7 @@ jobs:
           body: |
             ## HyperAgent ${{ github.ref_name }}
 
-            ### Installation
+            ### CLI Installation
 
             ```bash
             # macOS (Apple Silicon)
@@ -114,12 +139,28 @@ jobs:
             # Linux (ARM64)
             tar xzf hyperagent-linux-aarch64.tar.gz
             sudo mv hyperagent /usr/local/bin/hyper
+
+            # Windows (x86_64)
+            # Extract hyperagent-windows-x86_64.zip and add hyperagent.exe to PATH
             ```
+
+            ### Desktop App (Tauri GUI)
+
+            | Platform | Download |
+            |---|---|
+            | Linux (x86_64) | hyperagent-desktop-linux-x86_64.AppImage |
+            | macOS (Intel) | hyperagent-desktop-macos-x86_64.dmg |
+            | macOS (Apple Silicon) | hyperagent-desktop-macos-aarch64.dmg |
+            | Windows (x86_64) | hyperagent-desktop-windows-x86_64.msi |
 
             ### Checksums
             See checksums.txt in the release assets for SHA256 verification.
           files: |
             artifacts/*/hyperagent-*.tar.gz
+            artifacts/*/hyperagent-*.zip
+            artifacts/*/hyperagent-desktop-*.AppImage
+            artifacts/*/hyperagent-desktop-*.dmg
+            artifacts/*/hyperagent-desktop-*.msi
             artifacts/checksums.txt
           draft: false
           prerelease: false
