@@ -1,3 +1,4 @@
+#![allow(unused)]
 use std::path::Path;
 
 use crate::diff::{text_to_hunks, FileChange};

@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Project Scaffolding Templates — `hyper init --template <name>`
 //!
 //! For 100M users, we need instant project creation. Users should be able to:
@@ -314,7 +315,7 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-"#.replace("{}", &name.to_string()),
+"#.replace("{}", name.as_ref()),
         )?;
 
         std::fs::write(dir.join(".gitignore"), "__pycache__/\n*.pyc\n.env\nvenv/\n")?;

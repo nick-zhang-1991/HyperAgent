@@ -134,7 +134,7 @@ impl<'a> ApplyAgent<'a> {
                         continue;
                     }
                     "a" | "all" => {
-                        messages.push(format!("   ✅ Auto-approved remaining changes"));
+                        messages.push("   ✅ Auto-approved remaining changes".to_string());
                         // Don't continue — fall through to apply
                     }
                     "v" | "view" => {

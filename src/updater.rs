@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Auto-updater — Check GitHub Releases for new versions, download, and install.
 //!
 //! For 100M users, auto-update is non-negotiable. Without it:

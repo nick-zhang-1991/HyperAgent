@@ -20,10 +20,12 @@ use crate::diff::FileChange;
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::index::{FileContext, HyperIndex};
 use crate::llm::{ContentPart, LlmProvider, Message, ProviderPool};
+use crate::llm::provider::{ToolDefinition, ToolFunction};
 use crate::memory::{MemoryManager, MemoryType};
 
 use super::apply_agent::ApplyAgent;
 use super::review_agent::ReviewAgent;
+use super::plan_agent::Intent;
 
 /// Result of an orchestrator run
 #[derive(Debug, Default)]
@@ -59,6 +61,11 @@ pub struct Orchestrator {
     mode_registry: Option<crate::modes::ModeRegistry>,
     use_worktree: bool,
     pending_image: Option<String>,
+    knowledge_base: Option<crate::knowledge::KnowledgeBase>,
+    /// When true, shell/Python commands run in Docker sandbox
+    sandbox_enabled: bool,
+    /// Loaded plugin tools from .hyper/tools/
+    plugin_manager: Option<crate::plugin::PluginManager>,
 }
 
 impl Orchestrator {
@@ -87,7 +94,15 @@ impl Orchestrator {
             review_provider: None,
             use_worktree: false,
             pending_image: None,
+            knowledge_base: None,
+            sandbox_enabled: false,
+            plugin_manager: None,
         }
+    }
+
+    pub fn with_sandbox(mut self) -> Self {
+        self.sandbox_enabled = true;
+        self
     }
 
     pub fn with_worktree(mut self) -> Self {
@@ -132,6 +147,152 @@ impl Orchestrator {
     pub fn with_mode_registry(mut self, registry: crate::modes::ModeRegistry) -> Self {
         self.mode_registry = Some(registry);
         self
+    }
+
+    pub fn with_knowledge_base(mut self, kb: crate::knowledge::KnowledgeBase) -> Self {
+        self.knowledge_base = Some(kb);
+        self
+    }
+
+    pub fn with_plugins(mut self, pm: crate::plugin::PluginManager) -> Self {
+        if pm.count() > 0 {
+            println!("   🔌 Loaded {} plugin tool(s): {}", pm.count(), pm.list_tools().join(", "));
+        }
+        self.plugin_manager = Some(pm);
+        self
+    }
+
+    /// Paginate large tool output: show first N chars, save the rest to a temp file
+    /// Returns a message telling the LLM how to read the rest
+    fn paginate_output(&self, output: &str, max_chars: usize, tool_name: &str) -> String {
+        if output.len() <= max_chars {
+            return output.to_string();
+        }
+
+        let overflow_dir = self.root.join(".hyper").join("tool_output");
+        let _ = std::fs::create_dir_all(&overflow_dir);
+        let filename = format!("{}_{}.txt", tool_name, std::process::id());
+        let overflow_path = overflow_dir.join(&filename);
+
+        let first_part = &output[..max_chars];
+        let remaining = &output[max_chars..];
+
+        let _ = std::fs::write(&overflow_path, remaining);
+
+        format!(
+            "{}\n\n--- [Output truncated: {} chars total, showing first {}. The full remaining output is saved to: {}] ---\n\
+             To see the rest, use: `read_file` with path \"{}\"",
+            first_part,
+            output.len(),
+            max_chars,
+            overflow_path.display(),
+            overflow_path.display()
+        )
+    }
+
+    /// Compress old conversation history into a summary to keep context bounded
+    /// Keeps the most recent K turns intact, summarizes everything older
+    /// Uses the LLM to generate a concise summary
+    /// Enhanced with token-aware triggering and adaptive thresholds
+    async fn compress_conversation(&mut self) {
+        const MAX_HISTORY_PAIRS: usize = 16;
+        const KEEP_RECENT: usize = 6;
+        const MAX_ESTIMATED_TOKENS: usize = 32000; // ~24k token soft limit for compression trigger
+
+        if self.conversation_history.is_empty() {
+            return;
+        }
+
+        // Count trigger: either too many pairs OR estimated tokens too high
+        let estimated_tokens: usize = self.conversation_history.iter()
+            .map(|(u, a)| u.len() / 4 + a.len() / 4 + 10)
+            .sum();
+        let too_many_pairs = self.conversation_history.len() > MAX_HISTORY_PAIRS;
+        let too_many_tokens = estimated_tokens > MAX_ESTIMATED_TOKENS;
+
+        if !too_many_pairs && !too_many_tokens {
+            return;
+        }
+
+        // Adaptive: if token-heavy, keep fewer recent turns
+        let keep_recent = if too_many_tokens && estimated_tokens > 48000 {
+            3 // Aggressive compression for very long conversations
+        } else {
+            KEEP_RECENT
+        };
+
+        let old_turns = self.conversation_history.len().saturating_sub(keep_recent);
+        if old_turns == 0 {
+            return;
+        }
+        let old: Vec<(String, String)> = self.conversation_history.drain(..old_turns).collect();
+
+        println!("   📐 Context: ~{:.1}K tokens, {} turns → compressing (keep {} recent, summarize {})",
+            estimated_tokens as f64 / 1000.0,
+            self.conversation_history.len() + old.len(),
+            keep_recent,
+            old.len());
+
+        // Build a summary of old turns
+        let turns_text: String = old.iter().enumerate()
+            .map(|(i, (u, a))| format!("Turn {}:\nUser: {}\nAssistant: {}\n", i + 1, u, a))
+            .collect();
+
+        let system_prompt = "You are a conversation summarizer. Summarize the key information, \
+            decisions, and context from these conversation turns in 2-3 sentences. \
+            Focus on facts that are still relevant, not the conversation flow itself. \
+            Output ONLY the summary, no preamble.";
+
+        match self.provider.chat(vec![
+            Message::text("system", system_prompt),
+            Message::text("user", format!("Summarize these conversation turns:\n\n{}", turns_text)),
+        ]).await {
+            Ok(summary) => {
+                let compressed = format!("[Previous conversation summary: {}]", summary.trim());
+                // Insert the summary at the beginning
+                self.conversation_history.insert(0, (
+                    "[system: conversation compressed]".to_string(),
+                    compressed,
+                ));
+            }
+            Err(_) => {
+                // If compression fails, keep old turns — safer to keep context than lose it
+                self.conversation_history.splice(0..0, old);
+            }
+        }
+    }
+
+    /// Process user feedback/corrections from conversation history.
+    /// Detects correction patterns (e.g., "don't use X", "instead use Y", "that's wrong")
+    /// and records them as high-importance UserPreference memories.
+    async fn process_feedback(&self, current_prompt: &str) {
+        if self.memory.is_none() || self.conversation_history.is_empty() {
+            return;
+        }
+
+        // Check if the current prompt contains correction keywords
+        let correction_keywords = [
+            "don't", "dont", "not", "wrong", "incorrect", "instead",
+            "actually", "try using", "should use", "prefer", "never",
+            "stop", "avoid", "always use", "better to",
+        ];
+        let lower = current_prompt.to_lowercase();
+        let has_correction = correction_keywords.iter().any(|k| lower.contains(k));
+
+        // Also check the last user turn in history for corrections
+        let last_user_turn = self.conversation_history.last()
+            .map(|(u, _)| u.clone())
+            .unwrap_or_default();
+        let last_lower = last_user_turn.to_lowercase();
+        let recent_correction = correction_keywords.iter().any(|k| last_lower.contains(k));
+
+        if has_correction || recent_correction {
+            let text = if has_correction { current_prompt } else { &last_user_turn };
+            self.record_memory(
+                &format!("User correction/preference: {}", text.chars().take(200).collect::<String>()),
+                MemoryType::UserPreference,
+            ).await;
+        }
     }
 
     /// Configure a failover provider pool
@@ -188,6 +349,12 @@ impl Orchestrator {
         let start = Instant::now();
         let mut total_memories = 0usize;
 
+        // Phase 0: Compress conversation history if too long
+        self.compress_conversation().await;
+
+        // Phase 0b: Extract feedback/corrections from conversation history
+        self.process_feedback(prompt).await;
+
         // Phase 0: Fire pre-run hooks
         self.fire_hook(HookEvent::PreRun, prompt).await;
 
@@ -228,15 +395,45 @@ impl Orchestrator {
             return self.run_ask_mode(prompt, &relevant_files, start, total_memories).await;
         }
 
-        // Plan with retry (up to 2 attempts)
-        let plan = self.create_plan_with_retry(&augmented_prompt, &relevant_files, 2).await?;
+        // Plan with retry (up to 2 attempts) — fallback to general mode on failure
+        let plan = match self.create_plan_with_retry(&augmented_prompt, &relevant_files, 2).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("   ⚠️  Planning failed: {e}");
+                eprintln!("   ℹ️  Falling back to general-purpose mode...");
+                return self.run_general_mode(prompt, &relevant_files, start, total_memories).await;
+            }
+        };
         println!("   Plan: {}", plan.summary);
+        println!("   Intent: {:?}", plan.intent);
         if let Some(ref steps) = plan.steps {
             for (i, step) in steps.iter().enumerate() {
                 println!("   {}. {}", i + 1, step);
             }
         }
         println!();
+
+        // Route based on LLM-classified intent
+        match plan.intent {
+            Intent::Ask => {
+                println!("   💬 Answering question directly...");
+                return self.run_ask_mode(prompt, &relevant_files, start, total_memories).await;
+            }
+            Intent::General => {
+                // If plan agent naturally decomposed into sub-steps, execute them in sequence
+                if let Some(ref steps) = plan.steps {
+                    if steps.len() > 1 {
+                        println!("   🔄 Multi-step task: {} steps", steps.len());
+                        return self.run_task_mode(prompt, steps, start, total_memories).await;
+                    }
+                }
+                // Single-step or no steps → direct general mode
+                return self.run_general_mode(prompt, &relevant_files, start, total_memories).await;
+            }
+            Intent::Code => {
+                // Continue to code execution pipeline below
+            }
+        }
 
         // Record plan to memory
         let steps_count = plan.steps.as_ref().map(|s| s.len()).unwrap_or(0);
@@ -265,7 +462,25 @@ impl Orchestrator {
         println!("   📦 Total: {} file changes from up to 2 attempts\n",
             all_changes.len());
 
+        // Phase 3b: Inline diff preview — show changes before review
+        if !all_changes.is_empty() {
+            let diff_preview = crate::diff::render_diff_preview(&all_changes, 5);
+            println!("{}", diff_preview);
+        }
+
         if all_changes.is_empty() {
+            // If no code changes generated but intent was "code", still try general mode
+            // This handles cases where the code agent couldn't figure out file changes
+            // for a general task that the LLM misclassified as "code"
+            if plan.intent != Intent::Code {
+                println!("   ℹ️ No code changes needed — switching to general-purpose mode...");
+                return self.run_general_mode(prompt, &relevant_files, start, total_memories).await;
+            }
+            // Only use keyword fallback when intent was already "code"
+            if !Self::is_coding_task(prompt) {
+                println!("   ℹ️ No code changes needed — switching to general-purpose mode...");
+                return self.run_general_mode(prompt, &relevant_files, start, total_memories).await;
+            }
             println!("⚠️  No changes generated. Code may already satisfy the task.");
             self.record_memory(
                 &format!("No changes needed for '{}' — already satisfied", prompt),
@@ -305,6 +520,13 @@ impl Orchestrator {
         }
         println!("   ✅ Approved {} changes\n", approved.len());
         self.fire_hook(HookEvent::PostReview, &format!("{} approved", approved.len())).await;
+
+        // Phase 4b: Self-reflection — assess quality of approved changes
+        self.fire_hook(HookEvent::PreCode, &format!("reflection on {} changes", approved.len())).await;
+        if let Err(e) = self.self_reflect(prompt, &approved).await {
+            eprintln!("   ⚠️  Self-reflection failed (non-fatal): {e}");
+        }
+        self.fire_hook(HookEvent::PostCode, &format!("reflection {} items", approved.len())).await;
 
         // Phase 5: Apply (optionally in worktree sandbox)
         let (apply_root, mut _wt_manager) = self.prepare_apply_worktree().await?;
@@ -483,10 +705,10 @@ impl Orchestrator {
                 }
             }
             // Consolidate new memories
-            if let Ok(uncon) = mem.store().get_unconsolidated(20) {
+            if let Ok(uncon) = mem.store_ref().get_unconsolidated(20) {
                 if !uncon.is_empty() {
                     let ids: Vec<String> = uncon.iter().map(|e| e.id.clone()).collect();
-                    let _ = mem.store().mark_consolidated(&ids);
+                    let _ = mem.store_ref().mark_consolidated(&ids);
                 }
             }
         }
@@ -621,7 +843,38 @@ impl Orchestrator {
 
         // Build user message with optional image attachment
         let user_msg = if let Some(ref img_path) = self.pending_image {
-            let image_url = format!("data:image/png;base64,{}", img_path);  // placeholder — actual base64 encoding done at call site
+            // Resolve path relative to project root or cwd
+            let full_path = if std::path::Path::new(img_path).is_absolute() {
+                std::path::PathBuf::from(img_path)
+            } else {
+                self.root.join(img_path)
+            };
+
+            let image_data = match std::fs::read(&full_path) {
+                Ok(d) => d,
+                Err(e) => return Ok(RunResult {
+                    response_text: format!("Failed to load image '{}': {e}", full_path.display()),
+                    ..Default::default()
+                }),
+            };
+
+            // Detect MIME type from magic bytes
+            let mime = if image_data.len() > 8 {
+                let header = &image_data[..image_data.len().min(12)];
+                if header.starts_with(b"\x89PNG") { "image/png" }
+                else if header.starts_with(b"\xff\xd8\xff") { "image/jpeg" }
+                else if header.starts_with(b"GIF8") { "image/gif" }
+                else if header.starts_with(b"RIFF") && header.len() > 8
+                    && &header[8..12] == b"WEBP" { "image/webp" }
+                else { "image/png" }
+            } else { "image/png" };
+
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&image_data);
+            let image_url = format!("data:{};base64,{}", mime, b64);
+
+            println!("   🖼️  Image loaded: {} ({:.1} KB, {})", full_path.display(), image_data.len() as f64 / 1024.0, mime);
+
             Message {
                 role: "user".to_string(),
                 parts: vec![
@@ -751,7 +1004,14 @@ impl Orchestrator {
                     };
 
                     let result_value = match &self.mcp {
-                        Some(mcp) => mcp.call_tool(&tool_name, args).await,
+                        Some(mcp) => {
+                            // Safety gate: check tool before executing
+                            let safety = crate::security::check_tool_safety(&tool_name, &args);
+                            if !crate::security::confirm_dangerous_action(&safety, true) {
+                                continue; // Skip blocked tool, go to next
+                            }
+                            mcp.call_tool(&tool_name, args).await
+                        }
                         None => Err(anyhow::anyhow!("MCP not available")),
                     };
 
@@ -774,6 +1034,10 @@ impl Orchestrator {
             }
         }
 
+        // Scrub any leaked memory context from the response
+        let mem_ctx = self.load_memory_context(&response_text).await;
+        response_text = crate::memory::scrub_response(&response_text, &mem_ctx);
+
         if !response_text.is_empty() {
             println!();
         }
@@ -790,10 +1054,1194 @@ impl Orchestrator {
         self.fire_hook(HookEvent::PostRun, "ask complete").await;
 
         if let Some(ref mem) = self.memory {
-            if let Ok(uncon) = mem.store().get_unconsolidated(20) {
+            if let Ok(uncon) = mem.store_ref().get_unconsolidated(20) {
                 if !uncon.is_empty() {
                     let ids: Vec<String> = uncon.iter().map(|e| e.id.clone()).collect();
-                    let _ = mem.store().mark_consolidated(&ids);
+                    let _ = mem.store_ref().mark_consolidated(&ids);
+                }
+            }
+        }
+
+        Ok(RunResult {
+            elapsed: start.elapsed(),
+            memories_recorded: total_memories + 1,
+            model_name: self.active_model_name(),
+            response_text,
+            ..Default::default()
+        })
+    }
+
+    /// Built-in tool definitions for general-purpose task execution
+    fn builtin_tool_definitions(mode: &str, with_memory: bool) -> Vec<ToolDefinition> {
+        let is_code_mode = matches!(mode, "task" | "code" | "general");
+        let mut tools = vec![
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "web_search".into(),
+                    description: "Search the web for current information. Use for research, news, documentation, and fact-checking.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search query"
+                            }
+                        },
+                        "required": ["query"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "read_file".into(),
+                    description: "Read a file from the project directory. Use to examine code, configs, or documentation.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Relative path from project root (e.g. 'src/main.rs')"
+                            }
+                        },
+                        "required": ["path"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "run_bash".into(),
+                    description: "Execute a bash command in the project directory. Use for compilation, testing, file operations, or exploring the filesystem.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "The bash command to execute"
+                            }
+                        },
+                        "required": ["command"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "knowledge_search".into(),
+                    description: "Search the project's local knowledge base for relevant documentation. Use to find information about the codebase without reading full files.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query"
+                            }
+                        },
+                        "required": ["query"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "memory_search".into(),
+                    description: "Search persistent memory for past decisions, preferences, code patterns, or project facts. Use to recall context from earlier sessions or tasks.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query describing what to recall"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of results (default: 5)",
+                                "default": 5
+                            }
+                        },
+                        "required": ["query"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "memory_add".into(),
+                    description: "Add a fact or observation to persistent memory. The agent will remember it across sessions. Use to save user preferences, project conventions, important decisions, and patterns discovered during work.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": "The fact or observation to remember"
+                            },
+                            "memory_type": {
+                                "type": "string",
+                                "description": "Type: \'user_preference\' (user likes/dislikes/habits), \'codebase_fact\' (code architecture/patterns), \'decision\' (design decisions made), \'bug_fix\' (bug and how it was fixed), \'learned\' (general knowledge), \'ephemeral\' (temporary note)",
+                                "enum": ["user_preference", "codebase_fact", "decision", "skill", "personal_context", "ephemeral"]
+                            }
+                        },
+                        "required": ["content"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "python_repl".into(),
+                    description: "Execute Python code in a persistent REPL sandbox. State (variables, imports, functions) persists across calls. Supports data analysis, visualization, scripting, and computations. Prefer this over run_bash for Python work.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "description": "Python code to execute. Variables persist between calls."
+                            }
+                        },
+                        "required": ["code"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "read_document".into(),
+                    description: "Read and parse a document file (PDF, Word .docx, Excel .xlsx/.xls, or plain text). Uses system tools (pdftotext) or Python libraries to extract text content. Handles tables, formatting, and multi-page documents.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Path to the document file (relative to project root or absolute)"
+                            }
+                        },
+                        "required": ["path"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "browser".into(),
+                    description: "Control a headless Chrome browser. Commands: open <url> (navigate & get page text), screenshot (capture visual), source (get full HTML), eval <js> (run JavaScript), close (kill browser). State persists across calls within the same session.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "The browser command: 'open' (navigate to URL and get text), 'screenshot' (capture screenshot), 'source' (get HTML source), 'eval' (run JavaScript expression), 'close' (kill browser process)"
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "URL to navigate to (required for 'open' command)"
+                            },
+                            "js": {
+                                "type": "string",
+                                "description": "JavaScript expression to evaluate (required for 'eval' command)"
+                            }
+                        },
+                        "required": ["command"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "platform_setup".into(),
+                    description: "Check available tools (Python, Chrome, pdftotext) and get install instructions for the current operating system (macOS/Linux/Windows). Use this when a tool is missing or to verify the environment.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "description": "'check' to detect available tools, 'guide' to show install instructions, 'install_python_pkg' to pip install a specific package (e.g. 'pandas','openpyxl','python-docx','pymupdf','websocket-client')"
+                            },
+                            "package": {
+                                "type": "string",
+                                "description": "Python package name to install (required when action='install_python_pkg')"
+                            }
+                        },
+                        "required": ["action"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "analyze_image".into(),
+                    description: "Analyze an image file using vision AI. Supports PNG, JPEG, GIF, WebP. Describe what you see, read text in images, identify objects, analyze screenshots, or extract visual information. Path can be absolute or relative to project root.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Path to the image file (absolute or relative to project root)"
+                            },
+                            "prompt": {
+                                "type": "string",
+                                "description": "Optional specific question about the image (default: 'Describe this image in detail')"
+                            }
+                        },
+                        "required": ["path"]
+                    }),
+                },
+            },
+        ];
+
+        if with_memory {
+            tools.push(ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "memory_remove".into(),
+                    description: "Remove a memory entry by its ID. Use to delete outdated or incorrect memories.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "The memory ID to remove"
+                            }
+                        },
+                        "required": ["id"]
+                    }),
+                },
+            });
+        }
+
+        tools
+    }
+
+    /// Execute a built-in tool and return the result as a string
+    async fn execute_builtin_tool(&self, name: &str, args: &serde_json::Value) -> String {
+        match name {
+            "web_search" => {
+                let query = args["query"].as_str().unwrap_or("");
+                if query.is_empty() {
+                    return "Error: 'query' parameter is required".to_string();
+                }
+                match crate::web_search::search(query, 6).await {
+                    Ok(results) => {
+                        let mut output = String::new();
+                        for (i, (title, url, snippet)) in results.iter().enumerate() {
+                            output.push_str(&format!("{}. **{}**\n   URL: {}\n   {}\n\n", i + 1, title, url, snippet));
+                        }
+                        if output.is_empty() {
+                            output = format!("No search results found for: {query}");
+                        }
+                        output
+                    }
+                    Err(e) => format!("Error: web search failed: {e}"),
+                }
+            }
+            "read_file" => {
+                let file_path = args["path"].as_str().unwrap_or("");
+                if file_path.is_empty() {
+                    return "Error: 'path' parameter is required".to_string();
+                }
+                let full_path = self.root.join(file_path);
+                match std::fs::read_to_string(&full_path) {
+                    Ok(content) => {
+                        let lines: Vec<&str> = content.lines().collect();
+                        let total = lines.len();
+                        let show = lines.iter().take(80).copied().collect::<Vec<_>>();
+                        let mut output = format!("📄 `{}` ({} lines):\n```\n", full_path.display(), total);
+                        for (i, line) in show.iter().enumerate() {
+                            output.push_str(&format!("{:>4}| {}\n", i + 1, line));
+                        }
+                        if total > 80 {
+                            output.push_str(&format!("... ({} more lines)\n", total - 80));
+                        }
+                        output.push_str("```\n");
+                        output
+                    }
+                    Err(e) => format!("Error: cannot read '{}': {e}", full_path.display()),
+                }
+            }
+            "run_bash" => {
+                let command = args["command"].as_str().unwrap_or("");
+                if command.is_empty() {
+                    return "Error: 'command' parameter is required".to_string();
+                }
+                if self.sandbox_enabled {
+                    let config = crate::sandbox::SandboxConfig {
+                        project_root: Some(self.root.to_string_lossy().to_string()),
+                        network_enabled: false,
+                        timeout_secs: 60,
+                        ..Default::default()
+                    };
+                    let sandbox = crate::sandbox::Sandbox::new(config);
+                    if !sandbox.is_available() {
+                        return "⚠️ Sandbox mode enabled but Docker is not available. Install Docker Desktop or disable sandbox mode with `--no-sandbox`.".to_string();
+                    }
+                    match sandbox.run(command, 60).await {
+                        Ok(result) => {
+                            let mut output = String::new();
+                            if !result.stdout.is_empty() {
+                                output.push_str(result.stdout.trim());
+                            }
+                            if !result.stderr.is_empty() {
+                                if !output.is_empty() { output.push('\n'); }
+                                output.push_str(&format!("[stderr]\n{}", result.stderr.trim()));
+                            }
+                            if result.exit_code != 0 {
+                                output.push_str(&format!("\n[exit code: {}]", result.exit_code));
+                            }
+                            if output.is_empty() {
+                                output = "(no output)".to_string();
+                            }
+                            if output.len() > 8000 {
+                                output = self.paginate_output(&output, 8000, "run_bash");
+                            }
+                            output
+                        }
+                        Err(e) => format!("⚠️ Sandbox execution failed: {e}"),
+                    }
+                } else {
+                    match std::process::Command::new("sh")
+                        .args(["-c", command])
+                        .current_dir(&self.root)
+                        .output()
+                {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let mut result = String::new();
+                        if !stdout.is_empty() {
+                            result.push_str(stdout.trim());
+                        }
+                        if !stderr.is_empty() {
+                            if !result.is_empty() { result.push('\n'); }
+                            result.push_str(&format!("[stderr]\n{}", stderr.trim()));
+                        }
+                        if !output.status.success() {
+                            result.push_str(&format!("\n[exit code: {}]", output.status.code().unwrap_or(-1)));
+                        }
+                        if result.is_empty() {
+                            result = "(no output)".to_string();
+                        }
+                        if result.len() > 8000 {
+                            result = self.paginate_output(&result, 8000, "run_bash");
+                        }
+                        result
+                    }
+                    Err(e) => format!("Error: command execution failed: {e}"),
+                }
+            }
+            }
+            "knowledge_search" => {
+                let query = args["query"].as_str().unwrap_or("");
+                if query.is_empty() {
+                    return "Error: 'query' parameter is required".to_string();
+                }
+                match &self.knowledge_base {
+                    Some(kb) => match kb.search(query, 6) {
+                        Ok(results) => {
+                            if results.is_empty() {
+                                format!("No knowledge base results for: {query}")
+                            } else {
+                                let mut output = String::new();
+                                for chunk in &results {
+                                    let preview = if chunk.content.len() > 300 {
+                                        format!("{}...", &chunk.content[..297])
+                                    } else {
+                                        chunk.content.clone()
+                                    };
+                                    output.push_str(&format!("📄 `{}` (score: {:.2})\n{}\n\n",
+                                        chunk.file.display(), chunk.score, preview));
+                                }
+                                output
+                            }
+                        }
+                        Err(e) => format!("Error: knowledge search failed: {e}"),
+                    },
+                    None => "Knowledge base not available. Use 'hyper knowledge build' to index project documentation.".to_string(),
+                }
+            }
+            "memory_search" => {
+                let query = args["query"].as_str().unwrap_or("");
+                if query.is_empty() {
+                    return "Error: 'query' parameter is required".to_string();
+                }
+                let limit = args["limit"].as_u64().unwrap_or(5) as usize;
+                match &self.memory {
+                    Some(mem) => match mem.recall_fused(query, limit) {
+                        Ok(results) => {
+                            if results.is_empty() {
+                                format!("No memories found for: {query}")
+                            } else {
+                                let mut output = String::from("📍 Memory search results:\n");
+                                for sm in &results {
+                                    let ago = chrono::Utc::now()
+                                        .signed_duration_since(sm.entry.created_at);
+                                    let ago_str = if ago.num_minutes() < 60 {
+                                        format!("{}m ago", ago.num_minutes())
+                                    } else if ago.num_hours() < 24 {
+                                        format!("{}h ago", ago.num_hours())
+                                    } else {
+                                        format!("{}d ago", ago.num_days())
+                                    };
+                                    let pct = (sm.total_score.min(10.0) / 10.0 * 100.0) as u32;
+                                    output.push_str(&format!(
+                                        "  [{ago_str}] ({track}/{layer}) [{pct}%] {content}\n",
+                                        track = sm.entry.track,
+                                        layer = sm.entry.layer,
+                                        content = sm.entry.content,
+                                    ));
+                                }
+                                output
+                            }
+                        }
+                        Err(e) => format!("Error: memory search failed: {e}"),
+                    },
+                    None => "Memory system is not available in this session.".to_string(),
+                }
+            }
+            "memory_add" => {
+                let content = args["content"].as_str().unwrap_or("");
+                if content.is_empty() {
+                    return "Error: 'content' parameter is required".to_string();
+                }
+                let mem_type = args["memory_type"].as_str().unwrap_or("codebase_fact");
+                let mem_type_parsed = match mem_type {
+                    "user_preference" => MemoryType::UserPreference,
+                    "codebase_fact" => MemoryType::CodebaseFact,
+                    "decision" => MemoryType::Decision,
+                    "bug_fix" => MemoryType::BugFix,
+                    "learned" => MemoryType::Learned,
+                    "ephemeral" => MemoryType::Ephemeral,
+                    _ => MemoryType::CodebaseFact,
+                };
+                match &self.memory {
+                    Some(mem) => match mem.remember(content, mem_type_parsed) {
+                        Ok(id) => {
+                            format!("✅ Memory saved (id={}, type={})", id, mem_type)
+                        }
+                        Err(e) => format!("Error: failed to save memory: {e}"),
+                    },
+                    None => "Memory system is not available in this session.".to_string(),
+                }
+            }
+            "memory_remove" => {
+                let id = args["id"].as_str().unwrap_or("");
+                if id.is_empty() {
+                    return "Error: 'id' parameter is required".to_string();
+                }
+                match &self.memory {
+                    Some(mem) => match mem.store_ref().delete(id) {
+                        Ok(_) => format!("🗑️ Memory '{}' removed", id),
+                        Err(e) => format!("Error: failed to remove memory: {e}"),
+                    },
+                    None => "Memory system is not available in this session.".to_string(),
+                }
+            }
+            "python_repl" => {
+                let code = args["code"].as_str().unwrap_or("");
+                if code.is_empty() {
+                    return "Error: 'code' parameter is required".to_string();
+                }
+                // Find the REPL Python script relative to binary or config
+                let script_dir = if let Some(home) = dirs_next::home_dir() {
+                    home.join(".hyper").join("scripts")
+                } else {
+                    self.root.join("scripts")
+                };
+                let repl_script = script_dir.join("repl_python.py");
+                let fallback_script = self.root.join("scripts").join("repl_python.py");
+
+                let script_path = if repl_script.exists() { repl_script } else { fallback_script };
+
+                if !script_path.exists() {
+                    return format!("Python REPL script not found at {}. Create scripts/repl_python.py or install ~/.hyper/scripts/repl_python.py", script_path.display());
+                }
+
+                match std::process::Command::new("python3")
+                    .arg(script_path.to_str().unwrap_or(""))
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                {
+                    Ok(mut child) => {
+                        use std::io::Write;
+                        if let Some(ref mut stdin) = child.stdin {
+                            let _ = stdin.write_all(code.as_bytes());
+                        }
+                        match child.wait_with_output() {
+                            Ok(output) => {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                                // Try to parse JSON result from the REPL script
+                                let mut result = String::new();
+                                if let Ok(json_result) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+                                    if let Some(out) = json_result["stdout"].as_str() {
+                                        if !out.is_empty() {
+                                            result.push_str(out.trim());
+                                        }
+                                    }
+                                    if let Some(err) = json_result["stderr"].as_str() {
+                                        if !err.is_empty() {
+                                            if !result.is_empty() { result.push('\n'); }
+                                            result.push_str(&format!("[stderr]\n{}", err.trim()));
+                                        }
+                                    }
+                                } else {
+                                    // Raw output fallback
+                                    if !stdout.trim().is_empty() {
+                                        result.push_str(stdout.trim());
+                                    }
+                                    if !stderr.trim().is_empty() {
+                                        if !result.is_empty() { result.push('\n'); }
+                                        result.push_str(&format!("[stderr]\n{}", stderr.trim()));
+                                    }
+                                }
+
+                                if !output.status.success() && result.is_empty() {
+                                    result = format!("[exit code: {}]", output.status.code().unwrap_or(-1));
+                                }
+                                if result.is_empty() {
+                                    result = "(no output)".to_string();
+                                }
+                                if result.len() > 8000 {
+                                    result = self.paginate_output(&result, 8000, "python_repl");
+                                }
+                                result
+                            }
+                            Err(e) => format!("Error: failed to read Python output: {e}"),
+                        }
+                    }
+                    Err(e) => format!("Error: failed to launch Python3: {e}. Is Python3 installed?"),
+                }
+            }
+            "read_document" => {
+                let file_path = args["path"].as_str().unwrap_or("");
+                if file_path.is_empty() {
+                    return "Error: 'path' parameter is required".to_string();
+                }
+                let full_path = if std::path::Path::new(file_path).is_absolute() {
+                    std::path::PathBuf::from(file_path)
+                } else {
+                    self.root.join(file_path)
+                };
+
+                if !full_path.exists() {
+                    return format!("Error: file not found: {}", full_path.display());
+                }
+
+                // Find the parse_document script
+                let script_dir = if let Some(home) = dirs_next::home_dir() {
+                    home.join(".hyper").join("scripts")
+                } else {
+                    self.root.join("scripts")
+                };
+                let doc_script = script_dir.join("parse_document.py");
+                let fallback_script = self.root.join("scripts").join("parse_document.py");
+                let script_path = if doc_script.exists() { doc_script } else { fallback_script };
+
+                if !script_path.exists() {
+                    return format!("Document parser script not found at {}. Create scripts/parse_document.py", script_path.display());
+                }
+
+                match std::process::Command::new("python3")
+                    .arg(script_path.to_str().unwrap_or(""))
+                    .arg(full_path.to_str().unwrap_or(""))
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+
+                        // Parse JSON result
+                        if let Ok(json_result) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+                            if let Some(content) = json_result["content"].as_str() {
+                                let engine = json_result["engine"].as_str().unwrap_or("unknown");
+                                let fmt = json_result["format"].as_str().unwrap_or("unknown");
+                                let pages = json_result["pages"].as_i64().unwrap_or(0);
+                                let truncated = json_result["truncated"].as_bool().unwrap_or(false);
+                                let mut result = format!(
+                                    "📄 Parsed as {} (engine: {}, ~{} lines{})\n\n{}",
+                                    fmt, engine, pages,
+                                    if truncated { ", truncated" } else { "" },
+                                    content
+                                );
+                                if result.len() > 16000 {
+                                    result = self.paginate_output(&result, 16000, "read_document");
+                                }
+                                result
+                            } else if let Some(error) = json_result["error"].as_str() {
+                                format!("Error: {error}")
+                            } else {
+                                format!("Unexpected result from document parser: {}", stdout.trim())
+                            }
+                        } else if !stderr.trim().is_empty() {
+                            format!("Error: {}\n{}", stderr.trim(), stdout.trim())
+                        } else {
+                            format!("Document content:\n{}", stdout.trim())
+                        }
+                    }
+                    Err(e) => format!("Error: failed to launch document parser: {e}"),
+                }
+            }
+            "browser" => {
+                let command = args["command"].as_str().unwrap_or("");
+                if command.is_empty() {
+                    return "Error: 'command' parameter is required".to_string();
+                }
+
+                // Find the browser script
+                let script_dir = if let Some(home) = dirs_next::home_dir() {
+                    home.join(".hyper").join("scripts")
+                } else {
+                    self.root.join("scripts")
+                };
+                let browser_script = script_dir.join("browser_tool.py");
+                let fallback_script = self.root.join("scripts").join("browser_tool.py");
+                let script_path = if browser_script.exists() { browser_script } else { fallback_script };
+
+                if !script_path.exists() {
+                    return format!("Browser script not found at {}. Create scripts/browser_tool.py", script_path.display());
+                }
+
+                let mut args_vec = vec![
+                    script_path.to_str().unwrap_or(""),
+                    command,
+                ];
+
+                match command {
+                    "open" => {
+                        let url = args["url"].as_str().unwrap_or("about:blank");
+                        args_vec.push(url);
+                    }
+                    "screenshot" => {
+                        // No extra args needed
+                    }
+                    "source" => {
+                        // No extra args needed
+                    }
+                    "eval" => {
+                        let js = args["js"].as_str().unwrap_or("");
+                        args_vec.push(js);
+                    }
+                    "close" => {}
+                    _ => return format!("Error: unknown browser command '{}'. Use: open, screenshot, source, eval, close", command),
+                }
+
+                match std::process::Command::new("python3")
+                    .args(&args_vec)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+
+                        if let Ok(json_result) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+                            if let Some(error) = json_result["error"].as_str() {
+                                format!("Error: {error}")
+                            } else if let Some(content) = json_result["content"].as_str() {
+                                let mut result = format!("📄 Page content:\n\n{}", content);
+                                if result.len() > 16000 {
+                                    result = self.paginate_output(&result, 16000, "browser");
+                                }
+                                result
+                            } else if let Some(result_val) = json_result["result"].as_str() {
+                                format!("Result: {}", result_val)
+                            } else if command == "screenshot" {
+                                format!("📸 Screenshot saved. Use vision model to analyze it. Path: {}", json_result["path"].as_str().unwrap_or("unknown"))
+                            } else if command == "close" {
+                                "🛑 Browser closed.".to_string()
+                            } else if let Some(html) = json_result["html"].as_str() {
+                                let mut result = format!("🌐 Page HTML:\n\n{}", html);
+                                if result.len() > 16000 {
+                                    result = self.paginate_output(&result, 16000, "browser");
+                                }
+                                result
+                            } else {
+                                format!("Result: {}", stdout.trim())
+                            }
+                        } else if !stderr.trim().is_empty() {
+                            format!("Error: {}\n{}", stderr.trim(), stdout.trim())
+                        } else {
+                            stdout.trim().to_string()
+                        }
+                    }
+                    Err(e) => format!("Error: failed to launch browser tool: {e}. Is Python3 installed?"),
+                }
+            }
+            "platform_setup" => {
+                let action = args["action"].as_str().unwrap_or("check");
+
+                // Find the platform check script
+                let script_dir = if let Some(home) = dirs_next::home_dir() {
+                    home.join(".hyper").join("scripts")
+                } else {
+                    self.root.join("scripts")
+                };
+                let check_script = script_dir.join("platform_check.py");
+                let fallback_script = self.root.join("scripts").join("platform_check.py");
+                let script_path = if check_script.exists() { check_script } else { fallback_script };
+
+                match action {
+                    "check" => {
+                        if !script_path.exists() {
+                            return format!("Platform check script not found at {}", script_path.display());
+                        }
+                        match std::process::Command::new("python3")
+                            .arg(script_path.to_str().unwrap_or(""))
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .output()
+                        {
+                            Ok(output) => {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                if let Ok(data) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+                                    let os = data["os"].as_str().unwrap_or("unknown");
+                                    let mut report = format!("🖥️  Platform: {} ({})\n", os, data["arch"].as_str().unwrap_or(""));
+                                    report.push_str(&format!("   Python: {} ({})\n",
+                                        if data["python"]["available"].as_bool().unwrap_or(false) { "✅" } else { "❌" },
+                                        data["python"]["version"].as_str().unwrap_or("not found")));
+                                    report.push_str(&format!("   Chrome: {}\n",
+                                        if data["chrome"]["available"].as_bool().unwrap_or(false) { "✅" } else { "❌" }));
+                                    report.push_str(&format!("   pdftotext: {}\n",
+                                        if data["pdftotext"]["available"].as_bool().unwrap_or(false) { "✅" } else { "❌" }));
+
+                                    let pkgs = &data["python"]["packages"];
+                                    report.push_str("\n   Python packages:\n");
+                                    for (pkg, ok) in pkgs.as_object().unwrap_or(&serde_json::Map::new()) {
+                                        report.push_str(&format!("     {}: {}\n", if *ok == serde_json::Value::Bool(true) { "✅" } else { "❌" }, pkg));
+                                    }
+
+                                    if let Some(missing) = data["tools_missing"].as_array() {
+                                        if !missing.is_empty() {
+                                            report.push_str(&format!("\n   Missing ({})", missing.len()));
+                                        }
+                                    }
+
+                                    if let Some(guide) = data["install_guide"].as_str() {
+                                        report.push_str(&format!("\n\n📦 Install guide:\n{}", guide));
+                                    }
+                                    report
+                                } else {
+                                    format!("Platform info:\n{}", stdout.trim())
+                                }
+                            }
+                            Err(e) => format!("Error: failed to check platform: {e}"),
+                        }
+                    }
+                    "guide" => {
+                        if !script_path.exists() {
+                            return format!("Platform check script not found at {}", script_path.display());
+                        }
+                        match std::process::Command::new("python3")
+                            .arg(script_path.to_str().unwrap_or(""))
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .output()
+                        {
+                            Ok(output) => {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                if let Ok(data) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+                                    if let Some(guide) = data["install_guide"].as_str() {
+                                        format!("📦 Install guide:\n{}", guide)
+                                    } else {
+                                        "No install guide available.".to_string()
+                                    }
+                                } else {
+                                    stdout.trim().to_string()
+                                }
+                            }
+                            Err(e) => format!("Error: {e}"),
+                        }
+                    }
+                    "install_python_pkg" => {
+                        let pkg = args["package"].as_str().unwrap_or("");
+                        if pkg.is_empty() {
+                            return "Error: 'package' parameter required for install_python_pkg".to_string();
+                        }
+                        match std::process::Command::new("pip3")
+                            .args(["install", pkg])
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .output()
+                        {
+                            Ok(output) => {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                let stderr = String::from_utf8_lossy(&output.stderr);
+                                let success = output.status.success();
+                                if success {
+                                    format!("✅ Installed {}.", pkg)
+                                } else {
+                                    // Try pip (no 3) as fallback on some systems
+                                    match std::process::Command::new("pip")
+                                        .args(["install", pkg])
+                                        .stdout(std::process::Stdio::piped())
+                                        .stderr(std::process::Stdio::piped())
+                                        .output()
+                                    {
+                                        Ok(retry) => {
+                                            if retry.status.success() {
+                                                format!("✅ Installed {}.", pkg)
+                                            } else {
+                                                let err = String::from_utf8_lossy(&retry.stderr);
+                                                format!("Error: failed to install {}: {}\nTry: pip install {}", pkg, err.lines().next().unwrap_or("unknown"), pkg)
+                                            }
+                                        }
+                                        Err(e) => format!("Error: pip not found: {e}"),
+                                    }
+                                }
+                            }
+                            Err(e) => format!("Error: failed to run pip3: {e}"),
+                        }
+                    }
+                    _ => format!("Error: unknown action '{}'. Use: check, guide, install_python_pkg", action),
+                }
+            }
+            "analyze_image" => {
+                let path = args["path"].as_str().unwrap_or("");
+                if path.is_empty() {
+                    return "Error: 'path' parameter is required".to_string();
+                }
+                let full_path = if std::path::Path::new(path).is_absolute() {
+                    std::path::PathBuf::from(path)
+                } else {
+                    self.root.join(path)
+                };
+
+                if !full_path.exists() {
+                    return format!("Error: image not found: {}", full_path.display());
+                }
+
+                let img_data = match std::fs::read(&full_path) {
+                    Ok(d) => d,
+                    Err(e) => return format!("Error: failed to read image: {e}"),
+                };
+
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&img_data);
+
+                // Detect MIME type from magic bytes
+                let mime = if img_data.len() > 8 {
+                    let header = &img_data[..img_data.len().min(12)];
+                    if header.starts_with(b"\x89PNG") { "image/png" }
+                    else if header.starts_with(b"\xff\xd8\xff") { "image/jpeg" }
+                    else if header.starts_with(b"GIF8") { "image/gif" }
+                    else if header.starts_with(b"RIFF") && header.len() > 8
+                        && &header[8..12] == b"WEBP" { "image/webp" }
+                    else { "image/png" }
+                } else { "image/png" };
+
+                let image_url = format!("data:{};base64,{}", mime, b64);
+                let question = args["prompt"].as_str().unwrap_or("Describe this image in detail. What do you see? Read any text visible in the image.");
+
+                let messages = vec![
+                    Message::text("system", "You are HyperAgent's vision analysis tool. Analyze the provided image carefully and describe what you see in detail. If there is text, read it. Identify objects, people, scenes, colors, and any notable elements."),
+                    Message {
+                        role: "user".to_string(),
+                        parts: vec![
+                            ContentPart::Text { r#type: "text".to_string(), text: question.to_string() },
+                            ContentPart::ImageUrl {
+                                r#type: "image_url".to_string(),
+                                image_url: crate::llm::provider::ImageUrl { url: image_url.clone() },
+                            },
+                        ],
+                    },
+                ];
+
+                match self.provider.chat(messages).await {
+                    Ok(analysis) => {
+                        format!("🔍 Image analysis ({:.1} KB):\n\n{}", img_data.len() as f64 / 1024.0, analysis.trim())
+                    }
+                    Err(e) => {
+                        format!("Error: vision analysis failed: {e}\n\nThe provider may not support vision. Try using a vision-capable model (e.g. GPT-4o, Claude Sonnet).")
+                    }
+                }
+            }
+            _ => format!("Error: unknown tool '{name}'"),
+        }
+    }
+
+    /// Check if a prompt looks like a coding task that needs the code pipeline
+    fn is_coding_task(prompt: &str) -> bool {
+        let coding_keywords = [
+            "fix ", "bug", "implement", "add ", "create ", "refactor",
+            "edit ", "update ", "change ", "delete ", "remove ", "modify",
+            "write a function", "write code", "test ", "compile", "build ",
+            "cargo", "npm ", " yarn", "pip ", "src/", ".rs", ".py", ".ts",
+            ".js", ".tsx", ".jsx", "fn ", "def ", "class ", "struct ",
+            "trait ", "impl ", "pub ", "let ", "const ", "import ",
+            "error[E", "clippy", "linter", "lint ",
+        ];
+        let lower = prompt.to_lowercase();
+        coding_keywords.iter().any(|kw| lower.contains(kw))
+    }
+
+    /// Run a general-purpose tool-use loop for non-coding tasks
+    /// Supports: web_search, read_file, run_bash, knowledge_search, plus MCP tools
+    async fn run_general_mode(
+        &mut self,
+        prompt: &str,
+        _relevant_files: &[FileContext],
+        start: Instant,
+        total_memories: usize,
+    ) -> Result<RunResult> {
+        println!("   🌐 Handling with general-purpose tools...");
+
+        let mem_context = self.load_memory_context(prompt).await;
+
+        // System prompt with tool descriptions
+        let system_prompt = format!(
+            "You are HyperAgent — a versatile AI assistant capable of handling any task.\n\n\
+            You have access to built-in tools:\n\
+            - **web_search(query)**: Search the web for current information (news, docs, facts, research)\n\
+            - **read_file(path)**: Read a file from the project directory (relative path)\n\
+            - **run_bash(command)**: Execute a bash command in the project root\n\
+            - **memory_search(query, limit?)**: Search persistent memory for relevant information\\n\\\n            - **memory_add(content, memory_type?)**: Save a fact to persistent memory\\n\
+            General guidelines:\n\
+            - Use tools proactively when you need more information\n\
+            - Be concise but thorough in your answers\n\
+            - Format code blocks with ```language\n\
+            - Answer in the same language as the user's question\n\
+            - If the user asks for code changes, first read the relevant files, understand them, then implement\n\n\
+            Past context:\n{}\n\
+            Project root: {}",
+            if mem_context.is_empty() { "None".to_string() } else { mem_context },
+            self.root.display()
+        );
+
+        // Build tool definitions (built-in + MCP if available)
+        let mut tool_defs = Self::builtin_tool_definitions(&self.mode, self.memory.is_some());
+
+        // Add MCP tools if available
+        let mcp_tool_defs: Vec<ToolDefinition> = if let Some(ref mcp) = self.mcp {
+            let defs = mcp.to_tool_definitions().await;
+            if !defs.is_empty() {
+                for def in &defs {
+                    println!("   🔌 MCP tool available: {}", def.function.name);
+                }
+            }
+            defs
+        } else {
+            Vec::new()
+        };
+        tool_defs.extend(mcp_tool_defs.clone());
+
+        let mut messages = vec![
+            Message::text("system", system_prompt),
+        ];
+
+        // Inject conversation history
+        for (prev_user, prev_assistant) in &self.conversation_history {
+            messages.push(Message::text("user", prev_user.clone()));
+            messages.push(Message::text("assistant", prev_assistant.clone()));
+        }
+
+        // Build user message (with optional image)
+        let user_msg = if let Some(ref img_path) = self.pending_image {
+            Message {
+                role: "user".to_string(),
+                parts: vec![
+                    ContentPart::Text { r#type: "text".to_string(), text: prompt.to_string() },
+                    ContentPart::ImageUrl {
+                        r#type: "image_url".to_string(),
+                        image_url: crate::llm::provider::ImageUrl {
+                            url: format!("data:image/png;base64,{}", img_path),
+                        },
+                    },
+                ],
+            }
+        } else {
+            Message::text("user", prompt.to_string())
+        };
+        messages.push(user_msg);
+
+        let max_rounds = if mcp_tool_defs.is_empty() { 5 } else { 8 };
+        let has_tools = !tool_defs.is_empty();
+        let mut response_text = String::new();
+
+        for round in 0..max_rounds {
+            use std::io::{Write, stdout};
+
+            if round > 0 {
+                print!("   🔄 Round {}/{}\n", round + 1, max_rounds);
+                stdout().flush().ok();
+            }
+
+            // First round: try streaming for fast Q&A; subsequent rounds: batch with tools
+            let response_msg = if round == 0 && !has_tools {
+                // Simple Q&A — try streaming
+                match self.chat_stream_with_failover(messages.clone()).await {
+                    Ok(stream) => {
+                        let mut rx = stream.into_receiver();
+                        let mut full = String::new();
+                        while let Some(chunk) = rx.recv().await {
+                            print!("{chunk}");
+                            stdout().flush().ok();
+                            full.push_str(&chunk);
+                        }
+                        println!();
+                        crate::llm::provider::ChatResponseMessage {
+                            content: Some(full),
+                            tool_calls: vec![],
+                        }
+                    }
+                    Err(_) => {
+                        // Fallback to batch
+                        match self.chat_with_failover(messages.clone()).await {
+                            Ok(r) => {
+                                print!("{r}");
+                                stdout().flush().ok();
+                                println!();
+                                crate::llm::provider::ChatResponseMessage {
+                                    content: Some(r),
+                                    tool_calls: vec![],
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("\n   Error: {e}");
+                                crate::llm::provider::ChatResponseMessage {
+                                    content: None,
+                                    tool_calls: vec![],
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Batch with tools (supports tool calling)
+                let provider = self.provider.clone();
+
+                match provider.chat_with_tools(messages.clone(), Some(tool_defs.clone())).await {
+                    Ok(msg) => {
+                        // Print text content if present
+                        if let Some(ref text) = msg.content {
+                            if msg.tool_calls.is_empty() {
+                                print!("{text}");
+                                stdout().flush().ok();
+                            }
+                        }
+                        msg
+                    }
+                    Err(e) => {
+                        if round == 0 {
+                            match self.chat_with_failover(messages.clone()).await {
+                                Ok(r) => {
+                                    print!("{r}");
+                                    stdout().flush().ok();
+                                    println!();
+                                    crate::llm::provider::ChatResponseMessage {
+                                        content: Some(r),
+                                        tool_calls: vec![],
+                                    }
+                                }
+                                Err(e2) => {
+                                    eprintln!("\n   Error: {e2}");
+                                    crate::llm::provider::ChatResponseMessage {
+                                        content: None,
+                                        tool_calls: vec![],
+                                    }
+                                }
+                            }
+                        } else {
+                            eprintln!("\n   Error: {e}");
+                            break;
+                        }
+                    }
+                }
+            };
+
+            // Process tool calls
+            if !response_msg.tool_calls.is_empty() {
+                for tool_call in &response_msg.tool_calls {
+                    let tool_name = tool_call.function.name.clone();
+                    let args: serde_json::Value = match serde_json::from_str(&tool_call.function.arguments) {
+                        Ok(v) => v,
+                        Err(_) => serde_json::json!({}),
+                    };
+
+                    // Check if it's a plugin tool, MCP tool, or built-in tool
+                    let is_plugin = self.plugin_manager.as_ref().map_or(false, |pm| pm.list_tools().contains(&tool_name));
+                    let is_mcp = !is_plugin && mcp_tool_defs.iter().any(|d| d.function.name == tool_name);
+                    let result_str = if is_plugin {
+                        // Dispatch to plugin tool
+                        match &self.plugin_manager {
+                            Some(pm) => match pm.call_tool(&tool_name, args).await {
+                                Ok(value) => serde_json::to_string_pretty(&value)
+                                    .unwrap_or_else(|_| "{}".to_string()),
+                                Err(e) => format!("⚠️ Plugin '{tool_name}' error: {e}"),
+                            },
+                            None => format!("⚠️ Plugin '{tool_name}' not loaded"),
+                        }
+                    } else if is_mcp {
+                        // Safety gate: check tool before executing
+                        let safety = crate::security::check_tool_safety(&tool_name, &args);
+                        if !crate::security::confirm_dangerous_action(&safety, self.mode == "task") {
+                            format!("🛑 Tool '{}' blocked by safety policy", tool_name)
+                        } else {
+                            match &self.mcp {
+                                Some(mcp) => match mcp.call_tool(&tool_name, args).await {
+                                    Ok(value) => serde_json::to_string_pretty(&value)
+                                        .unwrap_or_else(|_| "{}".to_string()),
+                                    Err(e) => format!("Error: {e}"),
+                                },
+                                None => "Error: MCP not available".to_string(),
+                            }
+                        }
+                    } else {
+                        self.execute_builtin_tool(&tool_name, &args).await
+                    };
+
+                    // Paginate very long results — save to temp file, tell LLM how to continue
+                    let truncated = if result_str.len() > 4000 {
+                        self.paginate_output(&result_str, 4000, &tool_name)
+                    } else {
+                        result_str.clone()
+                    };
+
+                    messages.push(Message::text("tool", truncated));
+                    println!("   🔧 Called '{}'", tool_name);
+                }
+                // Continue to next round
+                continue;
+            }
+
+            // No tool calls — final response
+            response_text = response_msg.text_content();
+            break;
+        }
+
+        // Scrub any leaked memory context from the response (general mode)
+        if !response_text.is_empty() {
+            let mem_ctx = self.load_memory_context(&response_text).await;
+            response_text = crate::memory::scrub_response(&response_text, &mem_ctx);
+        }
+
+        // Print a newline after the response if it ended without one
+        if !response_text.is_empty() {
+            println!();
+        }
+
+        self.pending_image = None;
+
+        self.record_memory(
+            &format!("General response for '{}': {}",
+                &prompt[..prompt.char_indices().nth(100).map(|(i,_)|i).unwrap_or(prompt.len())],
+                &response_text[..response_text.char_indices().nth(200).map(|(i,_)|i).unwrap_or(response_text.len())]),
+            MemoryType::ActionOutcome,
+        ).await;
+
+        self.fire_hook(HookEvent::PostRun, "general mode complete").await;
+
+        // Consolidate new memories
+        if let Some(ref mem) = self.memory {
+            if let Ok(uncon) = mem.store_ref().get_unconsolidated(20) {
+                if !uncon.is_empty() {
+                    let ids: Vec<String> = uncon.iter().map(|e| e.id.clone()).collect();
+                    let _ = mem.store_ref().mark_consolidated(&ids);
                 }
             }
         }
@@ -847,6 +2295,168 @@ impl Orchestrator {
             }
         }
         ctx
+    }
+
+    /// Run a multi-step task by executing sub-tasks sequentially with accumulated context
+    /// Each sub-task has access to built-in tools (web_search, read_file, run_bash, etc.)
+    /// Results from earlier steps are fed as context to later steps
+    async fn run_task_mode(
+        &mut self,
+        prompt: &str,
+        steps: &[String],
+        start: std::time::Instant,
+        total_memories: usize,
+    ) -> Result<RunResult> {
+        println!("   🧩 Executing {} sub-tasks sequentially...", steps.len());
+        for (i, step) in steps.iter().enumerate() {
+            println!("\n   ── Step {}/{}: {} ──", i + 1, steps.len(), step);
+        }
+        println!();
+
+        let mem_context = self.load_memory_context(prompt).await;
+        let mut accumulated_context = String::new();
+        let mut final_response = String::new();
+        let mut all_tool_defs = Self::builtin_tool_definitions(&self.mode, self.memory.is_some());
+
+        // Add MCP tools if available
+        if let Some(ref mcp) = self.mcp {
+            let defs = mcp.to_tool_definitions().await;
+            all_tool_defs.extend(defs);
+        }
+
+        for (i, step) in steps.iter().enumerate() {
+            println!("   🔄 Step {}/{}: {}", i + 1, steps.len(), step);
+
+            let step_prompt = format!(
+                "Task: {}\n\nCurrent step: {}\n\nAccumulated context from previous steps:\n{}\n\n\
+                 Focus ONLY on this step. Use the available tools to complete it.\n\
+                 When done, provide a concise summary of what you found/did.",
+                prompt,
+                step,
+                if accumulated_context.is_empty() { "None yet".to_string() } else { accumulated_context.clone() }
+            );
+
+            let system_prompt = format!(
+                "You are HyperAgent — a versatile AI assistant completing a multi-step task.\n\n\
+                You have access to tools:\n\
+                - **web_search(query)**: Search the web for current information\n\
+                - **read_file(path)**: Read a file from the project directory\n\
+                - **run_bash(command)**: Execute bash commands\n\
+                - **python_repl(code)**: Execute Python code (state persists)\n\
+                - **read_document(path)**: Read PDF/Word/Excel documents\n\
+                - **browser(command, url)**: Control headless Chrome browser\n\
+                - **platform_setup(action)**: Check/setup tools\n\n\
+                Step {}/{} of the plan. Complete this step, then provide a summary of what was accomplished.\n\
+                Past context:\n{}",
+                i + 1, steps.len(),
+                if mem_context.is_empty() { "None".to_string() } else { mem_context.clone() }
+                );
+    
+            let mut messages = vec![
+                Message::text("system", &system_prompt),
+                Message::text("user", &step_prompt),
+            ];
+
+            // Tool loop for this step (max 5 rounds)
+            let max_rounds = 5;
+            let mut step_output = String::new();
+
+            for round in 0..max_rounds {
+                use std::io::{Write, stdout};
+
+                match self.provider.chat_with_tools(messages.clone(), Some(all_tool_defs.clone())).await {
+                    Ok(response_msg) => {
+                        // Process tool calls
+                        if !response_msg.tool_calls.is_empty() {
+                            for tool_call in &response_msg.tool_calls {
+                                let tool_name = tool_call.function.name.clone();
+                                let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+                                    .unwrap_or(serde_json::json!({}));
+
+                                let is_mcp = all_tool_defs.iter().any(|d| d.function.name == tool_name);
+                                let result_str = if is_mcp {
+                                    match &self.mcp {
+                                        Some(mcp) => match mcp.call_tool(&tool_name, args).await {
+                                            Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_default(),
+                                            Err(e) => format!("Error: {e}"),
+                                        },
+                                        None => "Error: MCP not available".to_string(),
+                                    }
+                                } else {
+                                    self.execute_builtin_tool(&tool_name, &args).await
+                                };
+
+                                let truncated = if result_str.len() > 4000 {
+                                    self.paginate_output(&result_str, 4000, &tool_name)
+                                } else {
+                                    result_str
+                                };
+
+                                messages.push(Message::text("tool", truncated));
+                                print!("      🔧 Called '{}'\n", tool_name);
+                                stdout().flush().ok();
+                            }
+                            continue; // More tool calls
+                        }
+
+                        // Text response — this step is done
+                        step_output = response_msg.text_content();
+                        break;
+                    }
+                    Err(e) => {
+                        if round == 0 {
+                            match self.chat_with_failover(messages.clone()).await {
+                                Ok(r) => {
+                                    step_output = r;
+                                    break;
+                                }
+                                Err(e2) => {
+                                    eprintln!("\n   Error on step: {e2}");
+                                    step_output = format!("[Error: {e2}]");
+                                    break;
+                                }
+                            }
+                        } else {
+                            eprintln!("\n   Error on step: {e}");
+                            step_output = format!("[Error: {e}]");
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Accumulate results
+            if !step_output.is_empty() {
+                let step_summary = format!("--- Step {}/{}: {} ---\n{}\n", i + 1, steps.len(), step, step_output);
+                accumulated_context.push_str(&format!("\n\nStep {} output:\n{}\n", i + 1, step_output));
+                final_response.push_str(&step_summary);
+                println!("   ✅ Step {}/{} complete\n", i + 1, steps.len());
+            }
+        }
+
+        // Final summary
+        if !final_response.is_empty() {
+            println!("\n📋 Final Result:\n{}", final_response);
+        }
+
+        self.fire_hook(HookEvent::PostRun, "task mode complete").await;
+
+        if let Some(ref mem) = self.memory {
+            if let Ok(uncon) = mem.store().get_unconsolidated(20) {
+                if !uncon.is_empty() {
+                    let ids: Vec<String> = uncon.iter().map(|e| e.id.clone()).collect();
+                    let _ = mem.store().mark_consolidated(&ids);
+                }
+            }
+        }
+
+        Ok(RunResult {
+            elapsed: start.elapsed(),
+            memories_recorded: total_memories + 1,
+            model_name: self.active_model_name(),
+            response_text: final_response,
+            ..Default::default()
+        })
     }
 
     /// Build the full prompt with memory context + project context + mode + conversation history + MCP tools
@@ -1051,6 +2661,82 @@ impl Orchestrator {
         }
 
         Ok(all_changes)
+    }
+
+    /// Self-reflection: assess quality of approved changes.
+    /// Uses the LLM to evaluate if changes are correct, have issues, or missed the goal.
+    /// Records findings to memory but doesn't block the pipeline — this is advisory.
+    async fn self_reflect(&self, prompt: &str, changes: &[FileChange]) -> anyhow::Result<()> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+
+        // Build a compact summary of changes for the reflection prompt
+        let mut summary = String::new();
+        for (i, change) in changes.iter().enumerate() {
+            let old_len = change.old_content.as_ref().map(|c| c.len()).unwrap_or(0);
+            let new_len = change.new_content.as_ref().map(|c| c.len()).unwrap_or(0);
+            let delta = if new_len > old_len { new_len - old_len } else { 0 };
+            summary.push_str(&format!(
+                "  {}. {} ({}): {delta} bytes added\n",
+                i + 1,
+                change.file.display(),
+                change.change_type,
+            ));
+        }
+
+        let reflection_prompt = format!(
+            "You are a code quality reviewer. Review the following changes made for the task:\n\
+             TASK: {prompt}\n\n\
+             CHANGES:\n{summary}\n\n\
+             Evaluate:\n\
+             1. Do these changes correctly implement the task?\n\
+             2. Are there any bugs, edge cases missed, or quality issues?\n\
+             3. Are there missing pieces (tests, error handling, documentation)?\n\
+             4. Could there be unintended side effects?\n\n\
+             Respond with either:\n\
+             - \"✅ ALL GOOD\" (if changes look correct and complete)\n\
+             - \"⚠️ ISSUES: <brief description>\" (if there are minor issues)\n\
+             - \"❌ PROBLEMS: <brief description>\" (if changes are wrong or incomplete)\n\n\
+             Keep your analysis brief — 2-3 sentences maximum."
+        );
+
+        let response = self.provider.chat(vec![
+            Message::text("system", &reflection_prompt),
+        ]).await;
+
+        match response {
+            Ok(analysis) => {
+                // Record reflection to memory
+                let trimmed = analysis.trim();
+                let mem_content = format!("Self-reflection for '{}': {}", 
+                    &prompt[..prompt.len().min(80)],
+                    &trimmed[..trimmed.len().min(200)]
+                );
+                self.record_memory(&mem_content, MemoryType::Learned).await;
+
+                if trimmed.starts_with("❌") || trimmed.contains("PROBLEMS") {
+                    eprintln!("\n   🔄 Self-reflection found issues:");
+                    eprintln!("   {}\n", trimmed);
+                    // Record the issue as a separate memory for future reference
+                    self.record_memory(
+                        &format!("Issues in '{}': {}", &prompt[..prompt.len().min(80)], trimmed),
+                        MemoryType::BugFix,
+                    ).await;
+                } else if trimmed.starts_with("⚠️") || trimmed.contains("ISSUES") {
+                    println!("   📝 Self-reflection notes: {}", trimmed);
+                } else {
+                    // All good — confirm but be quiet about it
+                    debug_assert!(true, "Reflection passed for: {}", prompt);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                // Reflection failure is non-fatal
+                eprintln!("   ⚠️  Self-reflection LLM call failed: {e}");
+                Ok(())
+            }
+        }
     }
 
     /// Smart work splitter — groups related files together per agent

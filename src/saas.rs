@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! SaaS Web Server — Turn HyperAgent into a zero-install web product.
 //!
 //! For 100M users, the browser is the universal runtime. No CLI install

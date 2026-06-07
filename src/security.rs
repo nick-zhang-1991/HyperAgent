@@ -689,10 +689,11 @@ impl CredentialVault {
             .as_nanos();
         let pid = std::process::id();
         let mut iv = [0u8; 32];
-        for i in 0..32 {
-            let seed = ((nanos >> (i % 8 * 8)) as u8)
-                .wrapping_add((pid >> (i % 4 * 8)) as u8)
-                .wrapping_mul(0x9e3779b9u64.wrapping_shr((i % 8) * 8) as u8);
+        for i in 0..32usize {
+            let shift = (i % 8) * 8;
+            let seed = ((nanos >> shift as u32) as u8)
+                .wrapping_add((pid >> (i % 4 * 8) as u32) as u8)
+                .wrapping_mul(0x9e_u8.wrapping_mul(i as u8 + 1));
             iv[i] = seed;
         }
         result.extend_from_slice(&iv);

@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Internationalization (i18n) framework — zero-overhead compile-time translation.
 //!
 //! Design for 100M users:

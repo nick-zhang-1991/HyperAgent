@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Cloud Sync — Keep memories, skills, and config in sync across machines.
 //!
 //! For 100M users, multi-machine sync is essential. Users expect their

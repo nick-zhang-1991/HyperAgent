@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! ProviderPool — multi-provider failover with cooldown tracking
 //!
 //! Automatically falls back to the next provider when the primary fails.

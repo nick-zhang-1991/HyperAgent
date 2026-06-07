@@ -1514,6 +1514,12 @@ impl Cli {
             orchestrator = orchestrator.with_hooks(h);
         }
 
+        // Build the knowledge base (auto-create if doesn't exist)
+        let kb = crate::knowledge::KnowledgeBase::new(dir);
+        if kb.build(dir).is_ok() {
+            orchestrator = orchestrator.with_knowledge_base(kb);
+        }
+
         // Connect MCP servers (discover from config + ~/.hyper/mcp/*.json)
         let mcp_registry = crate::mcp::McpRegistry::new(dir);
         let mcp_servers = crate::mcp::McpRegistry::discover_servers(&[]);

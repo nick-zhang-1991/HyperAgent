@@ -130,6 +130,77 @@ pub fn apply_edits_to_file(path: &PathBuf, hunks: &[DiffHunk]) -> anyhow::Result
     Ok(())
 }
 
+/// Render a compact, colored diff preview for a set of file changes.
+/// Returns a string with ANSI color codes suitable for terminal display.
+/// Uses red for deletions (-), green for additions (+), and dim for context ( ).
+pub fn render_diff_preview(changes: &[FileChange], max_hunks_per_file: usize) -> String {
+    let red = "\x1b[31m";
+    let green = "\x1b[32m";
+    let dim = "\x1b[2m";
+    let bold = "\x1b[1m";
+    let reset = "\x1b[0m";
+
+    let mut output = String::new();
+    output.push_str(&format!("\n{}📝 Diff Preview:{} {} file(s)\n", bold, reset, changes.len()));
+
+    for change in changes {
+        let file_str = change.file.display();
+        let type_icon = match change.change_type.as_str() {
+            "create" => "➕",
+            "delete" => "❌",
+            _ => "✏️",
+        };
+        output.push_str(&format!("  {} {}\n", type_icon, file_str));
+
+        // Show file-level old→new size summary
+        let old_size = change.old_content.as_ref().map(|c| c.len()).unwrap_or(0);
+        let new_size = change.new_content.as_ref().map(|c| c.len()).unwrap_or(0);
+        if old_size > 0 || new_size > 0 {
+            let delta = if new_size >= old_size {
+                format!("+{}", new_size - old_size)
+            } else {
+                format!("-{}", old_size - new_size)
+            };
+            output.push_str(&format!(
+                "    {}Size: {}B → {}B ({}B){}  {}hunks: {}{}\n",
+                dim, old_size, new_size, delta, reset,
+                dim, change.hunks.len(), reset,
+            ));
+        }
+
+        // Show hunks (limited)
+        for (i, hunk) in change.hunks.iter().enumerate() {
+            if i >= max_hunks_per_file {
+                output.push_str(&format!(
+                    "    {}... and {} more hunk(s){}",
+                    dim,
+                    change.hunks.len() - max_hunks_per_file,
+                    reset
+                ));
+                break;
+            }
+            output.push_str(&format!(
+                "    {}@@ -{},{} +{},{} @@{}\n",
+                dim, hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines, reset
+            ));
+            for line in hunk.content.lines() {
+                if line.starts_with('-') {
+                    output.push_str(&format!("    {}{}{}\n", red, line, reset));
+                } else if line.starts_with('+') {
+                    output.push_str(&format!("    {}{}{}\n", green, line, reset));
+                } else {
+                    output.push_str(&format!("    {} {}\n", dim, line));
+                }
+            }
+        }
+        if !change.hunks.is_empty() {
+            output.push('\n');
+        }
+    }
+
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

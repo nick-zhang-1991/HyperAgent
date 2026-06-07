@@ -1,3 +1,4 @@
+#![allow(unused)]
 use anyhow::Result;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};

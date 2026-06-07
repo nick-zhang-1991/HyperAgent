@@ -87,7 +87,7 @@ impl ChatResponseMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
-    #[serde(alias = "content")]
+    #[serde(alias = "content", rename = "content")]
     pub parts: Vec<ContentPart>,
 }
 

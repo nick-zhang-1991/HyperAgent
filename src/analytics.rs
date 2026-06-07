@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Usage Analytics & Insights Dashboard
 //!
 //! For 100M users, understanding usage patterns is critical:

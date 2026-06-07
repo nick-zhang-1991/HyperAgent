@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Billing & Subscription Infrastructure
 //!
 //! For 100M users, monetization must be built-in from day one:

@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Agent Graph Store — parent/child agent spawning with lifecycle tracking
 //!
 //! Inspired by codex's agent-graph-store crate.

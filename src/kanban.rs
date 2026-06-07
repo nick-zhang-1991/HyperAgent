@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Kanban Board — multi-agent parallel task execution
 //!
 //! Inspired by cline's Kanban system.

@@ -106,6 +106,37 @@ impl Session {
                 .unwrap_or_else(|| "unknown time".to_string())
         )
     }
+
+    /// Display session as a detailed view
+    pub fn display(&self) -> String {
+        let mut output = String::new();
+        output.push_str(&format!("📋 Session: {}\n", self.id));
+        output.push_str(&format!("  Prompt:    {}\n", self.prompt.chars().take(80).collect::<String>()));
+        output.push_str(&format!("  Project:   {}\n", self.project));
+        output.push_str(&format!("  Model:     {}\n", self.model));
+        output.push_str(&format!("  Summary:   {}\n", self.summary.chars().take(100).collect::<String>()));
+        output.push_str(&format!("  Time:      {}\n", chrono::DateTime::from_timestamp(self.timestamp as i64, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "unknown".to_string())));
+        output.push_str(&format!("  Files:     {}\n", self.changes.len()));
+        output.push_str(&format!("  Messages:  {}\n", self.messages.len()));
+        if !self.tags.is_empty() {
+            output.push_str(&format!("  Tags:      {}\n", self.tags.join(", ")));
+        }
+        if let Some(ref b) = self.branch {
+            output.push_str(&format!("  Branch:    {}\n", b));
+        }
+        if let Some(ref p) = self.parent_id {
+            output.push_str(&format!("  Parent:    {}\n", p));
+        }
+        if !self.changes.is_empty() {
+            output.push_str(&format!("  Changes:\n"));
+            for c in &self.changes {
+                output.push_str(&format!("    • {}\n", c));
+            }
+        }
+        output
+    }
 }
 
 /// Session manager
@@ -212,6 +243,31 @@ impl SessionManager {
             }
         }
         Ok(())
+    }
+}
+
+impl SessionManager {
+    /// Search sessions by query text (search prompt, summary, messages, tags)
+    pub fn search(&self, query: &str) -> Result<Vec<Session>> {
+        let all = self.list()?;
+        let q = query.to_lowercase();
+        Ok(all.into_iter()
+            .filter(|s| {
+                s.prompt.to_lowercase().contains(&q)
+                    || s.summary.to_lowercase().contains(&q)
+                    || s.id.to_lowercase().contains(&q)
+                    || s.tags.iter().any(|t| t.to_lowercase().contains(&q))
+                    || s.messages.iter().any(|m| m.content.to_lowercase().contains(&q))
+            })
+            .collect())
+    }
+
+    /// List sessions by tag
+    pub fn list_by_tag(&self, tag: &str) -> Result<Vec<Session>> {
+        let all = self.list()?;
+        Ok(all.into_iter()
+            .filter(|s| s.tags.iter().any(|t| t == tag))
+            .collect())
     }
 
     /// Get session tree (parent + children) as an indented string

@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Project scaffolding — create new projects from templates
 //!
 //! Usage: `hyper scaffold <name> --type <rust|python|ts>`

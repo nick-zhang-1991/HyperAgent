@@ -3,3 +3,5 @@ target/
 *.bak
 *.swp
 .DS_Store
+node_modules/
+packages/

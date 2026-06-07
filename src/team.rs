@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Team Workspaces — Shared agent memory, skills, and rules for teams.
 //!
 //! For 100M users, team collaboration is a key monetization driver (Team tier).

@@ -75,6 +75,7 @@ impl Completer for ReplCompleter {
             "/mode", "/clear", "/cls",
             "/help", "/stats", "/memory",
             "/reindex", "/refresh",
+            "/sessions", "/session",
         ];
 
         let candidates: Vec<Pair> = if prefix.starts_with('/') {
@@ -325,7 +326,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  Example: /image screenshot.png");
                     println!("  Supported formats: PNG, JPG, JPEG, GIF, WEBP");
                 }
-                "/reindex" => {
+                "/reindex" | "/refresh" => {
                     println!("  Rebuilding index...");
                     match HyperIndex::new(&dir) {
                         Ok(mut new_idx) => match new_idx.build() {
@@ -336,6 +337,47 @@ pub async fn run_repl() -> anyhow::Result<()> {
                             Err(e) => println!("  ⚠️  {e}"),
                         },
                         Err(e) => println!("  ⚠️  {e}"),
+                    }
+                }
+                "/sessions" => {
+                    if let Ok(sm) = crate::session::SessionManager::new() {
+                        match sm.list_by_tag("repl") {
+                            Ok(sessions) => {
+                                if sessions.is_empty() {
+                                    println!("  No REPL sessions found.");
+                                } else {
+                                    println!("  Recent REPL sessions (last {}):", sessions.len().min(10));
+                                    for s in sessions.iter().take(10) {
+                                        println!("  {} | {}", s.id, s.summary.chars().take(70).collect::<String>());
+                                    }
+                                    println!();
+                                    println!("  Use /session <id> to view details");
+                                }
+                            }
+                            Err(e) => println!("  ⚠️  {e}"),
+                        }
+                    }
+                }
+                cmd if cmd.starts_with("/session ") => {
+                    let id = cmd[9..].trim();
+                    if let Ok(sm) = crate::session::SessionManager::new() {
+                        match sm.load(id) {
+                            Ok(s) => {
+                                println!("{}", s.display());
+                            }
+                            Err(_e) => {
+                                // Try fuzzy search
+                                match sm.search(id) {
+                                    Ok(matches) if !matches.is_empty() => {
+                                        println!("  Session '{}' not found. Did you mean:", id);
+                                        for m in matches.iter().take(5) {
+                                            println!("    {} — {}", m.id, m.summary.chars().take(60).collect::<String>());
+                                        }
+                                    }
+                                    _ => println!("  ❌ Session not found: {id}"),
+                                }
+                            }
+                        }
                     }
                 }
                 _ => {
@@ -360,6 +402,24 @@ pub async fn run_repl() -> anyhow::Result<()> {
             if conversation_history.len() > 10 {
                 conversation_history.remove(0);
             }
+        }
+
+        // Auto-save session after each turn
+        if let Ok(sm) = crate::session::SessionManager::new() {
+            let mut session = crate::session::Session::new(
+                dir.to_string_lossy().as_ref(),
+                &trimmed,
+                &provider.model,
+            );
+            let hist_summary: Vec<String> = conversation_history.iter()
+                .map(|(u, a)| format!("U: {} | A: {}", u.chars().take(50).collect::<String>(), a.chars().take(50).collect::<String>()))
+                .collect();
+            session.summary = format!("REPL {} | {} turns | {}", current_mode, conversation_history.len(), hist_summary.last().unwrap_or(&"".to_string()));
+            session.messages = conversation_history.iter().map(|(u, _a)| {
+                crate::session::ChatMessage { role: "user".into(), content: u.clone() }
+            }).collect();
+            session.tags = vec![current_mode.clone(), "repl".to_string()];
+            let _ = sm.save(&session);
         }
     }
 

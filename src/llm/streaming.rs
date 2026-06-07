@@ -1,3 +1,4 @@
+#![allow(unused)]
 
 use futures::StreamExt;
 use reqwest::Response;

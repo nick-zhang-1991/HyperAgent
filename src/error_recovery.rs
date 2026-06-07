@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Error Recovery & Retry System
 //!
 //! For 100M users, every failed LLM call = lost trust + wasted tokens.

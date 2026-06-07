@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Interactive Onboarding Tutorial — First-run experience for 100M users.
 //!
 //! Design goals:

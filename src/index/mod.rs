@@ -1,3 +1,4 @@
+#![allow(unused)]
 pub mod cache;
 pub mod graph;
 pub mod parser;
