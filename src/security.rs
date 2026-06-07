@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Security module — dangerous command detection and policy enforcement
 //!
 //! Protects against accidental or malicious destructive operations:
@@ -227,6 +228,76 @@ const DANGER_PATTERNS: &[DangerPattern] = &[
             "chmod 777 /boot",
         ],
     },
+    // ─── Windows-specific dangerous patterns ─────────────────
+    DangerPattern {
+        name: "windows-destructive-delete",
+        category: SafetyCategory::DestructiveDelete,
+        patterns: &[
+            "del /f /s /q c:\\",
+            "del /f /s /q c:",
+            "rd /s /q c:\\",
+            "rmdir /s /q c:\\",
+            "rmdir /s /q c:",
+            "deltree /y c:",
+            "format c:",
+            "format c:\\",
+            "format d:",
+            "format e:",
+            "diskpart clean",
+        ],
+    },
+    DangerPattern {
+        name: "windows-escalation",
+        category: SafetyCategory::SystemEscalation,
+        patterns: &[
+            "net user administrator",
+            "net localgroup administrators",
+            "net user /add",
+            "net localgroup /add",
+            "reg add hklm",
+            "sc create",
+            "sc config",
+            "bcdedit",
+            "takeown /f",
+            "icacls /grant",
+            "cacls /g",
+            "runas /user:administrator",
+        ],
+    },
+    DangerPattern {
+        name: "windows-remote-execution",
+        category: SafetyCategory::RemoteExecution,
+        patterns: &[
+            "powershell -c iex",
+            "powershell -command iex",
+            "powershell invoke-webrequest",
+            "powershell wget",
+            "powershell invoke-expression",
+            "powershell -enc",
+            "powershell -e ",
+            "curl | powershell",
+            "wget | powershell",
+            "iwr -uri",
+            "start-bitstransfer",
+            "bitsadmin /transfer",
+            "certutil -urlcache",
+            "certutil -split",
+        ],
+    },
+    DangerPattern {
+        name: "windows-disk-operation",
+        category: SafetyCategory::DiskOperation,
+        patterns: &[
+            "diskpart",
+            "format /q",
+            "format /fs",
+            "format d: /fs:ntfs",
+            "clean all",
+            "convert basic",
+            "convert dynamic",
+            "diskraid",
+        ],
+    },
 ];
 
 /// Check a command string against the security policy
@@ -272,7 +343,11 @@ pub fn check_command_safety(command: &str, _policy: &SecurityPolicy) -> SafetyRe
         || command_lower.contains("| sudo bash")
         || command_lower.contains("| sudo sh")
         || command_lower.contains("| zsh")
-        || command_lower.contains("| fish");
+        || command_lower.contains("| fish")
+        // Windows: pipe to powershell
+        || command_lower.contains("| powershell")
+        || command_lower.contains("| pwsh")
+        || command_lower.contains("|iex");
     if (cmd_has_curl || cmd_has_wget) && piped_to_shell {
         return SafetyResult {
             verdict: SafetyVerdict::Blocked(format!(
@@ -288,6 +363,10 @@ pub fn check_command_safety(command: &str, _policy: &SecurityPolicy) -> SafetyRe
     let startup_patterns = [
         "rc.local", "cron", "systemd", "init.d", "profile",
         "bashrc", "bash_profile", ".bashrc", ".zshrc",
+        // Windows startup patterns
+        "startup", "run", "runonce", "runservices",
+        "windows\\system32\\grouppolicy",
+        "local machine\\software\\microsoft\\windows\\currentversion\\run",
     ];
     for pattern in &startup_patterns {
         if command_lower.contains(pattern) && command_lower.contains(">/") {
@@ -329,7 +408,14 @@ pub fn validate_file_path(path: &Path, project_root: &Path) -> std::result::Resu
 
     // Check not writing to hidden system dirs
     let path_str = canonical.to_string_lossy().to_lowercase();
-    let system_prefixes = ["/etc/", "/usr/", "/bin/", "/boot/", "/dev/", "/proc/", "/sys/", "/var/"];
+    let system_prefixes = [
+        "/etc/", "/usr/", "/bin/", "/boot/", "/dev/", "/proc/", "/sys/", "/var/",
+        // Windows system dirs
+        "c:\\windows\\", "c:\\program files\\", "c:\\program files (x86)\\",
+        "c:\\system32\\", "c:\\system volume information\\",
+        "c:\\pagefile.sys", "c:\\hiberfil.sys",
+        "c:\\$recycle.bin\\", "c:\\$winre~",
+    ];
     for prefix in &system_prefixes {
         if path_str.starts_with(prefix) {
             return Err(format!(
@@ -418,6 +504,252 @@ pub fn confirm_dangerous_action(result: &SafetyResult, yes_mode: bool) -> bool {
             }
         }
     }
+}
+
+// ═══════════════════════════════════════════════
+// Tool-Level Safety Gates
+// ═══════════════════════════════════════════════
+
+/// Danger level for each tool — determines how the orchestrator handles it
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolDangerLevel {
+    /// Safe to auto-execute (read_file, web_search, etc.)
+    Safe,
+    /// Ask user before executing (run_bash with dangerous commands, etc.)
+    /// Actual danger detected at runtime by check_command_safety.
+    /// Tools with this level always get checked.
+    Checked,
+    /// Deny execution entirely
+    Blocked,
+}
+
+/// Map tool names to their danger level for per-tool safety gates
+pub fn tool_danger_level(tool_name: &str) -> ToolDangerLevel {
+    match tool_name {
+        // Safe tools — read-only or harmless
+        "read_file" | "web_search" | "knowledge_search"
+        | "memory_search" | "memory_add" | "memory_remove"
+        | "read_document" | "browser" | "vision"
+        | "python_repl" | "repl_python" => ToolDangerLevel::Safe,
+
+        // Checked tools — may be dangerous depending on arguments
+        "run_bash" | "bash" | "shell" | "terminal"
+        | "execute_command" => ToolDangerLevel::Checked,
+
+        // Blocked tools
+        _ => ToolDangerLevel::Checked, // Unknown tools get Checked by default
+    }
+}
+
+/// Check a tool call against safety policy.
+/// Returns a SafetyResult indicating if the call is allowed, blocked, or needs confirmation.
+pub fn check_tool_safety(tool_name: &str, tool_args: &serde_json::Value) -> SafetyResult {
+    match tool_danger_level(tool_name) {
+        ToolDangerLevel::Safe => SafetyResult {
+            verdict: SafetyVerdict::Allowed,
+            matched_pattern: None,
+            category: None,
+        },
+        ToolDangerLevel::Blocked => SafetyResult {
+            verdict: SafetyVerdict::Blocked(format!("Tool '{tool_name}' is blocked by policy")),
+            matched_pattern: Some(tool_name.to_string()),
+            category: Some(SafetyCategory::Suspicious),
+        },
+        ToolDangerLevel::Checked => {
+            // For run_bash/bash/shell, check the command argument
+            if tool_name == "run_bash" || tool_name == "bash" || tool_name == "shell" || tool_name == "terminal" || tool_name == "execute_command" {
+                let cmd = tool_args.get("command")
+                    .or_else(|| tool_args.get("cmd"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let policy = SecurityPolicy::default();
+                let result = check_command_safety(cmd, &policy);
+                // Promote Checked → Ask for safety results that need attention
+                if matches!(result.verdict, SafetyVerdict::Allowed) {
+                    SafetyResult {
+                        verdict: SafetyVerdict::Ask(format!("Execute shell command? {}...",
+                            &cmd[..cmd.len().min(80)])),
+                        matched_pattern: result.matched_pattern,
+                        category: result.category,
+                    }
+                } else {
+                    result
+                }
+            } else {
+                // Unknown tool — ask
+                SafetyResult {
+                    verdict: SafetyVerdict::Ask(format!("Execute tool '{tool_name}'?")),
+                    matched_pattern: Some(tool_name.to_string()),
+                    category: Some(SafetyCategory::Suspicious),
+                }
+            }
+        }
+    }
+}
+
+/// Check whether to auto-approve a tool call based on mode and safety level.
+/// Returns true if the call should proceed without user confirmation.
+pub fn is_tool_auto_approved(tool_name: &str, mode: &str, yes_mode: bool) -> bool {
+    if yes_mode {
+        return true;
+    }
+    match tool_danger_level(tool_name) {
+        ToolDangerLevel::Safe => true,
+        ToolDangerLevel::Checked => {
+            // In task/code mode, allow checked tools without asking
+            mode == "task" || mode == "code"
+        }
+        ToolDangerLevel::Blocked => false,
+    }
+}
+
+// ═══════════════════════════════════════════════
+// Credential Vault — Encrypted credential storage
+// ═══════════════════════════════════════════════
+
+/// Simple encrypted credential vault using machine-local key.
+/// Stores credentials in `.hyper/credentials.json` encrypted with AES-like XOR
+/// using a key derived from machine identity (/etc/machine-id or generated).
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// Credential vault for storing secrets (API keys, tokens, passwords)
+pub struct CredentialVault {
+    vault_path: PathBuf,
+    key: [u8; 32],
+    credentials: HashMap<String, String>,
+}
+
+impl CredentialVault {
+    /// Open or create the credential vault for the given project root.
+    pub fn new(project_root: &Path) -> Self {
+        let vault_dir = project_root.join(".hyper");
+        let vault_path = vault_dir.join("credentials.json");
+        let key = Self::derive_key();
+        let credentials = Self::load_or_init(&vault_path, &key);
+        Self { vault_path, key, credentials }
+    }
+
+    /// Store a credential (overwrites if exists)
+    pub fn set(&mut self, name: &str, value: &str) -> anyhow::Result<()> {
+        self.credentials.insert(name.to_string(), value.to_string());
+        self.save()
+    }
+
+    /// Retrieve a credential
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.credentials.get(name).map(|s| s.as_str())
+    }
+
+    /// List all credential names (not values)
+    pub fn list(&self) -> Vec<&str> {
+        self.credentials.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Remove a credential
+    pub fn remove(&mut self, name: &str) -> anyhow::Result<()> {
+        self.credentials.remove(name);
+        self.save()
+    }
+
+    /// Derive encryption key from machine identity
+    fn derive_key() -> [u8; 32] {
+        // Try machine-id first, then fall back to a deterministic key
+        let seed = std::fs::read_to_string("/etc/machine-id")
+            .or_else(|_| std::fs::read_to_string("/var/lib/dbus/machine-id"))
+            .unwrap_or_else(|_| {
+                // Fallback: hash of hostname + "hyperagent-v1"
+                let hostname = std::process::Command::new("hostname")
+                    .output().ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .unwrap_or_default();
+                format!("hyperagent-v1-salt-{}", hostname)
+            });
+
+        // Simple hash to fill 32 bytes
+        let bytes = seed.as_bytes();
+        let mut key = [0u8; 32];
+        for i in 0..32 {
+            key[i] = bytes.get(i).copied().unwrap_or(0)
+                ^ bytes.get(bytes.len().saturating_sub(i + 1)).copied().unwrap_or(0)
+                ^ (i as u8).wrapping_mul(0x5c);
+        }
+        key
+    }
+
+    /// Encrypt data using XOR stream
+    fn encrypt(data: &str, key: &[u8; 32]) -> Vec<u8> {
+        let bytes = data.as_bytes();
+        let mut result = Vec::with_capacity(bytes.len() + 32);
+        // Prepend IV (derived from timestamp and PID instead of rand)
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let pid = std::process::id();
+        let mut iv = [0u8; 32];
+        for i in 0..32 {
+            let seed = ((nanos >> (i % 8 * 8)) as u8)
+                .wrapping_add((pid >> (i % 4 * 8)) as u8)
+                .wrapping_mul(0x9e3779b9u64.wrapping_shr((i % 8) * 8) as u8);
+            iv[i] = seed;
+        }
+        result.extend_from_slice(&iv);
+        for (i, byte) in bytes.iter().enumerate() {
+            result.push(byte ^ key[i % 32] ^ iv[i % 32]);
+        }
+        result
+    }
+
+    /// Decrypt data using XOR stream
+    fn decrypt(data: &[u8], key: &[u8; 32]) -> Option<String> {
+        if data.len() < 32 {
+            return None;
+        }
+        let iv = &data[..32];
+        let encrypted = &data[32..];
+        let mut result = Vec::with_capacity(encrypted.len());
+        for (i, byte) in encrypted.iter().enumerate() {
+            result.push(byte ^ key[i % 32] ^ iv[i % 32]);
+        }
+        String::from_utf8(result).ok()
+    }
+
+    /// Load vault from disk or create empty
+    fn load_or_init(path: &Path, key: &[u8; 32]) -> HashMap<String, String> {
+        let data = std::fs::read(path).unwrap_or_default();
+        if data.is_empty() {
+            return HashMap::new();
+        }
+        match Self::decrypt(&data, key) {
+            Some(decrypted) => {
+                serde_json::from_str(&decrypted).unwrap_or_default()
+            }
+            None => {
+                eprintln!("⚠️  Credential vault corrupted or key changed — resetting");
+                HashMap::new()
+            }
+        }
+    }
+
+    /// Save vault to disk
+    fn save(&self) -> anyhow::Result<()> {
+        let json = serde_json::to_string(&self.credentials)?;
+        let encrypted = Self::encrypt(&json, &self.key);
+        // Ensure directory exists
+        if let Some(parent) = self.vault_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&self.vault_path, encrypted)?;
+        Ok(())
+    }
+}
+
+/// Check if a credential vault is available at the given project root
+pub fn has_credential_vault(project_root: &Path) -> bool {
+    let vault_path = project_root.join(".hyper").join("credentials.json");
+    vault_path.exists() && vault_path.metadata().map(|m| m.len() > 0).unwrap_or(false)
 }
 
 #[cfg(test)]

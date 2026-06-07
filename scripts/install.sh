@@ -14,7 +14,7 @@ BIN_DIR="${HOME}/.local/bin"
 VERSION="${VERSION:-latest}"
 INSTALL_MODE="${INSTALL_MODE:-auto}"   # auto, binary, source
 REPO="hyperagent"
-OWNER="your-org"  # TODO: set to actual org/repo
+OWNER="${OWNER:-nick-zhang-1991}"  # GitHub owner/org
 
 # Colors
 RED='\033[0;31m'
@@ -55,7 +55,12 @@ esac
 case "${OS}" in
     linux)   TARGET="${ARCH}-unknown-linux-gnu" ;;
     darwin)  TARGET="${ARCH}-apple-darwin" ;;
-    *)       echo -e "${RED}Unsupported OS: ${OS}${NC}"; exit 1 ;;
+    mingw*)  echo -e "${YELLOW}Windows detected! Use install.ps1 instead:${NC}"
+             echo "   powershell -ExecutionPolicy Bypass -File scripts/install.ps1"
+             exit 0 ;;
+    *)       echo -e "${RED}Unsupported OS: ${OS}${NC}"
+             echo "   For Windows, use: scripts/install.ps1"
+             exit 1 ;;
 esac
 
 echo -e "${YELLOW}🔍 Detected: ${OS} / ${ARCH} (${TARGET})${NC}"

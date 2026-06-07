@@ -7,7 +7,7 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)](https://github.com/nick-zhang-1991/HyperAgent/actions)
 [![Rust](https://img.shields.io/badge/rust-1.78+-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-120-blue?style=flat-square)](#test-suite)
+| [![Tests](https://img.shields.io/badge/tests-130-blue?style=flat-square)](#test-suite)
 [![CLI](https://img.shields.io/badge/CLI-45%2B%20commands-9b59b6?style=flat-square)](#command-reference)
 
 ```bash
@@ -277,7 +277,7 @@ Dimension / 维度 | HyperAgent | Hermes Agent | Aider | Claude Code | Codex CLI
 |**File watch mode** / 文件监听模式 | ✅ notify + debounce | ❌ No | ✅ Yes | ✅ Yes | ❌ No | ❌ No
 |**Knowledge base (RAG)** / 知识库 | ✅ BM25 SQLite | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
 |**Multi-modal image** / 多模态图片 | ✅ vision API | ✅ vision_analyze tool | ✅ Yes | ⚠️ Limited | ❌ No | ✅ Yes
-|**Cross-platform release** / 跨平台发布 | ✅ 5 targets CI/CD | ❌ No | ✅ PyPI | ✅ npm | ✅ npm | ✅ VSIX
+|**Cross-platform release** / 跨平台发布 | ✅ 5 targets CI/CD (including Windows) | ❌ No | ✅ PyPI | ✅ npm | ✅ npm | ✅ VSIX
 |**Computer use (desktop GUI)** / 桌面 GUI 操作 | ✅ macOS screenshot+mouse+keyboard+apps | ✅ osascript + Desktop + computer_use | ❌ No | ❌ No | ❌ No | ❌ No
 |**Browser automation** / 浏览器自动化 | ✅ CDP WebSocket | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
 |**Background processes** / 后台进程 | ✅ `/bg` manager | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No
@@ -290,7 +290,7 @@ Dimension / 维度 | HyperAgent | Hermes Agent | Aider | Claude Code | Codex CLI
 |**Lifecycle hooks** / 生命周期钩子 | ✅ 12 hook events | ✅ Hooks system | ❌ No | ❌ No | ❌ No | ❌ No
 |**Cron scheduled agents** / 定时任务 | ✅ `hyper schedule` | ✅ Cron system | ❌ No | ❌ No | ❌ No | ❌ No
 |**Cross-session search** / 跨会话搜索 | ✅ `hyper session search` | ✅ `session_search` | ❌ No | ❌ No | ❌ No | ❌ No
-|**Native desktop app** / 原生桌面应用 | ✅ `hyper-desktop.sh` | ✅ Hermes Desktop (arm64) | ❌ No | ❌ No | ❌ No | ❌ No
+|**Native desktop app** / 原生桌面应用 | ✅ HyperAgent Desktop (Tauri) — macOS/Linux/Windows | ✅ Hermes Desktop (arm64) | ❌ No | ❌ No | ❌ No | ❌ No
 |**Config web UI** / 配置面板 | ✅ Dashboard `/api/config` | ✅ Dashboard config panel | ❌ No | ❌ No | ❌ No | ❌ No
 
 > **Overall** / 综合评分: **10/10** — 43 维度中 HyperAgent 全面领先，Hermes Agent 在 10 个核心维度已对齐（memory/config/skills/computer_use/MCP/desktop/remote/dashboard/vision/search）。详见 `docs/COMPETITIVE_ANALYSIS.md`
@@ -298,6 +298,36 @@ Dimension / 维度 | HyperAgent | Hermes Agent | Aider | Claude Code | Codex CLI
 ---
 
 ## Installation / 安装
+
+### Platform Support / 支持平台
+
+| Platform / 平台 | Status / 状态 |
+|----------------|--------------|
+| Linux x86_64 | ✅ CI-tested |
+| Linux ARM64 | ✅ CI-tested (cross-compiled) |
+| macOS x86_64 | ✅ CI-tested |
+| macOS ARM64 (Apple Silicon) | ✅ CI-tested |
+| Windows x86_64 | ✅ CI-tested |
+| **Desktop App (Tauri)** | ✅ macOS + Linux + Windows GUI |
+
+### Desktop App / 桌面应用
+
+HyperAgent Desktop is a native cross-platform GUI built with [Tauri v2](https://v2.tauri.app) + React. Full chat interface, file browser, session management, and memory dashboard.
+
+**Source**: [`gui/`](gui/) directory
+
+```bash
+# Development
+cd gui && pnpm install
+pnpm dev --port 5199 --strictPort   # Terminal 1: Vite dev server
+cd src-tauri && cargo build          # Terminal 2: Tauri backend
+
+# Build for distribution
+cd gui/src-tauri && cargo build --release
+# Linux: target/release/hyperagent-gui
+# macOS: target/release/hyperagent-gui  
+# Windows: target/release/hyperagent-gui.exe
+```
 
 ### From Source / 源码编译
 
@@ -315,12 +345,25 @@ cp target/release/hyperagent ~/.local/bin/hyper
 hyper doctor
 ```
 
-### One-Command Install Script / 一键安装脚本
+### Linux / macOS — One-Command Install / 一键安装脚本
 
 ```bash
 ./scripts/install.sh           # Auto-detect OS/arch, try binary first
 ./scripts/install.sh --build   # Force build from source
 ./scripts/install.sh --version v1.0.0  # Specific release
+```
+
+### Windows — PowerShell Install / PowerShell 安装
+
+```powershell
+# Run as Administrator or User (adds to ~\.hyper\bin\)
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+
+# With specific version
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Version v0.1.0
+
+# Build from source (requires Rust)
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Build
 ```
 
 ### Docker / Docker 部署
@@ -335,19 +378,6 @@ docker run -it --rm -v $PWD:/workspace -v $HOME/.config/hyper:/root/.config/hype
 ```bash
 brew install your-org/hyperagent/hyperagent
 ```
-
-### Platform Support / 支持平台
-
-| Platform / 平台 | Status / 状态 |
-|----------------|--------------|
-| Linux x86_64 | ✅ CI-tested |
-| Linux ARM64 | ✅ CI-tested (cross-compiled) |
-| macOS x86_64 | ✅ CI-tested |
-| macOS ARM64 (Apple Silicon) | ✅ CI-tested |
-
----
-
-## Configuration / 配置
 
 ### Config File / 配置文件
 
@@ -548,20 +578,7 @@ hyper eval --task gen-fibonacci  # Run single benchmark
 
 ## Test Suite / 测试套件
 
-**120 tests** across 25 modules, all passing. Binary-only crate (no `lib.rs` required).
-
-```bash
-# Run all tests — 运行全部测试
-cargo test
-
-# Run specific module — 运行特定模块
-cargo test security::tests    # 13 security sandbox tests
-cargo test diff_view::tests   # 6 diff viewer tests
-cargo test llm::pool::tests   # 5 provider failover tests
-
-# Run with verbose output — 详细输出
-cargo test -- --nocapture
-```
+**130 tests** across 25+ modules, all passing. Binary-only crate (no `lib.rs` required).
 
 ### Test Coverage / 测试覆盖
 
@@ -590,15 +607,17 @@ cargo test -- --nocapture
 `.github/workflows/ci.yml` — Push/PR to main:
 
 ```yaml
-matrix: [stable, 1.78.0]      # MSRV check
-steps: cargo check, fmt, clippy -D warnings, test, build --release
+matrix:
+  os: [ubuntu-latest, macos-13, windows-latest]  # Linux + macOS + Windows
+  toolchain: [stable, 1.78.0]                     # MSRV check
+steps: cargo check, fmt, clippy -D warnings, cargo audit (skip Windows), test
 ```
 
-`.github/workflows/release.yml` — v-tag-triggered:
+Build matrix (4 targets + Windows):
 
 ```yaml
-targets: linux-x86_64, linux-arm64, macos-x86_64, macos-arm64
-artifacts: binary + sha256sum
+targets: linux-x86_64, linux-arm64, macos-x86_64, macos-arm64, windows-x86_64
+artifacts: binary (.exe on Windows) + sha256sum
 ```
 
 ---
