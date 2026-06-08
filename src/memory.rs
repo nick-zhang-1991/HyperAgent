@@ -1574,6 +1574,14 @@ pub struct MemoryManager {
     query_cache: Arc<Mutex<QueryCache>>,
     /// Optional session lifecycle hooks.
     hooks: Arc<Mutex<SessionHooks>>,
+    /// Auto-prune: if Some(N), forget_below is invoked whenever the
+    /// container crosses N entries after a `remember()`. None = manual
+    /// only. This is the production way to keep memory bounded without
+    /// requiring an external cron.
+    auto_prune_threshold: Option<usize>,
+    /// Auto-prune trigger threshold (composite score). Default 0.05 —
+    /// matches the forget_below default in CLI.
+    auto_prune_below: f64,
 }
 
 impl MemoryManager {
@@ -1585,6 +1593,8 @@ impl MemoryManager {
             container_tag: "_default".to_string(),
             query_cache: Arc::new(Mutex::new(QueryCache::new())),
             hooks: Arc::new(Mutex::new(SessionHooks::new())),
+            auto_prune_threshold: None,
+            auto_prune_below: 0.05,
         }
     }
 
@@ -1617,6 +1627,25 @@ impl MemoryManager {
     /// Register a session lifecycle event handler.
     pub fn with_hooks(mut self, handler: MemoryEventHandler) -> Self {
         self.hooks = Arc::new(Mutex::new(SessionHooks::with_handler(handler)));
+        self
+    }
+
+    /// Enable automatic pruning. Whenever the container crosses
+    /// `trigger_at` entries (after a `remember()`), forget_below is
+    /// invoked with `below` as the score threshold. Use this to bound
+    /// memory growth in long-running agents without an external cron.
+    ///
+    /// Default score threshold: 0.05 (matches the conservative
+    /// "stale + unimportant" cut). Pair with a large enough `trigger_at`
+    /// (e.g. 5000) to amortize the prune cost.
+    pub fn with_auto_prune(mut self, trigger_at: usize) -> Self {
+        self.auto_prune_threshold = Some(trigger_at);
+        self
+    }
+
+    /// Override the score threshold used by auto-prune.
+    pub fn with_auto_prune_below(mut self, below: f64) -> Self {
+        self.auto_prune_below = below;
         self
     }
 
@@ -1686,6 +1715,33 @@ impl MemoryManager {
 
         let id = entry.id.clone();
         self.store.insert(entry)?;
+
+        // Auto-prune: if configured, and we've crossed the threshold,
+        // run forget_below to keep memory bounded. Uses the new
+        // single-statement SQL DELETE so cost is O(1) round-trips.
+        if let Some(threshold) = self.auto_prune_threshold {
+            let count = self
+                .store
+                .query(&MemoryQuery {
+                    container_tag: Some(self.container_tag.clone()),
+                    ..Default::default()
+                })
+                .map(|v| v.len())
+                .unwrap_or(0);
+            if count >= threshold {
+                if let Ok(n) = self.forget_below(self.auto_prune_below) {
+                    if n > 0 {
+                        tracing::info!(
+                            "auto-prune: removed {} entries from container '{}' (was >= {})",
+                            n,
+                            self.container_tag,
+                            threshold
+                        );
+                    }
+                }
+            }
+        }
+
         Ok(id)
     }
 
@@ -2294,6 +2350,68 @@ mod tests {
         // Dynamic fact must be filtered out
         assert!(!profile.contains("flaky test"));
 
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_auto_prune_fires_when_threshold_crossed() {
+        let db_path = std::env::temp_dir().join(format!(
+            "hyperagent_autoprune_{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&db_path);
+        let store = SqliteMemoryStore::new(&db_path).unwrap();
+        // Threshold=2 + very aggressive below=0.99 ⇒ everything but the
+        // strongest preference is forgotten.
+        let mgr = MemoryManager::new(Box::new(store), "agent")
+            .with_container("autoprune")
+            .with_auto_prune(2)
+            .with_auto_prune_below(0.99);
+
+        mgr.remember("User always uses Rust", MemoryType::UserPreference)
+            .unwrap();
+        mgr.remember("hello world foo bar baz qux", MemoryType::ActionOutcome)
+            .unwrap();
+        mgr.remember("the quick brown fox jumps over", MemoryType::ActionOutcome)
+            .unwrap();
+
+        // After 3 inserts, the auto-prune should have fired (count >= 2).
+        let after = mgr.store().query(&Default::default()).unwrap();
+        assert!(
+            after.len() < 3,
+            "auto-prune should have removed at least one entry, got {}",
+            after.len()
+        );
+        // The high-importance user preference must survive.
+        assert!(
+            after
+                .iter()
+                .any(|e| e.content.contains("Rust") && e.importance > 0.5),
+            "user preference must survive auto-prune"
+        );
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_auto_prune_disabled_by_default() {
+        let db_path = std::env::temp_dir().join(format!(
+            "hyperagent_nopruning_{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&db_path);
+        let store = SqliteMemoryStore::new(&db_path).unwrap();
+        // No .with_auto_prune call ⇒ should keep all entries.
+        let mgr = MemoryManager::new(Box::new(store), "agent")
+            .with_container("nopruning");
+        for i in 0..10 {
+            mgr.remember(
+                &format!("trivial fact number {}", i),
+                MemoryType::ActionOutcome,
+            )
+            .unwrap();
+        }
+        let after = mgr.store().query(&Default::default()).unwrap().len();
+        assert_eq!(after, 10, "auto-prune must be opt-in, all 10 should remain");
         let _ = std::fs::remove_file(&db_path);
     }
 
