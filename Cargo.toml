@@ -64,6 +64,7 @@ base64 = "0.22"
 axum = { version = "0.7", features = ["macros"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
+async-stream = "0.3"
 ratatui = { version = "0.28", optional = true }
 crossterm = { version = "0.28", optional = true }
 
