@@ -7,6 +7,7 @@
 //! ```
 
 use std::path::Path;
+use crate::i18n;
 use anyhow::{Context, Result};
 
 /// Run the CI fix process
@@ -32,11 +33,11 @@ pub async fn run(log_path: Option<&Path>, branch: &str, push: bool) -> Result<()
         }
     };
 
-    println!("📋 CI log read ({} bytes)", ci_log.len());
+    println!("{}", i18n::t_with("ci_fix_read", &[("bytes", &ci_log.len().to_string())]));
 
     // 2. Analyze with LLM
     let analysis = analyze_ci_failure(&ci_log).await?;
-    println!("🔍 Analysis: {}", analysis);
+    println!("{}: {}", i18n::t("ci_fix_analysis"), analysis);
 
     // 3. Apply fix
     let fix_applied = apply_fix(&analysis).await?;
@@ -62,7 +63,7 @@ pub async fn run(log_path: Option<&Path>, branch: &str, push: bool) -> Result<()
                 .args(["push", "origin", branch])
                 .output().ok();
             if push_out.map_or(false, |o| o.status.success()) {
-                println!("✅ Fix pushed to branch '{}'", branch);
+                println!("{}", i18n::t_with("ci_fix_applied", &[("branch", branch)]));
                 println!("   Create a PR: gh pr create --fill");
             } else {
                 println!("⚠️  Commit created but push failed");

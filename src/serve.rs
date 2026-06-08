@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 
-use crate::llm::Message;
+use crate::{i18n, llm::Message};
 
 /// Shared application state
 struct AppState {
@@ -222,13 +222,13 @@ pub async fn start_server(port: u16, host: &str) -> anyhow::Result<()> {
 
     let addr = format!("{}:{}", host, port);
     println!("🌐 HyperAgent Web API starting on http://{}", addr);
-    println!("   POST /api/chat      — SSE streaming chat");
-    println!("   GET  /api/health    — Health check");
-    println!("   GET  /api/sessions  — Active sessions");
-    println!("   GET  /api/share/:t  — Shared session");
+    println!("   {}", i18n::t("serve_chat"));
+    println!("   {}", i18n::t("serve_health"));
+    println!("   {}", i18n::t("serve_sessions"));
+    println!("   {}", i18n::t("serve_share"));
     println!();
-    println!("   📖 Web UI: cd gui && pnpm dev  (http://127.0.0.1:5173)");
-    println!("   🖥️  Desktop: cd gui && pnpm tauri dev");
+    println!("   {}", i18n::t("serve_web_ui"));
+    println!("   {}", i18n::t("serve_desktop"));
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
