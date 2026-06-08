@@ -1130,6 +1130,11 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     fn fused_search(&self, query: &MemoryQuery) -> anyhow::Result<Vec<ScoredMemory>> {
+        let half_life = TEMPORAL_HALF_LIFE_DAYS;
+
+        // ── SQL phase: hold lock, batch-load data ──
+        let (total_docs, avg_doc_len, expanded_entities, candidates,
+             doc_terms_map, doc_len_map, term_doc_counts) = {
         let conn = self.conn.lock().unwrap();
 
         // ── Step 1: Fetch total doc count and avg doc length for BM25 ──
@@ -1147,20 +1152,8 @@ impl MemoryStore for SqliteMemoryStore {
             )
             .unwrap_or(40.0);
 
-        // ── Step 2: Prepare query terms ──
-        let query_terms: HashSet<String> = query.text
-            .split_whitespace()
-            .filter(|w| w.len() > 2)
-            .flat_map(|w| {
-                let lower = w.to_lowercase();
-                if Self::is_stopword(&lower) { None } else { Some(lower) }
-            })
-            .collect();
-
         // ── Step 3: Entity expansion ──
-        // Find entities in the query text
         let query_entities = Self::extract_entities(&query.text);
-        // Also expand: find co-occurring entities for each query entity
         let mut expanded_entities: HashSet<String> = HashSet::new();
         for entity in &query_entities {
             expanded_entities.insert(entity.clone());
@@ -1171,7 +1164,6 @@ impl MemoryStore for SqliteMemoryStore {
         }
 
         // ── Step 4: Build SQL to fetch all candidate memories ──
-        // Start with all memories, apply type/age/entity filters
         let mut sql = String::from(
             "SELECT m.id, m.agent_id, m.session_id, m.content, m.memory_type,
                      m.memory_layer, m.entities, m.importance, m.embedding, m.created_at, m.last_accessed,
@@ -1179,113 +1171,104 @@ impl MemoryStore for SqliteMemoryStore {
              FROM memories m WHERE 1=1",
         );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
         if let Some(ref mem_type) = query.memory_type {
             sql.push_str(&format!(" AND m.memory_type = ?{}", param_values.len() + 1));
             param_values.push(Box::new(mem_type.to_string()));
         }
-
         if let Some(ref tag) = query.container_tag {
             sql.push_str(&format!(" AND m.container_tag = ?{}", param_values.len() + 1));
             param_values.push(Box::new(tag.clone()));
         }
-
         if let Some(ref max_age) = query.max_age {
             let cutoff = (Utc::now() - *max_age).to_rfc3339();
             sql.push_str(&format!(" AND m.created_at >= ?{}", param_values.len() + 1));
             param_values.push(Box::new(cutoff));
         }
-
-        // If we have entity expansion, boost candidates via entity match
         if !expanded_entities.is_empty() {
-            // Entity match: get memory IDs linked to any expanded entity
             sql.push_str(" AND (");
             let mut first = true;
             for entity in &expanded_entities {
-                if !first {
-                    sql.push_str(" OR ");
-                }
-                sql.push_str(&format!(
-                    "m.id IN (SELECT memory_id FROM memory_entities WHERE entity = ?{})",
-                    param_values.len() + 1
-                ));
+                if !first { sql.push_str(" OR "); }
+                sql.push_str(&format!("m.id IN (SELECT memory_id FROM memory_entities WHERE entity = ?{})",
+                    param_values.len() + 1));
                 param_values.push(Box::new(entity.clone()));
                 first = false;
             }
-            // Always include content keyword matches too
             sql.push(')');
         }
 
         // ── Step 5: Fetch all candidates ──
         let mut stmt = conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter()
-            .map(|p| p.as_ref())
-            .collect();
-
-        let rows = stmt.query_map(params_refs.as_slice(), |row| {
-            Self::row_to_memory(row)
-        })?;
-
+            .map(|p| p.as_ref()).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |row| Self::row_to_memory(row))?;
         let candidates: Vec<MemoryEntry> = rows.filter_map(|r| r.ok()).collect();
-        if candidates.is_empty() {
-            return Ok(Vec::new());
-        }
 
-        // ── Step 5b: Batch-load BM25 data (avoids N+1 queries per candidate) ──
-        let candidate_ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
-        // Build doc_terms map: doc_id -> { term -> freq }
+        // ── Step 5b: Batch-load BM25 data ──
         let mut doc_terms_map: HashMap<String, HashMap<String, usize>> = HashMap::new();
-        {
-            let placeholders: Vec<String> = candidate_ids.iter().enumerate()
-                .map(|(i, _)| format!("?{}", i + 1)).collect();
-            let sql = format!(
-                "SELECT doc_id, term, freq FROM doc_terms WHERE doc_id IN ({})",
-                placeholders.join(",")
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let params: Vec<&dyn rusqlite::types::ToSql> = candidate_ids.iter()
-                .map(|id| id as &dyn rusqlite::types::ToSql).collect();
-            let rows = stmt.query_map(params.as_slice(), |row| {
-                let doc_id: String = row.get(0)?;
-                let term: String = row.get(1)?;
-                let freq: usize = row.get(2)?;
-                Ok((doc_id, term, freq))
-            })?;
-            for r in rows.flatten() {
-                doc_terms_map.entry(r.0).or_default().insert(r.1, r.2);
+        let mut doc_len_map: HashMap<String, f64> = HashMap::new();
+        let mut term_doc_counts: HashMap<String, f64> = HashMap::new();
+
+        if !candidates.is_empty() {
+            let candidate_ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
+            {
+                let ph: Vec<String> = candidate_ids.iter().enumerate()
+                    .map(|(i, _)| format!("?{}", i + 1)).collect();
+                let sql = format!("SELECT doc_id, term, freq FROM doc_terms WHERE doc_id IN ({})", ph.join(","));
+                let mut stmt = conn.prepare(&sql)?;
+                let params: Vec<&dyn rusqlite::types::ToSql> = candidate_ids.iter()
+                    .map(|id| id as &dyn rusqlite::types::ToSql).collect();
+                for r in stmt.query_map(params.as_slice(), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, usize>(2)?))
+                })?.flatten() {
+                    doc_terms_map.entry(r.0).or_default().insert(r.1, r.2);
+                }
+            }
+            for (doc_id, terms) in &doc_terms_map {
+                doc_len_map.insert(doc_id.clone(), terms.values().sum::<usize>() as f64);
             }
         }
-        // Compute doc_len from the loaded doc_terms
-        let mut doc_len_map: HashMap<String, f64> = HashMap::new();
-        for (doc_id, terms) in &doc_terms_map {
-            let total: f64 = terms.values().sum::<usize>() as f64;
-            doc_len_map.insert(doc_id.clone(), total);
-        }
-        // Build term -> doc_count map for query terms
-        let mut term_doc_counts: HashMap<String, f64> = HashMap::new();
+
+        // Query terms — pure Rust, no lock needed after this
+        let query_terms: HashSet<String> = query.text.split_whitespace()
+            .filter(|w| w.len() > 2)
+            .flat_map(|w| {
+                let lower = w.to_lowercase();
+                if Self::is_stopword(&lower) { None } else { Some(lower) }
+            })
+            .collect();
+
         if !query_terms.is_empty() {
-            let placeholders: Vec<String> = (1..=query_terms.len()).map(|i| format!("?{}", i)).collect();
-            let sql = format!(
-                "SELECT term, doc_count FROM term_df WHERE term IN ({})",
-                placeholders.join(",")
-            );
+            let ph: Vec<String> = (1..=query_terms.len()).map(|i| format!("?{}", i)).collect();
+            let sql = format!("SELECT term, doc_count FROM term_df WHERE term IN ({})", ph.join(","));
             let mut stmt = conn.prepare(&sql)?;
             let qt_refs: Vec<&dyn rusqlite::types::ToSql> = query_terms.iter()
                 .map(|t| t as &dyn rusqlite::types::ToSql).collect();
-            let rows = stmt.query_map(qt_refs.as_slice(), |row| {
-                let term: String = row.get(0)?;
-                let doc_count: f64 = row.get(1)?;
-                Ok((term, doc_count))
-            })?;
-            for r in rows.flatten() {
+            for r in stmt.query_map(qt_refs.as_slice(), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+            })?.flatten() {
                 term_doc_counts.insert(r.0, r.1);
             }
         }
 
-        // ── Step 6: Score each candidate ──
-        let half_life = TEMPORAL_HALF_LIFE_DAYS;
+        (total_docs, avg_doc_len, expanded_entities, candidates,
+         doc_terms_map, doc_len_map, term_doc_counts)
+        }; // conn lock released here
 
-        // Pre-compute entity match sets for faster scoring
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // ── Step 2: Prepare query terms ──
+        let query_terms: HashSet<String> = query.text.split_whitespace()
+            .filter(|w| w.len() > 2)
+            .flat_map(|w| {
+                let lower = w.to_lowercase();
+                if Self::is_stopword(&lower) { None } else { Some(lower) }
+            })
+            .collect();
+
+        // ── Step 6: Score each candidate (lock-free, pure Rust) ──
         let candidate_entity_sets: HashMap<String, HashSet<String>> = candidates
             .iter()
             .map(|m| (m.id.clone(), m.entities.iter().cloned().collect()))
@@ -1296,7 +1279,6 @@ impl MemoryStore for SqliteMemoryStore {
         let mut scored: Vec<ScoredMemory> = candidates
             .into_iter()
             .map(|entry| {
-                // ── Keyword / BM25 score (pre-loaded data, no SQL) ──
                 let bm25 = if query_terms.is_empty() {
                     0.0
                 } else {
@@ -1307,61 +1289,45 @@ impl MemoryStore for SqliteMemoryStore {
                         &term_doc_counts, total_docs, avg_doc_len,
                     )
                 };
-
-                // ── Entity score ──
                 let entry_entities = candidate_entity_sets.get(entry.id.as_str()).cloned().unwrap_or_default();
                 let entity_score = if expanded_entities.is_empty() || entry_entities.is_empty() {
                     0.0
                 } else {
-                    // Direct entity match
                     let direct_matches: usize = entry_entities
-                        .intersection(&expanded_entities)
-                        .count();
-                    // Co-occurrence bonus (entity not in query but co-occurs with query entity)
+                        .intersection(&expanded_entities).count();
                     let mut score = direct_matches as f64;
-                    if score > 0.0 {
-                        score *= ENTITY_CO_OCCUR_BOOST;
-                    }
+                    if score > 0.0 { score *= ENTITY_CO_OCCUR_BOOST; }
                     score
                 };
-
-                // ── Temporal score ──
                 let temporal = Self::temporal_decay(&entry.created_at, half_life);
-
-                // ── Importance score (with layer multiplier) ──
                 let imp = entry.importance as f64;
                 let layer_mult = entry.layer.score_multiplier();
                 let imp_with_layer = imp * layer_mult;
                 let vector_score = if let (Some(qe), Some(ee)) = (query_embedding_ref, entry.embedding.as_ref()) {
                     Self::cosine_similarity(qe, ee)
-                } else {
-                    0.0
-                };
-
-                // ── Fused total score ──
+                } else { 0.0 };
                 let total = query.keyword_weight * bm25
                     + query.entity_weight * entity_score
                     + query.temporal_weight * temporal
                     + query.importance_weight * imp_with_layer
                     + query.vector_weight * vector_score;
-
                 ScoredMemory {
-                    total_score: total,
-                    keyword_score: bm25,
-                    entity_score,
-                    temporal_score: temporal,
-                    importance_score: imp,
-                    vector_score,
-                    entry,
+                    total_score: total, keyword_score: bm25, entity_score,
+                    temporal_score: temporal, importance_score: imp,
+                    vector_score, entry,
                 }
             })
             .collect();
 
         // ── Step 7: Sort by total_score descending ──
-        scored.sort_by(|a, b| b.total_score.partial_cmp(&a.total_score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.total_score.partial_cmp(&a.total_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // ── Step 8: Update last_accessed for top results ──
         let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap();
         for sm in &scored[..scored.len().min(query.limit)] {
             let _ = conn.execute(
                 "UPDATE memories SET last_accessed = ?1, access_count = access_count + 1 WHERE id = ?2",
@@ -1369,13 +1335,9 @@ impl MemoryStore for SqliteMemoryStore {
             );
         }
 
-        // Trim to limit
         scored.truncate(query.limit);
-
         Ok(scored)
-    }
-
-    fn query_by_entity(&self, entity: &str, limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
+    }    fn query_by_entity(&self, entity: &str, limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
         let q = MemoryQuery { entity: Some(entity.to_string()), limit, ..Default::default() };
         self.query(&q)
     }
