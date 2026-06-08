@@ -17,7 +17,7 @@
 //!   hyper sync pull    — Download cloud data to local
 //!   hyper sync status  — Show sync status (last push/pull times)
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -76,6 +76,7 @@ pub async fn push(config: &SyncConfig) -> Result<SyncReport> {
     if !config.is_configured() {
         bail!("Sync not configured. Set HYPER_SYNC_KEY and endpoint in ~/.hyper/sync.json");
     }
+    let key = config.api_key.as_ref().context("API key not set")?;
 
     let client = reqwest::Client::new();
     let mut report = SyncReport::default();
@@ -85,7 +86,7 @@ pub async fn push(config: &SyncConfig) -> Result<SyncReport> {
         if let Ok(memories) = collect_memories() {
             let resp = client
                 .post(format!("{}/memories", config.endpoint))
-                .header("Authorization", format!("Bearer {}", config.api_key.as_ref().unwrap()))
+                .header("Authorization", format!("Bearer {}", key))
                 .json(&serde_json::json!({"memories": memories}))
                 .send()
                 .await;
@@ -101,7 +102,7 @@ pub async fn push(config: &SyncConfig) -> Result<SyncReport> {
         if let Ok(skills) = collect_skills() {
             let resp = client
                 .post(format!("{}/skills", config.endpoint))
-                .header("Authorization", format!("Bearer {}", config.api_key.as_ref().unwrap()))
+                .header("Authorization", format!("Bearer {}", key))
                 .json(&serde_json::json!({"skills": skills}))
                 .send()
                 .await;
@@ -117,7 +118,7 @@ pub async fn push(config: &SyncConfig) -> Result<SyncReport> {
         if let Ok(config_data) = collect_config() {
             let resp = client
                 .post(format!("{}/config", config.endpoint))
-                .header("Authorization", format!("Bearer {}", config.api_key.as_ref().unwrap()))
+                .header("Authorization", format!("Bearer {}", key))
                 .json(&config_data)
                 .send()
                 .await;
@@ -136,6 +137,7 @@ pub async fn pull(config: &SyncConfig) -> Result<SyncReport> {
     if !config.is_configured() {
         bail!("Sync not configured.");
     }
+    let key = config.api_key.as_ref().context("API key not set")?;
 
     let client = reqwest::Client::new();
     let mut report = SyncReport::default();
@@ -144,7 +146,7 @@ pub async fn pull(config: &SyncConfig) -> Result<SyncReport> {
     if config.sync_memories {
         let resp = client
             .get(format!("{}/memories", config.endpoint))
-            .header("Authorization", format!("Bearer {}", config.api_key.as_ref().unwrap()))
+            .header("Authorization", format!("Bearer {}", key))
             .send()
             .await;
         if let Ok(r) = resp {
@@ -166,7 +168,7 @@ pub async fn pull(config: &SyncConfig) -> Result<SyncReport> {
     if config.sync_skills {
         let resp = client
             .get(format!("{}/skills", config.endpoint))
-            .header("Authorization", format!("Bearer {}", config.api_key.as_ref().unwrap()))
+            .header("Authorization", format!("Bearer {}", key))
             .send()
             .await;
         if let Ok(r) = resp {

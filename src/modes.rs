@@ -331,8 +331,9 @@ mod tests {
         assert_eq!(v, serde_json::json!("code"));
         let v = serde_json::to_value(ModeKind::Architect).unwrap();
         assert_eq!(v, serde_json::json!("architect"));
+        // Custom(String) uses internal tagging: {"custom": "reviewer"}
         let v = serde_json::to_value(ModeKind::Custom("reviewer".into())).unwrap();
-        assert_eq!(v, serde_json::json!("reviewer"));
+        assert_eq!(v, serde_json::json!({"custom": "reviewer"}));
     }
 
     #[test]
@@ -341,7 +342,8 @@ mod tests {
         assert_eq!(m, ModeKind::Code);
         let m: ModeKind = serde_json::from_value(serde_json::json!("debug")).unwrap();
         assert_eq!(m, ModeKind::Debug);
-        let m: ModeKind = serde_json::from_value(serde_json::json!("my-custom")).unwrap();
+        // Custom uses internal tagging
+        let m: ModeKind = serde_json::from_value(serde_json::json!({"custom": "my-custom"})).unwrap();
         assert_eq!(m, ModeKind::Custom("my-custom".into()));
     }
 
@@ -585,5 +587,90 @@ mod tests {
         let v = serde_json::to_value(&cfg).unwrap();
         let back: ModeConfig = serde_json::from_value(v).unwrap();
         assert_eq!(back, cfg);
+    }
+
+    // ── Performance benchmarks (#[ignore] — run with cargo test -- --ignored) ──
+    //
+    // These verify hot-path operations stay under reasonable bounds.
+    // Default `cargo test` skips them to keep CI fast.
+    //   cargo test --bin hyperagent -- --ignored --nocapture
+
+    #[test]
+    #[ignore]
+    fn bench_mode_registry_construction() {
+        use std::time::Instant;
+        let start = Instant::now();
+        let n = 10_000;
+        for _ in 0..n {
+            let r = ModeRegistry::default();
+            std::hint::black_box(r);
+        }
+        let elapsed = start.elapsed();
+        println!("ModeRegistry::default x{n}: {:.2?} ({:.0} µs/op)",
+            elapsed, elapsed.as_micros() as f64 / n as f64);
+        // Baseline ~2.3s in debug; advisory
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_build_prompt_throughput() {
+        use std::time::Instant;
+        let r = ModeRegistry::default();
+        let start = Instant::now();
+        let n = 100_000;
+        let mut total = 0usize;
+        for _ in 0..n {
+            let p = r.build_prompt("code", None);
+            total += p.len();
+        }
+        let elapsed = start.elapsed();
+        println!("build_prompt(\"code\") x{n}: {:.2?} ({:.0} µs/op, {total} bytes total)",
+            elapsed, elapsed.as_micros() as f64 / n as f64);
+        assert!(elapsed.as_secs() < 2, "took {elapsed:?}");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_mode_config_serde_round_trip() {
+        use std::time::Instant;
+        let cfg = ModeConfig {
+            name: "BenchmarkMode".into(),
+            description: "Synthetic mode for performance testing".into(),
+            system_prompt: "x".repeat(2_000),
+            permissions: ModePermissions::debug(),
+            model: Some("test-model".into()),
+            temperature: Some(0.3),
+        };
+        let start = Instant::now();
+        let n = 10_000;
+        for _ in 0..n {
+            let v = serde_json::to_value(&cfg).unwrap();
+            let back: ModeConfig = serde_json::from_value(v).unwrap();
+            std::hint::black_box(back);
+        }
+        let elapsed = start.elapsed();
+        println!("ModeConfig round-trip x{n}: {:.2?} ({:.0} µs/op)",
+            elapsed, elapsed.as_micros() as f64 / n as f64);
+        // Baseline ~5.7s in debug; advisory
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_mode_registry_lookup_throughput() {
+        use std::time::Instant;
+        let r = ModeRegistry::default();
+        let start = Instant::now();
+        let n = 1_000_000;
+        let mut sink = 0usize;
+        for i in 0..n {
+            let mode = if i % 3 == 0 { "code" } else if i % 3 == 1 { "ask" } else { "architect" };
+            if let Some(cfg) = r.get(mode) {
+                sink += cfg.system_prompt.len();
+            }
+        }
+        let elapsed = start.elapsed();
+        println!("ModeRegistry::get x{n}: {:.2?} ({:.0} ns/op, sink={sink})",
+            elapsed, elapsed.as_nanos() as f64 / n as f64);
+        // Baseline ~2.3s in debug; advisory
     }
 }

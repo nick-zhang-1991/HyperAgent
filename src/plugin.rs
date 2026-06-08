@@ -27,7 +27,6 @@
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// A plugin tool loaded from a script file

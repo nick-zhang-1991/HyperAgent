@@ -272,11 +272,12 @@ pub fn remove_unused_imports(root: &Path, file_path: &Path) -> Result<Vec<String
             in_use_block = true;
         }
 
-        if skip_until.is_some() && skip_until.unwrap() > i {
-            continue;
-        } else {
-            skip_until = None;
+        if let Some(threshold) = skip_until {
+            if threshold > i {
+                continue;
+            }
         }
+        skip_until = None;
 
         if in_use_block || trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
             if !trimmed.contains("super::") && !trimmed.contains("crate::") {

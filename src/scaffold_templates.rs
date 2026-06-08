@@ -102,7 +102,7 @@ impl Template {
 
     // ─── Rust CLI Template ──────────────────────────────────────
     fn gen_rust_cli(&self, dir: &Path) -> Result<()> {
-        let name = dir.file_name().unwrap().to_string_lossy();
+        let name = dir.file_name().expect("scaffold dir should have a name").to_string_lossy();
 
         // Cargo.toml
         std::fs::write(
@@ -193,7 +193,7 @@ async fn main() -> Result<()> {{
 
     // ─── Rust Axum API Template ─────────────────────────────────
     fn gen_rust_axum(&self, dir: &Path) -> Result<()> {
-        let name = dir.file_name().unwrap().to_string_lossy();
+        let name = dir.file_name().expect("scaffold dir should have a name").to_string_lossy();
 
         std::fs::write(
             dir.join("Cargo.toml"),
@@ -278,7 +278,7 @@ async fn main() -> anyhow::Result<()> {{
 
     // ─── Python FastAPI Template ────────────────────────────────
     fn gen_python_fastapi(&self, dir: &Path) -> Result<()> {
-        let name = dir.file_name().unwrap().to_string_lossy();
+        let name = dir.file_name().expect("scaffold dir should have a name").to_string_lossy();
 
         std::fs::write(
             dir.join("requirements.txt"),
@@ -448,7 +448,7 @@ createRoot(document.getElementById('root')!).render(
 
     // ─── Go Service Template ────────────────────────────────────
     fn gen_go_service(&self, dir: &Path) -> Result<()> {
-        let name = dir.file_name().unwrap().to_string_lossy();
+        let name = dir.file_name().expect("scaffold dir should have a name").to_string_lossy();
 
         std::fs::write(
             dir.join("go.mod"),

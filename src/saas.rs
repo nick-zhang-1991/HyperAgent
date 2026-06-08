@@ -1,18 +1,13 @@
-#![allow(unused)]
 //! SaaS Web Server — Turn HyperAgent into a zero-install web product.
-//!
-//! For 100M users, the browser is the universal runtime. No CLI install
-//! needed. Users type prompts in a web UI, see streaming responses,
-//! and manage their projects entirely from the browser.
 //!
 //! Architecture:
 //!   Browser ──WebSocket──→ hyper saas --port 3000
 //!                              ├── Agent pipeline (orchestrator)
 //!                              ├── File browser
 //!                              ├── Memory dashboard
-//!                              └── Billing integration
-//!
-//! This is NOT a replacement for the CLI — it's an ADDITIONAL surface.
+//!                              ├── Billing integration
+//!                              ├── /metrics (Prometheus)
+//!                              └── /health (Health check)
 //!
 //! Commands:
 //!   hyper saas --port 3000        — Start SaaS server
@@ -52,6 +47,8 @@ pub async fn serve(config: SaasConfig) -> Result<()> {
     println!("  Project: {}", config.project_dir.display());
     println!();
     println!("  \x1b[90mOpen http://localhost:{} in your browser\x1b[0m", config.port);
+    println!("  \x1b[90mMetrics: http://localhost:{}/metrics\x1b[0m", config.port);
+    println!("  \x1b[90mHealth:  http://localhost:{}/health\x1b[0m", config.port);
     println!();
 
     loop {
@@ -90,6 +87,9 @@ async fn handle_saas_request(
     let parts: Vec<&str> = request_line.split_whitespace().collect();
     let path = if parts.len() >= 2 { parts[1] } else { "/" };
 
+    // Track request
+    crate::metrics::Metrics::increment_requests();
+
     // Skip headers
     loop {
         let mut line = String::new();
@@ -101,7 +101,9 @@ async fn handle_saas_request(
 
     let (status, content_type, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", saas_index_html()),
-        "/api/health" => ("200 OK", "application/json", r#"{"status":"ok","version":"saas-0.1.0"}"#.to_string()),
+        "/health" => ("200 OK", "application/json", crate::metrics::Metrics::health_json()),
+        "/api/health" => ("200 OK", "application/json", crate::metrics::Metrics::health_json()),
+        "/metrics" => ("200 OK", "text/plain; charset=utf-8", crate::metrics::Metrics::render()),
         "/api/status" => {
             let status_json = serde_json::json!({
                 "project": ".",
@@ -172,7 +174,6 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0d1117;color:#c9
     <div class="files" id="file-list">
         <div class="file-item dir">📂 src/</div>
         <div class="file-item">  📄 main.rs</div>
-        <div class="file-item">  📄 cli.rs</div>
         <div class="file-item dir">📂 tests/</div>
         <div class="file-item">  📄 integration.rs</div>
     </div>
@@ -186,18 +187,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0d1117;color:#c9
     <div class="chat-area" id="chat">
         <div class="message agent">
             <div class="role">🤖 HyperAgent</div>
-            <div class="content">Welcome to HyperAgent Web! 👋
-
-I'm your AI coding agent. I can:
-• Explain code in your project
-• Write and modify files
-• Fix bugs and add features
-• Run commands and tests
-
-Type a prompt below to get started. For example:
-"explain the project structure"
-"add error handling to main.rs"
-"optimize the database queries"</div>
+            <div class="content">Welcome to HyperAgent Web! 👋\n\nI'm your AI coding agent. I can:\n• Explain code in your project\n• Write and modify files\n• Fix bugs and add features\n• Run commands and tests\n\nType a prompt below to get started.</div>
         </div>
     </div>
     <div class="input-area">
@@ -210,19 +200,14 @@ function send() {
     var ta = document.getElementById('prompt');
     var text = ta.value.trim();
     if (!text) return;
-
     var chat = document.getElementById('chat');
     chat.innerHTML += '<div class="message user"><div class="role">👤 You</div><div class="content">' + escapeHtml(text) + '</div></div>';
-
     ta.value = '';
-    ta.style.height = 'auto';
-
     chat.innerHTML += '<div class="message agent" id="loading-msg"><div class="role">🤖 HyperAgent</div><div class="content">⏳ Processing...</div></div>';
     chat.scrollTop = chat.scrollHeight;
-
     fetch('/api/status').then(r => r.json()).then(function(status) {
         document.getElementById('loading-msg').remove();
-        chat.innerHTML += '<div class="message agent"><div class="role">🤖 HyperAgent</div><div class="content">Got your prompt: "' + escapeHtml(text) + '"\n\n[Web version — full agent pipeline integration in progress]\n\n⚡ To use the full agent now, run: <code>hyper run "' + escapeHtml(text) + '"</code></div></div>';
+        chat.innerHTML += '<div class="message agent"><div class="role">🤖 HyperAgent</div><div class="content">Got your prompt: "' + escapeHtml(text) + '"\n\n[Web version — full agent pipeline integration in progress]\n\n⚡ To use the full agent, run: <code>hyper run "' + escapeHtml(text) + '"</code></div></div>';
         chat.scrollTop = chat.scrollHeight;
     });
 }

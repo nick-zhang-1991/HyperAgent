@@ -322,4 +322,299 @@ mod tests {
             _ => panic!("Should be unhealthy"),
         }
     }
+
+    // ── Accessor methods (synchronous, no network) ─────────────
+
+    #[test]
+    fn test_active_provider_name_single() {
+        let configs = vec![test_config("only", "sk-1")];
+        let pool = ProviderPool::new(&configs).unwrap();
+        assert_eq!(pool.active_provider_name(), "only");
+    }
+
+    #[test]
+    fn test_active_provider_name_multi_returns_first() {
+        let configs = vec![
+            test_config("first", "sk-1"),
+            test_config("second", "sk-2"),
+        ];
+        let pool = ProviderPool::new(&configs).unwrap();
+        assert_eq!(pool.active_provider_name(), "first");
+    }
+
+    #[test]
+    fn test_active_model_returns_configured_model() {
+        let configs = vec![test_config("p", "sk-1")];
+        let pool = ProviderPool::new(&configs).unwrap();
+        assert_eq!(pool.active_model(), "test-model");
+    }
+
+    #[test]
+    fn test_input_price_from_active_provider() {
+        let configs = vec![test_config("p", "sk-1")];
+        let pool = ProviderPool::new(&configs).unwrap();
+        assert_eq!(pool.input_price(), 0.15);
+    }
+
+    #[test]
+    fn test_provider_name_by_index() {
+        let configs = vec![test_config("alpha", "sk-1"), test_config("beta", "sk-2")];
+        let pool = ProviderPool::new(&configs).unwrap();
+        assert_eq!(pool.provider_name(0), "alpha");
+        assert_eq!(pool.provider_name(1), "beta");
+    }
+
+    #[test]
+    fn test_provider_name_out_of_bounds_returns_unknown() {
+        let configs = vec![test_config("only", "sk-1")];
+        let pool = ProviderPool::new(&configs).unwrap();
+        assert_eq!(pool.provider_name(99), "unknown");
+    }
+
+    // ── health_summary formatting ──────────────────────────────
+
+    #[test]
+    fn test_health_summary_starts_all_healthy() {
+        let configs = vec![test_config("a", "sk-1"), test_config("b", "sk-2")];
+        let pool = ProviderPool::new(&configs).unwrap();
+        let summary = pool.health_summary();
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0].0, "a");
+        assert!(summary[0].1.contains("✅"), "healthy: got {:?}", summary[0].1);
+        assert_eq!(summary[1].0, "b");
+        assert!(summary[1].1.contains("✅"));
+    }
+
+    #[test]
+    fn test_health_summary_includes_cooldown_after_failure() {
+        let configs = vec![test_config("a", "sk-1")];
+        let pool_res = ProviderPool::new(&configs);
+        let mut pool = pool_res.unwrap();
+        // Manually mark the first provider as unhealthy
+        if let Some(member) = pool.providers.get_mut(0) {
+            member.health.record_failure();
+        }
+        let summary = pool.health_summary();
+        assert_eq!(summary.len(), 1);
+        let (name, status) = &summary[0];
+        assert_eq!(name, "a");
+        assert!(status.contains("cooldown"), "should show cooldown: {status}");
+        assert!(status.contains("failures: 1"), "should show failure count: {status}");
+    }
+
+    // ── Async failover behavior (uses MockLlmServer) ───────────
+    // Note: success-path is covered by test_failover_moves_to_healthy_provider
+    // (the second provider is the mock, so successful chat is exercised there).
+
+    #[tokio::test]
+    async fn test_chat_fails_when_all_providers_unreachable() {
+        // Both providers point to a port nothing is listening on
+        let configs = vec![
+            ProviderConfig {
+                name: "dead1".into(),
+                api_key: "sk-1".into(),
+                base_url: "http://127.0.0.1:1/v1".into(), // port 1 = reserved, never listening
+                default_model: "m".into(),
+                models: vec!["m".into()],
+                priority: 1,
+                weight: 1.0,
+                input_price_per_1m: 0.15,
+                output_price_per_1m: 0.60,
+                max_budget_per_run: 0.0,
+            },
+            ProviderConfig {
+                name: "dead2".into(),
+                api_key: "sk-2".into(),
+                base_url: "http://127.0.0.1:1/v1".into(),
+                default_model: "m".into(),
+                models: vec!["m".into()],
+                priority: 1,
+                weight: 1.0,
+                input_price_per_1m: 0.15,
+                output_price_per_1m: 0.60,
+                max_budget_per_run: 0.0,
+            },
+        ];
+        let mut pool = ProviderPool::new(&configs).unwrap();
+        let result = pool.chat(vec![Message::text("user", "hi")]).await;
+        assert!(result.is_err(), "chat should fail when no providers work");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("All providers failed") || err.contains("No available"),
+                "should report all-failed: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_failover_moves_to_healthy_provider() {
+        use crate::llm::mock_server::MockLlmServer;
+        let mock = MockLlmServer::start();
+        // 200ms is enough for the OS to bind + the accept thread to start
+        // under parallel test execution (50ms proved flaky in CI).
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // First provider: dead URL; second provider: mock server
+        let configs = vec![
+            ProviderConfig {
+                name: "dead".into(),
+                api_key: "sk-1".into(),
+                base_url: "http://127.0.0.1:1/v1".into(),
+                default_model: "m".into(),
+                models: vec!["m".into()],
+                priority: 1,
+                weight: 1.0,
+                input_price_per_1m: 0.15,
+                output_price_per_1m: 0.60,
+                max_budget_per_run: 0.0,
+            },
+            ProviderConfig {
+                name: "alive".into(),
+                api_key: "sk-2".into(),
+                base_url: mock.url(),
+                default_model: "m".into(),
+                models: vec!["m".into()],
+                priority: 1,
+                weight: 1.0,
+                input_price_per_1m: 0.15,
+                output_price_per_1m: 0.60,
+                max_budget_per_run: 0.0,
+            },
+        ];
+        let mut pool = ProviderPool::new(&configs).unwrap();
+        let result = pool.chat(vec![Message::text("user", "hi")]).await;
+        assert!(result.is_ok(), "should failover to alive provider: {:?}", result.err());
+        // After successful failover, active provider should now be "alive"
+        assert_eq!(pool.active_provider_name(), "alive");
+    }
+
+    // ── Edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn test_pool_preserves_config_order() {
+        let configs = vec![
+            test_config("z", "sk-1"),
+            test_config("a", "sk-2"),
+            test_config("m", "sk-3"),
+        ];
+        let pool = ProviderPool::new(&configs).unwrap();
+        // Pool should keep the insertion order, not sort alphabetically
+        assert_eq!(pool.provider_name(0), "z");
+        assert_eq!(pool.provider_name(1), "a");
+        assert_eq!(pool.provider_name(2), "m");
+        // First one is active by default
+        assert_eq!(pool.active_provider_name(), "z");
+    }
+
+    #[test]
+    fn test_pool_with_duplicate_names_allowed() {
+        // Duplicates should be allowed (pool just stores them, no dedup)
+        let configs = vec![
+            test_config("same", "sk-1"),
+            test_config("same", "sk-2"),
+        ];
+        let pool = ProviderPool::new(&configs).unwrap();
+        assert_eq!(pool.provider_count(), 2);
+        assert_eq!(pool.provider_name(0), "same");
+        assert_eq!(pool.provider_name(1), "same");
+    }
+
+    #[test]
+    fn test_pool_filters_out_all_empty_keeps_valid() {
+        let configs = vec![
+            test_config("a", ""),
+            test_config("b", ""),
+            test_config("c", "sk-real"),
+            test_config("d", ""),
+        ];
+        let pool = ProviderPool::new(&configs).unwrap();
+        assert_eq!(pool.provider_count(), 1);
+        assert_eq!(pool.active_provider_name(), "c");
+    }
+
+    // ── Performance benchmarks (#[ignore] — run with cargo test -- --ignored) ──
+    //
+    // These verify hot-path operations stay under reasonable bounds.
+    // Default `cargo test` skips them to keep CI fast.
+    //   cargo test --bin hyperagent -- --ignored --nocapture
+
+    #[test]
+    #[ignore]
+    fn bench_pool_creation_with_many_providers() {
+        use std::time::Instant;
+        let configs: Vec<ProviderConfig> = (0..100)
+            .map(|i| test_config(&format!("provider-{i}"), "sk-bench"))
+            .collect();
+        let start = Instant::now();
+        let n = 1_000;
+        for _ in 0..n {
+            let p = ProviderPool::new(&configs).unwrap();
+            std::hint::black_box(p);
+        }
+        let elapsed = start.elapsed();
+        println!("ProviderPool::new(100) x{n}: {:.2?} ({:.0} µs/op)",
+            elapsed, elapsed.as_micros() as f64 / n as f64);
+        // Baseline ~268s (reqwest × 100 providers × 1k iters); advisory
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_active_provider_lookup_throughput() {
+        use std::time::Instant;
+        let configs = vec![test_config("a", "sk-1"), test_config("b", "sk-2")];
+        let pool = ProviderPool::new(&configs).unwrap();
+        let start = Instant::now();
+        let n = 1_000_000;
+        let mut sink = 0usize;
+        for _ in 0..n {
+            sink += pool.active_provider_name().len();
+        }
+        let elapsed = start.elapsed();
+        println!("active_provider_name x{n}: {:.2?} ({:.0} ns/op)",
+            elapsed, elapsed.as_nanos() as f64 / n as f64);
+        assert!(elapsed.as_secs() < 2, "took {elapsed:?}");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_health_summary_throughput() {
+        use std::time::Instant;
+        let configs: Vec<ProviderConfig> = (0..20)
+            .map(|i| test_config(&format!("p-{i}"), "sk-x"))
+            .collect();
+        let pool = ProviderPool::new(&configs).unwrap();
+        let start = Instant::now();
+        let n = 10_000;
+        let mut sink = 0usize;
+        for _ in 0..n {
+            let s = pool.health_summary();
+            for (n, st) in &s {
+                sink += n.len() + st.len();
+            }
+        }
+        let elapsed = start.elapsed();
+        println!("health_summary(20 providers) x{n}: {:.2?} ({:.0} µs/op, sink={sink})",
+            elapsed, elapsed.as_micros() as f64 / n as f64);
+        assert!(elapsed.as_secs() < 2, "took {elapsed:?}");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_provider_pool_exponential_backoff_cooldown() {
+        use std::time::Instant;
+        // Simulate many consecutive failures — backoff should cap at exponential
+        let mut health = ProviderHealth::Healthy;
+        let start = Instant::now();
+        let n = 100_000;
+        for _ in 0..n {
+            health.record_failure();
+        }
+        let elapsed = start.elapsed();
+        println!("record_failure x{n}: {:.2?} ({:.0} ns/op)",
+            elapsed, elapsed.as_nanos() as f64 / n as f64);
+        match health {
+            ProviderHealth::Unhealthy { failed_ops, .. } => {
+                assert_eq!(failed_ops as usize, n);
+            }
+            _ => panic!("should be unhealthy"),
+        }
+        assert!(elapsed.as_secs() < 2, "took {elapsed:?}");
+    }
 }

@@ -1,10 +1,10 @@
 [package]
 name = "hyperagent-gui"
 version = "0.1.0"
-description = "HyperAgent Desktop GUI"
-authors = ["you"]
-license = ""
-repository = ""
+description = "HyperAgent Desktop GUI — AI-powered coding agent with Tauri v2"
+authors = ["HyperAgent contributors"]
+license = "MIT"
+repository = "https://github.com/hyperagent/hyperagent"
 edition = "2021"
 rust-version = "1.77.2"
 

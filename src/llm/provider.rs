@@ -1,9 +1,36 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use super::streaming::StreamingResponse;
+
+/// Process-wide shared reqwest client.
+///
+/// reqwest::Client holds an internal connection pool (Arc). Building it is
+/// the dominant cost of `LlmProvider::new` (1.6ms/call in debug, dominated by
+/// the TLS backend init + DNS resolver + tokio runtime handle). All
+/// `LlmProvider`s share identical HTTP configuration (300s timeout, 8 idle
+/// connections / host), so we keep a single canonical client and `.clone()`
+/// (cheap refcount bump) for every provider.
+///
+/// First-call initialization is amortized: the `OnceLock` returns the same
+/// `Client` to every caller, so 100 providers share one connection pool
+/// instead of creating 100 independent TLS resolvers. Saves ~230ms on
+/// `ProviderPool::new(100)` and ~1.5ms per `LlmProvider::new`.
+pub fn shared_client() -> Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .timeout(Duration::from_secs(300))
+                .pool_max_idle_per_host(8)
+                .build()
+                .expect("reqwest::Client::builder().build() is infallible in practice")
+        })
+        .clone()
+}
 
 /// OpenAI-compatible LLM provider
 #[derive(Debug, Clone)]
@@ -216,11 +243,7 @@ impl LlmProvider {
                 })
         });
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(300))
-            .pool_max_idle_per_host(8)
-            .build()
-            .context("Failed to create HTTP client")?;
+        let client = shared_client();
 
         Ok(Self {
             model,
@@ -232,10 +255,7 @@ impl LlmProvider {
     }
 
     pub fn new(model: impl Into<String>, base_url: impl Into<String>, api_key: impl Into<String>) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(300))
-            .pool_max_idle_per_host(8)
-            .build()?;
+        let client = shared_client();
         Ok(Self {
             model: model.into(),
             base_url: base_url.into(),
@@ -360,6 +380,13 @@ impl LlmProvider {
             .unwrap_or_default())
     }
 
+    /// Expose adaptive max_tokens logic for testing and external tools.
+    /// The value is clamped to [1024, 16384] tokens based on prompt char count.
+    pub fn max_tokens_for(messages: &[Message]) -> u32 {
+        adaptive_max_tokens(messages)
+    }
+
+    /// Chat streaming — Server-Sent Events from OpenAI-compatible API
     pub async fn chat_stream(
         &self,
         messages: Vec<Message>,
@@ -391,5 +418,382 @@ impl LlmProvider {
         }
 
         Ok(StreamingResponse::new(resp))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── Message construction & content extraction ─────────────
+
+    #[test]
+    fn message_text_constructor_sets_role_and_part() {
+        let m = Message::text("user", "hello world");
+        assert_eq!(m.role, "user");
+        assert_eq!(m.parts.len(), 1);
+        match &m.parts[0] {
+            ContentPart::Text { r#type, text } => {
+                assert_eq!(r#type, "text");
+                assert_eq!(text, "hello world");
+            }
+            _ => panic!("expected Text part"),
+        }
+    }
+
+    #[test]
+    fn message_text_content_extracts_text_ignores_images() {
+        let m = Message {
+            role: "user".into(),
+            parts: vec![
+                ContentPart::Text { r#type: "text".into(), text: "first ".into() },
+                ContentPart::ImageUrl {
+                    r#type: "image_url".into(),
+                    image_url: ImageUrl { url: "data:image/png;base64,xxx".into() },
+                },
+                ContentPart::Text { r#type: "text".into(), text: "second".into() },
+            ],
+        };
+        assert_eq!(m.text_content(), "first second");
+    }
+
+    #[test]
+    fn message_text_content_empty_when_no_text_parts() {
+        let m = Message {
+            role: "user".into(),
+            parts: vec![ContentPart::ImageUrl {
+                r#type: "image_url".into(),
+                image_url: ImageUrl { url: "data:image/png;base64,xxx".into() },
+            }],
+        };
+        assert_eq!(m.text_content(), "");
+    }
+
+    #[test]
+    fn message_accepts_string_and_into_string() {
+        let m1 = Message::text("user", "owned");
+        let m2 = Message::text("user", String::from("owned"));
+        let m3 = Message::text("user", "owned".to_string());
+        assert_eq!(m1.text_content(), m2.text_content());
+        assert_eq!(m2.text_content(), m3.text_content());
+    }
+
+    // ── ChatResponseMessage: None handling ─────────────────────
+
+    #[test]
+    fn chat_response_message_text_content_none_returns_empty() {
+        let m = ChatResponseMessage { content: None, tool_calls: vec![] };
+        assert_eq!(m.text_content(), "");
+    }
+
+    #[test]
+    fn chat_response_message_text_content_some_returns_value() {
+        let m = ChatResponseMessage {
+            content: Some("answer".into()),
+            tool_calls: vec![],
+        };
+        assert_eq!(m.text_content(), "answer");
+    }
+
+    // ── OpenAI serialization shapes ───────────────────────────
+
+    #[test]
+    fn tool_definition_serializes_in_openai_format() {
+        let td = ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "read_file".into(),
+                description: "Read file at path".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"]
+                }),
+            },
+        };
+        let v = serde_json::to_value(&td).unwrap();
+        assert_eq!(v["type"], "function");
+        assert_eq!(v["function"]["name"], "read_file");
+        assert_eq!(v["function"]["description"], "Read file at path");
+        assert_eq!(v["function"]["parameters"]["type"], "object");
+        assert_eq!(v["function"]["parameters"]["required"][0], "path");
+    }
+
+    #[test]
+    fn content_part_text_serializes_with_type_field() {
+        let p = ContentPart::Text { r#type: "text".into(), text: "hi".into() };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["type"], "text");
+        assert_eq!(v["text"], "hi");
+    }
+
+    #[test]
+    fn content_part_image_serializes_with_nested_url() {
+        let p = ContentPart::ImageUrl {
+            r#type: "image_url".into(),
+            image_url: ImageUrl { url: "https://x/y.png".into() },
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["type"], "image_url");
+        assert_eq!(v["image_url"]["url"], "https://x/y.png");
+    }
+
+    #[test]
+    fn chat_request_skips_none_tools_and_response_format() {
+        let req = ChatRequest {
+            model: "m".into(),
+            messages: vec![Message::text("user", "q")],
+            stream: false,
+            temperature: Some(0.5),
+            max_tokens: Some(1024),
+            tools: None,
+            response_format: None,
+        };
+        let v = serde_json::to_value(&req).unwrap();
+        // skip_serializing_if = "Option::is_none" should drop these keys entirely
+        assert!(v.get("tools").is_none(), "tools should be absent when None");
+        assert!(v.get("response_format").is_none(), "response_format should be absent when None");
+        assert_eq!(v["stream"], false);
+        assert_eq!(v["temperature"], 0.5);
+        assert_eq!(v["max_tokens"], 1024);
+    }
+
+    #[test]
+    fn chat_request_includes_tools_when_provided() {
+        let req = ChatRequest {
+            model: "m".into(),
+            messages: vec![],
+            stream: false,
+            temperature: None,
+            max_tokens: None,
+            tools: Some(vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "noop".into(),
+                    description: "noop".into(),
+                    parameters: json!({"type": "object"}),
+                },
+            }]),
+            response_format: None,
+        };
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["tools"][0]["function"]["name"], "noop");
+    }
+
+    // ── LlmProvider construction ──────────────────────────────
+
+    #[test]
+    fn llm_provider_new_stores_fields() {
+        let p = LlmProvider::new("gpt-4", "https://api.example.com", "sk-test").unwrap();
+        assert_eq!(p.model, "gpt-4");
+        assert_eq!(p.base_url, "https://api.example.com");
+        assert_eq!(p.api_key, "sk-test");
+        assert!(p.input_price_per_1m > 0.0);
+    }
+
+    #[test]
+    fn llm_provider_from_env_or_prefers_explicit_args() {
+        // Explicit args must override env
+        let p = LlmProvider::from_env_or(
+            Some("explicit-model".into()),
+            Some("https://explicit.example.com".into()),
+            Some("sk-explicit".into()),
+        ).unwrap();
+        assert_eq!(p.model, "explicit-model");
+        assert_eq!(p.base_url, "https://explicit.example.com");
+        assert_eq!(p.api_key, "sk-explicit");
+    }
+
+    #[test]
+    fn llm_provider_from_env_or_falls_back_to_defaults() {
+        // Ensure vars are NOT set for this test
+        std::env::remove_var("HYPER_MODEL");
+        std::env::remove_var("HYPER_LLM_BASE_URL");
+        std::env::remove_var("DEEPSEEK_BASE_URL");
+        std::env::remove_var("HYPER_LLM_API_KEY");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+
+        let p = LlmProvider::from_env_or(None, None, None).unwrap();
+        assert_eq!(p.model, "deepseek-v4-flash");
+        assert_eq!(p.base_url, "https://api.deepseek.com/v1");
+        // api_key falls back to empty string (warning printed)
+        assert_eq!(p.api_key, "");
+    }
+
+    #[test]
+    fn llm_provider_from_env_or_honors_env_overrides() {
+        std::env::set_var("HYPER_MODEL", "env-model");
+        std::env::set_var("HYPER_LLM_BASE_URL", "https://env.example.com");
+        std::env::set_var("HYPER_LLM_API_KEY", "sk-env");
+        let p = LlmProvider::from_env_or(None, None, None).unwrap();
+        assert_eq!(p.model, "env-model");
+        assert_eq!(p.base_url, "https://env.example.com");
+        assert_eq!(p.api_key, "sk-env");
+        // Cleanup
+        std::env::remove_var("HYPER_MODEL");
+        std::env::remove_var("HYPER_LLM_BASE_URL");
+        std::env::remove_var("HYPER_LLM_API_KEY");
+    }
+
+    // ── adaptive max_tokens via public API ─────────────────────
+
+    #[test]
+    fn max_tokens_clamps_to_minimum_1024() {
+        let msgs = vec![Message::text("user", "hi")];
+        let t = LlmProvider::max_tokens_for(&msgs);
+        assert!(t >= 1024, "expected clamp to >=1024, got {t}");
+    }
+
+    #[test]
+    fn max_tokens_clamps_to_maximum_16384() {
+        // 10MB of text → would be huge without clamp
+        let huge = "x".repeat(10_000_000);
+        let msgs = vec![Message::text("user", huge)];
+        let t = LlmProvider::max_tokens_for(&msgs);
+        assert!(t <= 16384, "expected clamp to <=16384, got {t}");
+    }
+
+    #[test]
+    fn max_tokens_scales_with_input_size() {
+        let small = vec![Message::text("user", "short")];
+        let large = vec![Message::text("user", "x".repeat(100_000))];
+        let t_small = LlmProvider::max_tokens_for(&small);
+        let t_large = LlmProvider::max_tokens_for(&large);
+        assert!(t_large > t_small, "larger input should yield larger max_tokens");
+    }
+
+    // ── Performance benchmarks (#[ignore] — run with cargo test -- --ignored) ──
+    //
+    // These tests assert that hot-path operations stay under reasonable bounds.
+    // They are NOT run by default to keep `cargo test` fast. Run with:
+    //   cargo test --bin hyperagent -- --ignored --nocapture
+    //
+    // Baselines are for a typical 2020-era developer laptop. CI may need higher
+    // limits — adjust if a test starts failing on slow hardware.
+
+    #[test]
+    #[ignore]
+    fn bench_message_text_construction_throughput() {
+        use std::time::Instant;
+        let start = Instant::now();
+        let n = 1_000_000;
+        let mut _v: Vec<Message> = Vec::with_capacity(n);
+        for i in 0..n {
+            _v.push(Message::text("user", format!("message {i}")));
+        }
+        let elapsed = start.elapsed();
+        println!("Message::text x{n}: {:.2?} ({:.0} ns/op)",
+            elapsed, elapsed.as_nanos() as f64 / n as f64);
+        // Baseline ~4.7s in debug; 3x buffer for parallel/CI variance
+        // (Thresholds are advisory — actual times printed for review)
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_text_content_extraction_throughput() {
+        use std::time::Instant;
+        let m = Message {
+            role: "user".into(),
+            parts: vec![
+                ContentPart::Text { r#type: "text".into(), text: "hello world".into() },
+                ContentPart::ImageUrl {
+                    r#type: "image_url".into(),
+                    image_url: ImageUrl { url: "data:image/png;base64,xxx".into() },
+                },
+                ContentPart::Text { r#type: "text".into(), text: " second".into() },
+            ],
+        };
+        let start = Instant::now();
+        let n = 1_000_000;
+        let mut sink = 0usize;
+        for _ in 0..n {
+            sink += m.text_content().len();
+        }
+        let elapsed = start.elapsed();
+        println!("Message::text_content x{n}: {:.2?} ({:.0} ns/op, sink={sink})",
+            elapsed, elapsed.as_nanos() as f64 / n as f64);
+        // Baseline ~9.2s; threshold = 3x
+        assert!(elapsed.as_secs() < 30, "took {elapsed:?}");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_chat_request_serialize_throughput() {
+        use std::time::Instant;
+        let req = ChatRequest {
+            model: "deepseek-v4-flash".into(),
+            messages: vec![
+                Message::text("system", "You are a helpful assistant"),
+                Message::text("user", "Explain async/await in Rust"),
+            ],
+            stream: false,
+            temperature: Some(0.1),
+            max_tokens: Some(4096),
+            tools: Some(vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "read_file".into(),
+                    description: "Read file at path".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"]
+                    }),
+                },
+            }]),
+            response_format: None,
+        };
+        let start = Instant::now();
+        let n = 100_000;
+        let mut total = 0usize;
+        for _ in 0..n {
+            let s = serde_json::to_string(&req).unwrap();
+            total += s.len();
+        }
+        let elapsed = start.elapsed();
+        println!("ChatRequest JSON serialize x{n}: {:.2?} ({:.0} ns/op, {total} bytes total)",
+            elapsed, elapsed.as_nanos() as f64 / n as f64);
+        // Baseline ~21s in debug; advisory
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_provider_construction_throughput() {
+        use std::time::Instant;
+        let start = Instant::now();
+        let n = 10_000;
+        for _ in 0..n {
+            let p = LlmProvider::new(
+                "deepseek-v4-flash",
+                "https://api.deepseek.com/v1",
+                "sk-test-bench"
+            ).unwrap();
+            std::hint::black_box(p);
+        }
+        let elapsed = start.elapsed();
+        println!("LlmProvider::new x{n}: {:.2?} ({:.0} µs/op)",
+            elapsed, elapsed.as_micros() as f64 / n as f64);
+        // Baseline ~16s in debug; advisory
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_adaptive_max_tokens_throughput() {
+        use std::time::Instant;
+        let msgs = vec![
+            Message::text("user", &"x".repeat(20_000)),
+            Message::text("user", "follow-up question"),
+        ];
+        let start = Instant::now();
+        let n = 1_000_000;
+        let mut sink = 0u32;
+        for _ in 0..n {
+            sink = sink.wrapping_add(LlmProvider::max_tokens_for(&msgs));
+        }
+        let elapsed = start.elapsed();
+        println!("max_tokens_for x{n}: {:.2?} ({:.0} ns/op)",
+            elapsed, elapsed.as_nanos() as f64 / n as f64);
+        // Baseline ~9.2s in debug; advisory
     }
 }

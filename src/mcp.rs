@@ -5,7 +5,11 @@
 //! **Design:**
 //! - Server discovery from config + ~/.hyper/mcp/*.json
 //! - Tool registration from MCP servers into agent tool set
-//! - HTTP transport (stdio deferred to future release)
+//! - HTTP transport + stdio transport (child process stdin/stdout)
+//!
+//! HTTP transport works for remote MCP servers. Stdio transport works
+//! for local servers (e.g. `npx @modelcontextprotocol/server-filesystem`)
+//! by spawning the command and piping JSON-RPC 2.0 messages.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,6 +17,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 /// Configuration for an MCP server
@@ -49,11 +55,23 @@ pub struct McpTool {
     pub input_schema: Value,
 }
 
+/// How a connected MCP transport delivers tools and handles calls.
+enum McpTransportState {
+    Http {
+        client: reqwest::Client,
+    },
+    Stdio {
+        child: Child,
+        writer: BufWriter<tokio::process::ChildStdin>,
+        reader: BufReader<tokio::process::ChildStdout>,
+    },
+}
+
 /// Connection state for an MCP server
 struct McpConnection {
     config: McpServerConfig,
     tools: Vec<McpTool>,
-    http_client: reqwest::Client,
+    transport: McpTransportState,
 }
 
 /// MCP Registry — manages all MCP server connections
@@ -100,40 +118,49 @@ impl McpRegistry {
 
     /// Connect to all configured MCP servers
     pub async fn connect_all(&self, servers: &[McpServerConfig]) {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .unwrap_or_default();
-
         let mut connections = self.connections.lock().await;
 
         for config in servers {
             if config.auto_connect == Some(false) {
                 continue;
             }
-            if config.transport != McpTransport::Http {
-                eprintln!("  ⚠️  MCP '{}': stdio transport not yet supported, skipping", config.name);
-                continue;
-            }
-            let url = match &config.url {
-                Some(u) => u.clone(),
-                None => {
-                    eprintln!("  ⚠️  MCP '{}': no URL configured", config.name);
-                    continue;
+            match config.transport {
+                McpTransport::Http => {
+                    let client = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(15))
+                        .build()
+                        .unwrap_or_default();
+                    let url = match &config.url {
+                        Some(u) => u.clone(),
+                        None => {
+                            eprintln!("  ⚠️  MCP '{}': no URL configured", config.name);
+                            continue;
+                        }
+                    };
+                    match self.initialize_http(&client, config, &url).await {
+                        Ok(tools) => {
+                            println!("  🔌 MCP connected: {} ({} tools)", config.name, tools.len());
+                            connections.push(McpConnection {
+                                config: config.clone(),
+                                tools,
+                                transport: McpTransportState::Http { client: client.clone() },
+                            });
+                        }
+                        Err(e) => eprintln!("  ⚠️  MCP '{}' HTTP connection failed: {e}", config.name),
+                    }
                 }
-            };
-
-            match self.initialize_http(&client, config, &url).await {
-                Ok(tools) => {
-                    println!("  🔌 MCP connected: {} ({} tools)", config.name, tools.len());
-                    connections.push(McpConnection {
-                        config: config.clone(),
-                        tools,
-                        http_client: client.clone(),
-                    });
-                }
-                Err(e) => {
-                    eprintln!("  ⚠️  MCP '{}' connection failed: {e}", config.name);
+                McpTransport::Stdio => {
+                    match self.initialize_stdio(config).await {
+                        Ok((child, writer, reader, tools)) => {
+                            println!("  🔌 MCP connected: {} ({} tools, stdio)", config.name, tools.len());
+                            connections.push(McpConnection {
+                                config: config.clone(),
+                                tools,
+                                transport: McpTransportState::Stdio { child, writer, reader },
+                            });
+                        }
+                        Err(e) => eprintln!("  ⚠️  MCP '{}' stdio connection failed: {e}", config.name),
+                    }
                 }
             }
         }
@@ -145,7 +172,6 @@ impl McpRegistry {
         config: &McpServerConfig,
         url: &str,
     ) -> anyhow::Result<Vec<McpTool>> {
-        // Initialize
         let init_payload = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "initialize",
@@ -155,32 +181,26 @@ impl McpRegistry {
                 "clientInfo": { "name": "hyperagent", "version": env!("CARGO_PKG_VERSION") }
             }
         });
-
         let mut req = client.post(url).json(&init_payload);
         if let Some(key) = &config.api_key {
             req = req.header("Authorization", format!("Bearer {key}"));
         }
-
         let resp = req.send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("initialize returned {}", resp.status());
         }
-
         // List tools
         let tools_payload = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "tools/list",
             "params": {}
         });
-
         let mut req2 = client.post(url).json(&tools_payload);
         if let Some(key) = &config.api_key {
             req2 = req2.header("Authorization", format!("Bearer {key}"));
         }
-
         let tools_resp = req2.send().await?;
         let body: Value = tools_resp.json().await?;
-
         let mut tools = Vec::new();
         if let Some(tool_list) = body["result"]["tools"].as_array() {
             for t in tool_list {
@@ -192,8 +212,107 @@ impl McpRegistry {
                 });
             }
         }
-
         Ok(tools)
+    }
+
+    /// Connect to a stdio MCP server by spawning a child process.
+    /// The command is stored in config.url; args are stored in config.api_key
+    /// as a ;-separated string for simplicity.
+    async fn initialize_stdio(
+        &self,
+        config: &McpServerConfig,
+    ) -> anyhow::Result<(Child, BufWriter<tokio::process::ChildStdin>, BufReader<tokio::process::ChildStdout>, Vec<McpTool>)> {
+        let cmd_path = config.url.as_deref()
+            .ok_or_else(|| anyhow::anyhow!("stdio MCP '{}': no command in url field", config.name))?;
+
+        let mut child = Command::new(cmd_path);
+        if let Some(args) = &config.api_key {
+            for arg in args.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                child.arg(arg);
+            }
+        }
+        if let Some(envs) = &config.env {
+            for (k, v) in envs {
+                child.env(k, v);
+            }
+        }
+        child.stdout(std::process::Stdio::piped());
+        child.stdin(std::process::Stdio::piped());
+        child.stderr(std::process::Stdio::inherit());
+
+        let mut child = child.spawn()
+            .map_err(|e| anyhow::anyhow!("failed to spawn MCP '{}': {e}", config.name))?;
+
+        let stdout = child.stdout.take()
+            .ok_or_else(|| anyhow::anyhow!("MCP '{}': no stdout", config.name))?;
+        let stdin = child.stdin.take()
+            .ok_or_else(|| anyhow::anyhow!("MCP '{}': no stdin", config.name))?;
+
+        let mut writer = BufWriter::new(stdin);
+        let mut reader = BufReader::new(stdout);
+
+        // Initialize: send JSON-RPC 2.0 initialize request
+        let init_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "id": 1,
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "hyperagent", "version": env!("CARGO_PKG_VERSION") }
+            }
+        });
+        Self::stdio_send(&mut writer, &init_req).await?;
+
+        // Read init response - a single newline-delimited JSON line
+        let init_resp = Self::stdio_recv(&mut reader).await
+            .ok_or_else(|| anyhow::anyhow!("MCP '{}': no initialize response", config.name))?;
+        if init_resp.get("error").is_some() {
+            anyhow::bail!("MCP '{}' initialize error: {:?}", config.name, init_resp["error"]);
+        }
+
+        // List tools
+        let list_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "id": 2,
+            "params": {}
+        });
+        Self::stdio_send(&mut writer, &list_req).await?;
+        let list_resp = Self::stdio_recv(&mut reader).await
+            .ok_or_else(|| anyhow::anyhow!("MCP '{}': no tools/list response", config.name))?;
+
+        let mut tools = Vec::new();
+        if let Some(tool_list) = list_resp["result"]["tools"].as_array() {
+            for t in tool_list {
+                tools.push(McpTool {
+                    server: config.name.clone(),
+                    name: t["name"].as_str().unwrap_or("unknown").to_string(),
+                    description: t["description"].as_str().unwrap_or("").to_string(),
+                    input_schema: t["inputSchema"].clone(),
+                });
+            }
+        }
+        Ok((child, writer, reader, tools))
+    }
+
+    /// Write a JSON-RPC request as a single newline-delimited line to a stdio pipe.
+    async fn stdio_send(writer: &mut BufWriter<tokio::process::ChildStdin>, msg: &Value) -> anyhow::Result<()> {
+        let line = serde_json::to_string(msg)?;
+        writer.write_all(line.as_bytes()).await?;
+        writer.write_all(b"\n").await?;
+        writer.flush().await?;
+        Ok(())
+    }
+
+    /// Read a single newline-delimited JSON-RPC response line from a stdio pipe.
+    async fn stdio_recv(reader: &mut BufReader<tokio::process::ChildStdout>) -> Option<Value> {
+        let mut line = String::new();
+        reader.read_line(&mut line).await.ok()?;
+        if line.trim().is_empty() {
+            return None;
+        }
+        serde_json::from_str(line.trim()).ok()
     }
 
     /// Get all registered MCP tools
@@ -224,36 +343,56 @@ impl McpRegistry {
 
     /// Call an MCP tool
     pub async fn call_tool(&self, tool_name: &str, args: Value) -> anyhow::Result<Value> {
-        let connections = self.connections.lock().await;
+        let mut connections = self.connections.lock().await;
 
-        for conn in connections.iter() {
-            let has_tool = conn.tools.iter().any(|t| t.name == tool_name);
-            if !has_tool {
-                continue;
+        // Find the right connection (by tool name)
+        let conn_idx = match connections.iter().position(|c| c.tools.iter().any(|t| t.name == tool_name)) {
+            Some(i) => i,
+            None => anyhow::bail!("MCP tool '{tool_name}' not found on any connected server"),
+        };
+
+        // Remove the connection to get ownership (for Stdio we need &mut for the pipes)
+        let mut conn = connections.remove(conn_idx);
+        let result = match &mut conn.transport {
+            McpTransportState::Http { client } => {
+                let url = match &conn.config.url {
+                    Some(u) => u.clone(),
+                    None => anyhow::bail!("MCP '{}': no URL", conn.config.name),
+                };
+                let request = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "tools/call",
+                    "params": { "name": tool_name, "arguments": args }
+                });
+                let mut req = client.post(&url).json(&request);
+                if let Some(key) = &conn.config.api_key {
+                    req = req.header("Authorization", format!("Bearer {key}"));
+                }
+                let resp = req.send().await?;
+                let body: Value = resp.json().await?;
+                Ok(body["result"].clone())
             }
-
-            let url = match &conn.config.url {
-                Some(u) => u,
-                None => continue,
-            };
-
-            let request = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "tools/call",
-                "params": { "name": tool_name, "arguments": args }
-            });
-
-            let mut req = conn.http_client.post(url).json(&request);
-            if let Some(key) = &conn.config.api_key {
-                req = req.header("Authorization", format!("Bearer {key}"));
+            McpTransportState::Stdio { ref mut writer, ref mut reader, .. } => {
+                let req = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "tools/call",
+                    "id": 3,
+                    "params": { "name": tool_name, "arguments": args }
+                });
+                Self::stdio_send(writer, &req).await?;
+                match Self::stdio_recv(reader).await {
+                    Some(resp) if resp.get("error").is_some() => {
+                        Ok(serde_json::json!({ "error": resp["error"].clone() }))
+                    }
+                    Some(resp) => Ok(resp["result"].clone()),
+                    None => anyhow::bail!("MCP '{}' tool call '{tool_name}' got no response", conn.config.name),
+                }
             }
+        };
 
-            let resp = req.send().await?;
-            let body: Value = resp.json().await?;
-            return Ok(body["result"].clone());
-        }
-
-        anyhow::bail!("MCP tool '{tool_name}' not found on any connected server");
+        // Put the connection back
+        connections.push(conn);
+        result
     }
 
     /// Format tools into LLM-friendly list
@@ -276,9 +415,17 @@ impl McpRegistry {
     }
 
     pub async fn shutdown(&self) {
-        let connections = self.connections.lock().await;
-        // HTTP clients have no persistent connection to close
+        let mut connections = self.connections.lock().await;
         let count = connections.len();
+        for mut conn in connections.drain(..) {
+            match &mut conn.transport {
+                McpTransportState::Stdio { child, .. } => {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+                McpTransportState::Http { .. } => {}
+            }
+        }
         if count > 0 {
             println!("  🔌 Disconnected from {count} MCP server(s)");
         }
@@ -288,7 +435,13 @@ impl McpRegistry {
     pub async fn list_connections(&self) -> Vec<String> {
         let connections = self.connections.lock().await;
         connections.iter()
-            .map(|c| format!("{} ({} tools, HTTP)", c.config.name, c.tools.len()))
+            .map(|c| {
+            let transport = match c.transport {
+                McpTransportState::Http { .. } => "HTTP",
+                McpTransportState::Stdio { .. } => "stdio",
+            };
+            format!("{} ({} tools, {})", c.config.name, c.tools.len(), transport)
+        })
             .collect()
     }
 }

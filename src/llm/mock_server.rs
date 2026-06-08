@@ -117,7 +117,7 @@ mod tests {
     fn test_mock_server_responds() {
         let mock = MockLlmServer::start();
         // Small delay to let server start
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(200));
 
         let mut stream = TcpStream::connect(format!("127.0.0.1:{}", mock.port()))
             .expect("Failed to connect");
@@ -145,7 +145,8 @@ mod tests {
     #[test]
     fn test_llm_provider_with_mock() {
         let mock = MockLlmServer::start();
-        thread::sleep(Duration::from_millis(50));
+        // Wait for TCP listener to become ready on slow CI / under load
+        thread::sleep(Duration::from_millis(200));
 
         let provider = LlmProvider::new(
             "test-model".to_string(),
@@ -170,7 +171,8 @@ mod tests {
         // Streaming against a non-SSE endpoint should either succeed (if the provider
         // handles plain JSON gracefully) or fail — either is acceptable behavior
         let mock = MockLlmServer::start();
-        thread::sleep(Duration::from_millis(50));
+        // Wait for TCP listener to become ready on slow CI / under load
+        thread::sleep(Duration::from_millis(200));
 
         let provider = LlmProvider::new(
             "test-model".to_string(),

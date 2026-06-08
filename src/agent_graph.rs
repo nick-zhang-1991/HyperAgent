@@ -165,7 +165,7 @@ impl SqliteAgentGraph {
 
 impl AgentGraph for SqliteAgentGraph {
     fn upsert_edge(&self, parent_id: &AgentId, child_id: &AgentId, status: EdgeStatus) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("agent_graph lock poisoned");
         let now = Utc::now().to_rfc3339();
         let status_str = match status {
             EdgeStatus::Open => "open",
@@ -179,7 +179,7 @@ impl AgentGraph for SqliteAgentGraph {
     }
 
     fn add_node(&self, node: &AgentNode) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("agent_graph lock poisoned");
         let status_str = match node.status {
             EdgeStatus::Open => "open",
             EdgeStatus::Closed => "closed",
@@ -201,7 +201,7 @@ impl AgentGraph for SqliteAgentGraph {
     }
 
     fn update_node_status(&self, id: &AgentId, status: EdgeStatus) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("agent_graph lock poisoned");
         let status_str = match status {
             EdgeStatus::Open => "open",
             EdgeStatus::Closed => "closed",
@@ -214,7 +214,7 @@ impl AgentGraph for SqliteAgentGraph {
     }
 
     fn close_node(&self, id: &AgentId, summary: &str, files_changed: &[String], token_usage: u64) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("agent_graph lock poisoned");
         let now = Utc::now().to_rfc3339();
         let files_json = serde_json::to_string(files_changed)?;
         conn.execute(
@@ -230,7 +230,7 @@ impl AgentGraph for SqliteAgentGraph {
     }
 
     fn get_children(&self, parent_id: &AgentId, status: Option<EdgeStatus>) -> anyhow::Result<Vec<AgentNode>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("agent_graph lock poisoned");
         let mut sql = String::from(
             "SELECT n.* FROM agent_nodes n
              INNER JOIN agent_edges e ON e.child_id = n.id
@@ -246,7 +246,7 @@ impl AgentGraph for SqliteAgentGraph {
     }
 
     fn get_parent(&self, child_id: &AgentId) -> anyhow::Result<Option<AgentNode>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("agent_graph lock poisoned");
         let mut stmt = conn.prepare(
             "SELECT n.* FROM agent_nodes n
              INNER JOIN agent_edges e ON e.parent_id = n.id
@@ -258,7 +258,7 @@ impl AgentGraph for SqliteAgentGraph {
     }
 
     fn get_descendants(&self, root_id: &AgentId, include_closed: bool) -> anyhow::Result<Vec<AgentNode>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("agent_graph lock poisoned");
         // BFS walk
         let mut descendants = Vec::new();
         let mut visited = vec![root_id.clone()];
@@ -293,7 +293,7 @@ impl AgentGraph for SqliteAgentGraph {
     }
 
     fn get_all_nodes(&self) -> anyhow::Result<Vec<AgentNode>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("agent_graph lock poisoned");
         let mut stmt = conn.prepare(
             "SELECT * FROM agent_nodes ORDER BY created_at ASC"
         )?;
@@ -302,7 +302,7 @@ impl AgentGraph for SqliteAgentGraph {
     }
 
     fn open_count(&self) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("agent_graph lock poisoned");
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM agent_nodes WHERE status = 'open'",
             [],
@@ -312,14 +312,14 @@ impl AgentGraph for SqliteAgentGraph {
     }
 
     fn delete_node(&self, id: &AgentId) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("agent_graph lock poisoned");
         conn.execute("DELETE FROM agent_edges WHERE parent_id = ?1 OR child_id = ?1", rusqlite::params![id])?;
         conn.execute("DELETE FROM agent_nodes WHERE id = ?1", rusqlite::params![id])?;
         Ok(())
     }
 
     fn clear(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("agent_graph lock poisoned");
         conn.execute("DELETE FROM agent_edges", [])?;
         conn.execute("DELETE FROM agent_nodes", [])?;
         Ok(())
@@ -352,7 +352,7 @@ impl WorktreeManager {
         if worktree_dir.exists() {
             std::fs::remove_dir_all(&worktree_dir)?;
         }
-        std::fs::create_dir_all(worktree_dir.parent().unwrap())?;
+        std::fs::create_dir_all(worktree_dir.parent().expect("worktree_dir should have parent"))?;
 
         // Check if git is available and worktree on main repo
         let git_dir = self.project_root.join(".git");
@@ -464,7 +464,7 @@ fn copy_dir(src: &Path, dst: &Path) -> anyhow::Result<()> {
             !path.starts_with(src.join("node_modules"))
         })
     {
-        let relative = entry.path().strip_prefix(src).unwrap();
+        let relative = entry.path().strip_prefix(src).expect("entry path under source");
         let target = dst.join(relative);
         if entry.file_type().is_dir() {
             std::fs::create_dir_all(&target)?;

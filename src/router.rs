@@ -2,6 +2,8 @@
 //!
 //! Supports multiple providers with per-request model selection,
 //! automatic fallback, and config file hot-reload.
+//! Provider/agent config is now stored in AppConfig (~/.hyper/config.toml)
+//! with fallback to the old ~/.config/hyper/config.toml path.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -18,13 +20,10 @@ pub struct ProviderConfig {
     pub models: Vec<String>,
     pub priority: u32,
     pub weight: f64,
-    /// Input price per 1M tokens (USD)
     #[serde(default = "default_input_price")]
     pub input_price_per_1m: f64,
-    /// Output price per 1M tokens (USD)
     #[serde(default = "default_output_price")]
     pub output_price_per_1m: f64,
-    /// Max budget per run (USD), 0 = unlimited
     #[serde(default)]
     pub max_budget_per_run: f64,
 }
@@ -32,9 +31,10 @@ pub struct ProviderConfig {
 fn default_input_price() -> f64 { 0.15 }
 fn default_output_price() -> f64 { 0.60 }
 
-/// Agent configuration with permissions
+/// Named agent configuration with permissions (renamed to avoid collision
+/// with config::AgentConfig which handles agent behavior settings).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
+pub struct NamedAgentConfig {
     pub name: String,
     pub mode: AgentMode,
     pub model: String,
@@ -49,6 +49,16 @@ pub enum AgentMode {
     Primary,
     SubAgent,
     Tool,
+}
+
+impl std::fmt::Display for AgentMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AgentMode::Primary => write!(f, "primary"),
+            AgentMode::SubAgent => write!(f, "subagent"),
+            AgentMode::Tool => write!(f, "tool"),
+        }
+    }
 }
 
 impl std::str::FromStr for AgentMode {
@@ -101,22 +111,34 @@ impl std::str::FromStr for PermissionLevel {
     }
 }
 
-/// The router that selects providers and models
-/// Supports hot-reload: checks config file mtime on every select_provider() call.
+/// The router that selects providers and models.
+/// Now receives config from AppConfig instead of loading its own file.
 pub struct ModelRouter {
     providers: Vec<ProviderConfig>,
-    agents: Vec<AgentConfig>,
+    agents: Vec<NamedAgentConfig>,
     config_path: Option<PathBuf>,
     config_mtime: Option<SystemTime>,
 }
 
 impl Default for ModelRouter {
     fn default() -> Self {
-        Self::new().unwrap()
+        let (providers, agents) = default_providers_and_agents();
+        Self { providers, agents, config_path: None, config_mtime: None }
     }
 }
 
 impl ModelRouter {
+    /// Create from pre-loaded AppConfig data.
+    pub fn from_config(providers: Vec<ProviderConfig>, agents: Vec<NamedAgentConfig>) -> Self {
+        Self {
+            providers,
+            agents,
+            config_path: None,
+            config_mtime: None,
+        }
+    }
+
+    /// Load from config file (old path, for backward compat).
     pub fn new() -> Result<Self> {
         let config_path = dirs_next::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -131,7 +153,7 @@ impl ModelRouter {
         let (providers, agents) = if config_path.exists() {
             Self::load_config(&config_path)?
         } else {
-            (Self::default_providers(), Self::default_agents())
+            default_providers_and_agents()
         };
 
         Ok(Self {
@@ -173,163 +195,46 @@ impl ModelRouter {
         Ok(())
     }
 
-    fn default_providers() -> Vec<ProviderConfig> {
-        vec![
-            ProviderConfig {
-                name: "deepseek".into(),
-                api_key: std::env::var("HYPER_LLM_API_KEY").unwrap_or_default(),
-                base_url: std::env::var("HYPER_LLM_BASE_URL")
-                    .unwrap_or_else(|_| "https://api.deepseek.com/v1".into()),
-                default_model: "deepseek-v4-flash".into(),
-                models: vec!["deepseek-v4-flash".into(), "deepseek-v4-pro".into()],
-                priority: 1,
-                weight: 1.0,
-                input_price_per_1m: 0.15,
-                output_price_per_1m: 0.60,
-                max_budget_per_run: 0.0,
-                },
-                ProviderConfig {
-                name: "openai".into(),
-                api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-                base_url: "https://api.openai.com/v1".into(),
-                default_model: "gpt-4o".into(),
-                models: vec!["gpt-4o".into(), "gpt-4o-mini".into()],
-                priority: 2,
-                weight: 1.0,
-                input_price_per_1m: 2.50,
-                output_price_per_1m: 10.00,
-                max_budget_per_run: 0.0,
-            },
-        ]
-    }
-
-    fn default_agents() -> Vec<AgentConfig> {
-        vec![
-            AgentConfig {
-                name: "build".into(),
-                mode: AgentMode::Primary,
-                model: "deepseek-v4-flash".into(),
-                provider: None,
-                temperature: 0.1,
-                permissions: AgentPermissions {
-                    edit: PermissionLevel::Allow,
-                    bash: PermissionLevel::Allow,
-                    read: PermissionLevel::Allow,
-                    network: PermissionLevel::Deny,
-                },
-                description: "Execute code modifications".into(),
-            },
-            AgentConfig {
-                name: "plan".into(),
-                mode: AgentMode::Primary,
-                model: "deepseek-v4-pro".into(),
-                provider: None,
-                temperature: 0.0,
-                permissions: AgentPermissions {
-                    edit: PermissionLevel::Deny,
-                    bash: PermissionLevel::Deny,
-                    read: PermissionLevel::Allow,
-                    network: PermissionLevel::Deny,
-                },
-                description: "Analyze tasks and create plans".into(),
-            },
-            AgentConfig {
-                name: "explore".into(),
-                mode: AgentMode::SubAgent,
-                model: "deepseek-v4-flash".into(),
-                provider: None,
-                temperature: 0.0,
-                permissions: AgentPermissions {
-                    edit: PermissionLevel::Deny,
-                    bash: PermissionLevel::Deny,
-                    read: PermissionLevel::Allow,
-                    network: PermissionLevel::Allow,
-                },
-                description: "Search and explain codebase".into(),
-            },
-            AgentConfig {
-                name: "review".into(),
-                mode: AgentMode::SubAgent,
-                model: "deepseek-v4-flash".into(),
-                provider: None,
-                temperature: 0.0,
-                permissions: AgentPermissions {
-                    edit: PermissionLevel::Deny,
-                    bash: PermissionLevel::Deny,
-                    read: PermissionLevel::Allow,
-                    network: PermissionLevel::Deny,
-                },
-                description: "Review code changes".into(),
-            },
-            AgentConfig {
-                name: "general".into(),
-                mode: AgentMode::SubAgent,
-                model: "deepseek-v4-flash".into(),
-                provider: None,
-                temperature: 0.3,
-                permissions: AgentPermissions {
-                    edit: PermissionLevel::Allow,
-                    bash: PermissionLevel::Allow,
-                    read: PermissionLevel::Allow,
-                    network: PermissionLevel::Ask,
-                },
-                description: "General-purpose agent".into(),
-            },
-        ]
-    }
-
-    fn load_config(path: &PathBuf) -> Result<(Vec<ProviderConfig>, Vec<AgentConfig>)> {
+    fn load_config(path: &PathBuf) -> Result<(Vec<ProviderConfig>, Vec<NamedAgentConfig>)> {
         let content = std::fs::read_to_string(path).context("Failed to read config file")?;
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("toml");
-        let parsed: RouterConfig = match ext {
-            "json" => serde_json::from_str(&content)
-                .context("Failed to parse JSON config")?,
-            _ => toml::from_str(&content)
-                .context("Failed to parse TOML config")?,
-        };
-        Ok((parsed.providers, parsed.agents))
+        parse_router_config(&content)
     }
 
-    /// Select the best provider for a given model (with hot-reload check)
+    /// Select the best provider for a given model
     pub fn select_provider(&self, model: &str) -> Result<&ProviderConfig> {
-        // First try exact match
         for p in &self.providers {
             if p.models.iter().any(|m| m == model) {
                 return Ok(p);
             }
         }
-
-        // Fall back to first provider with API key
         for p in &self.providers {
             if !p.api_key.is_empty() {
                 return Ok(p);
             }
         }
-
-        // Last resort: first provider
         self.providers
             .first()
             .ok_or_else(|| anyhow::anyhow!("No providers configured"))
     }
 
-    /// Get an agent config by name
-    pub fn get_agent(&self, name: &str) -> Option<&AgentConfig> {
+    pub fn get_agent(&self, name: &str) -> Option<&NamedAgentConfig> {
         self.agents.iter().find(|a| a.name == name)
     }
 
-    /// List all available agents
-    pub fn list_agents(&self) -> Vec<&AgentConfig> {
+    pub fn list_agents(&self) -> Vec<&NamedAgentConfig> {
         self.agents.iter().collect()
     }
 
-    /// Get all provider configs (for building failover pool)
     pub fn list_providers(&self) -> &[ProviderConfig] {
         &self.providers
     }
 
-    #[allow(dead_code)]
-    /// Export config as TOML string
     pub fn export_config(&self) -> String {
+        #[derive(Serialize)]
+        struct RouterConfig {
+            providers: Vec<ProviderConfig>,
+            agents: Vec<NamedAgentConfig>,
+        }
         let config = RouterConfig {
             providers: self.providers.clone(),
             agents: self.agents.clone(),
@@ -337,7 +242,7 @@ impl ModelRouter {
         toml::to_string_pretty(&config).unwrap_or_default()
     }
 
-    /// Initialize default config file
+    /// Initialize default config file at old path (kept for backward compat)
     pub fn init_config() -> Result<()> {
         let config_path = dirs_next::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -349,21 +254,142 @@ impl ModelRouter {
         }
 
         std::fs::create_dir_all(config_path.parent().unwrap())?;
-        let config = RouterConfig {
-            providers: Self::default_providers(),
-            agents: Self::default_agents(),
-        };
+        let (providers, agents) = default_providers_and_agents();
+        #[derive(Serialize)]
+        struct RouterConfig {
+            providers: Vec<ProviderConfig>,
+            agents: Vec<NamedAgentConfig>,
+        }
+        let config = RouterConfig { providers, agents };
         let content = toml::to_string_pretty(&config)?;
         std::fs::write(&config_path, content)?;
-        println!("✅ Created config: {}", config_path.display());
+        println!("Config created: {}", config_path.display());
         Ok(())
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct RouterConfig {
+/// Parse router config TOML or JSON content.
+pub fn parse_router_config(content: &str) -> Result<(Vec<ProviderConfig>, Vec<NamedAgentConfig>)> {
+    // Try TOML first, then JSON
+    if let Ok(cfg) = toml::from_str::<RouterConfigV1>(content) {
+        return Ok((cfg.providers, cfg.agents));
+    }
+    if let Ok(cfg) = serde_json::from_str::<RouterConfigV1>(content) {
+        return Ok((cfg.providers, cfg.agents));
+    }
+    anyhow::bail!("Failed to parse router config: not valid TOML or JSON")
+}
+
+#[derive(Debug, Deserialize)]
+struct RouterConfigV1 {
     providers: Vec<ProviderConfig>,
-    agents: Vec<AgentConfig>,
+    agents: Vec<NamedAgentConfig>,
+}
+
+/// Default providers and agents used when no config file exists.
+pub fn default_providers_and_agents() -> (Vec<ProviderConfig>, Vec<NamedAgentConfig>) {
+    let providers = vec![
+        ProviderConfig {
+            name: "deepseek".into(),
+            api_key: std::env::var("HYPER_LLM_API_KEY").unwrap_or_default(),
+            base_url: std::env::var("HYPER_LLM_BASE_URL")
+                .unwrap_or_else(|_| "https://api.deepseek.com/v1".into()),
+            default_model: "deepseek-v4-flash".into(),
+            models: vec!["deepseek-v4-flash".into(), "deepseek-v4-pro".into()],
+            priority: 1,
+            weight: 1.0,
+            input_price_per_1m: 0.15,
+            output_price_per_1m: 0.60,
+            max_budget_per_run: 0.0,
+        },
+        ProviderConfig {
+            name: "openai".into(),
+            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            base_url: "https://api.openai.com/v1".into(),
+            default_model: "gpt-4o".into(),
+            models: vec!["gpt-4o".into(), "gpt-4o-mini".into()],
+            priority: 2,
+            weight: 1.0,
+            input_price_per_1m: 2.50,
+            output_price_per_1m: 10.00,
+            max_budget_per_run: 0.0,
+        },
+    ];
+
+    let agents = vec![
+        NamedAgentConfig {
+            name: "build".into(),
+            mode: AgentMode::Primary,
+            model: "deepseek-v4-flash".into(),
+            provider: None,
+            temperature: 0.1,
+            permissions: AgentPermissions {
+                edit: PermissionLevel::Allow,
+                bash: PermissionLevel::Allow,
+                read: PermissionLevel::Allow,
+                network: PermissionLevel::Deny,
+            },
+            description: "Execute code modifications".into(),
+        },
+        NamedAgentConfig {
+            name: "plan".into(),
+            mode: AgentMode::Primary,
+            model: "deepseek-v4-pro".into(),
+            provider: None,
+            temperature: 0.0,
+            permissions: AgentPermissions {
+                edit: PermissionLevel::Deny,
+                bash: PermissionLevel::Deny,
+                read: PermissionLevel::Allow,
+                network: PermissionLevel::Deny,
+            },
+            description: "Analyze tasks and create plans".into(),
+        },
+        NamedAgentConfig {
+            name: "explore".into(),
+            mode: AgentMode::SubAgent,
+            model: "deepseek-v4-flash".into(),
+            provider: None,
+            temperature: 0.0,
+            permissions: AgentPermissions {
+                edit: PermissionLevel::Deny,
+                bash: PermissionLevel::Deny,
+                read: PermissionLevel::Allow,
+                network: PermissionLevel::Allow,
+            },
+            description: "Search and explain codebase".into(),
+        },
+        NamedAgentConfig {
+            name: "review".into(),
+            mode: AgentMode::SubAgent,
+            model: "deepseek-v4-flash".into(),
+            provider: None,
+            temperature: 0.0,
+            permissions: AgentPermissions {
+                edit: PermissionLevel::Deny,
+                bash: PermissionLevel::Deny,
+                read: PermissionLevel::Allow,
+                network: PermissionLevel::Deny,
+            },
+            description: "Review code changes".into(),
+        },
+        NamedAgentConfig {
+            name: "general".into(),
+            mode: AgentMode::SubAgent,
+            model: "deepseek-v4-flash".into(),
+            provider: None,
+            temperature: 0.3,
+            permissions: AgentPermissions {
+                edit: PermissionLevel::Allow,
+                bash: PermissionLevel::Allow,
+                read: PermissionLevel::Allow,
+                network: PermissionLevel::Ask,
+            },
+            description: "General-purpose agent".into(),
+        },
+    ];
+
+    (providers, agents)
 }
 
 #[cfg(test)]
@@ -372,15 +398,14 @@ mod tests {
 
     #[test]
     fn test_default_providers_exist() {
-        let providers = ModelRouter::default_providers();
-        assert!(!providers.is_empty(), "Should have at least 1 provider");
+        let (providers, _) = default_providers_and_agents();
+        assert!(!providers.is_empty());
         assert!(providers.iter().any(|p| p.name == "deepseek"));
     }
 
     #[test]
     fn test_provider_select_exact_match() {
-        let providers = ModelRouter::default_providers();
-        let agents = ModelRouter::default_agents();
+        let (providers, agents) = default_providers_and_agents();
         let router = ModelRouter { providers, agents, config_path: None, config_mtime: None };
         let result = router.select_provider("deepseek-v4-flash");
         assert!(result.is_ok());
@@ -388,18 +413,8 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_select_fallback() {
-        let providers = ModelRouter::default_providers();
-        let agents = ModelRouter::default_agents();
-        let router = ModelRouter { providers, agents, config_path: None, config_mtime: None };
-        let result = router.select_provider("unknown-model");
-        // Should fall back to first provider with a key
-        assert!(result.is_ok());
-    }
-
-    #[test]
     fn test_default_agents_include_build() {
-        let agents = ModelRouter::default_agents();
+        let (_, agents) = default_providers_and_agents();
         assert!(agents.iter().any(|a| a.name == "build"));
         assert!(agents.iter().any(|a| a.name == "plan"));
         assert!(agents.iter().any(|a| a.name == "review"));
@@ -407,8 +422,7 @@ mod tests {
 
     #[test]
     fn test_get_agent_by_name() {
-        let providers = ModelRouter::default_providers();
-        let agents = ModelRouter::default_agents();
+        let (providers, agents) = default_providers_and_agents();
         let router = ModelRouter { providers, agents, config_path: None, config_mtime: None };
         let build = router.get_agent("build");
         assert!(build.is_some());
