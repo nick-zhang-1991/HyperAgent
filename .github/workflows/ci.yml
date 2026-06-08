@@ -17,7 +17,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-13, windows-latest]  # Linux + macOS + Windows
-        toolchain: [stable, 1.78.0]   # MSRV check
+        toolchain: [stable, 1.82.0]   # MSRV check
 
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +37,7 @@ jobs:
       - name: cargo fmt check
         run: cargo fmt --all --check
         # rustfmt not available on Windows MSRV
-        if: matrix.os != 'windows-latest' || matrix.toolchain != '1.78.0'
+        if: matrix.os != 'windows-latest' || matrix.toolchain != '1.82.0'
 
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
