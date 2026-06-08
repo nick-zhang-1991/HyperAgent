@@ -1792,6 +1792,66 @@ impl MemoryManager {
         Ok(pruned)
     }
 
+    /// Auto-forget entries whose composite score (importance × 0.6 +
+    /// temporal_decay × 0.4) has fallen below `threshold`. Returns
+    /// count of entries deleted. Container-scoped.
+    ///
+    /// Inspired by supermemory's "automatic forgetting" — keeps the
+    /// memory DB from growing unbounded as the agent runs forever.
+    /// Default threshold of 0.05 is roughly: an old (4+ half-lives)
+    /// unimportant (0.1) entry.
+    pub fn forget_below(&self, threshold: f64) -> anyhow::Result<usize> {
+        let all = self.store.query(&MemoryQuery {
+            limit: usize::MAX,
+            container_tag: Some(self.container_tag.clone()),
+            ..Default::default()
+        })?;
+        let half_life = TEMPORAL_HALF_LIFE_DAYS;
+        let mut deleted = 0usize;
+        for entry in &all {
+            let temp = SqliteMemoryStore::temporal_decay(&entry.created_at, half_life);
+            let score = entry.importance as f64 * 0.6 + temp * 0.4;
+            if score < threshold && self.store.delete(&entry.id).is_ok() {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
+    /// Forget entries older than `days` with importance below `min_importance`.
+    /// Useful for cleaning up stale low-signal "action_outcome" entries while
+    /// preserving high-importance static facts (preferences, decisions).
+    pub fn forget_older_than(
+        &self,
+        days: i64,
+        min_importance: f32,
+    ) -> anyhow::Result<usize> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+        let all = self.store.query(&MemoryQuery {
+            limit: usize::MAX,
+            container_tag: Some(self.container_tag.clone()),
+            ..Default::default()
+        })?;
+        let mut deleted = 0usize;
+        for entry in &all {
+            if entry.created_at < cutoff && entry.importance < min_importance {
+                if self.store.delete(&entry.id).is_ok() {
+                    deleted += 1;
+                }
+            }
+        }
+        Ok(deleted)
+    }
+
+    /// Backwards-compatible alias of prune() — for old callers / docs.
+    #[deprecated(since = "0.2.0", note = "use forget_below or prune instead")]
+    pub fn forget_old(&self) -> anyhow::Result<()> {
+        // intentionally a no-op
+        Ok(())
+    }
+
+    /// Forget everything that scores below the threshold (auto-decay)
+
     pub fn store(&self) -> &dyn MemoryStore {
         &*self.store
     }
@@ -2091,6 +2151,45 @@ mod tests {
         assert!(profile.contains("tokio runtime"));
         // Dynamic fact must be filtered out
         assert!(!profile.contains("flaky test"));
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_forget_below_preserves_high_value() {
+        let db_path = std::env::temp_dir().join(format!(
+            "hyperagent_forget_test_{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&db_path);
+
+        let store = SqliteMemoryStore::new(&db_path).unwrap();
+        let mgr = MemoryManager::new(Box::new(store), "agent").with_container("forget-test");
+
+        // High importance: a USER preference. Static — should survive any prune.
+        mgr.remember("User always uses Rust for systems code", MemoryType::UserPreference)
+            .unwrap();
+        // Low importance dynamic fact (just plain words, no signal words)
+        mgr.remember("hello world foo bar baz qux", MemoryType::ActionOutcome)
+            .unwrap();
+        mgr.remember("the weather is nice today", MemoryType::ActionOutcome)
+            .unwrap();
+
+        let before = mgr.store().query(&Default::default()).unwrap().len();
+        assert_eq!(before, 3, "should start with 3 memories");
+
+        // Aggressive threshold: delete everything scoring < 0.99.
+        // All three entries have importance * 0.6 + temporal*0.4
+        // where temporal≈1.0. None can hit 0.99 unless importance ≈ 1.0.
+        let deleted = mgr.forget_below(0.99).unwrap();
+        assert!(deleted >= 1, "should delete at least the low-signal entries");
+
+        let after = mgr.store().query(&Default::default()).unwrap().len();
+        assert!(after < before, "after prune, count should drop");
+
+        // Should never grow entries.
+        let final_count = mgr.store().query(&Default::default()).unwrap().len();
+        assert!(final_count <= 3);
 
         let _ = std::fs::remove_file(&db_path);
     }

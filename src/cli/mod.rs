@@ -632,6 +632,23 @@ pub enum MemoryAction {
         /// Memory ID
         id: String,
     },
+    /// Prune low-signal / stale memories
+    Prune {
+        /// Forget entries whose composite score is below this threshold
+        /// (default 0.05). Lower = more aggressive.
+        #[arg(long, default_value = "0.05")]
+        below: f64,
+        /// Alternative: forget entries older than N days with importance
+        /// below this threshold (0.0 .. 1.0)
+        #[arg(long, value_name = "DAYS")]
+        older_than_days: Option<i64>,
+        /// Min importance cutoff (used with --older-than-days)
+        #[arg(long, default_value = "0.3")]
+        min_importance: f32,
+        /// Container tag to scope the prune to
+        #[arg(long, default_value = "_default")]
+        container: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]

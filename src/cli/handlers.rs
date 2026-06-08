@@ -475,6 +475,40 @@ impl Cli {
                 manager.store().delete(id)?;
                 println!("🗑️  Deleted memory: {id}");
             }
+            MemoryAction::Prune {
+                below,
+                older_than_days,
+                min_importance,
+                container,
+            } => {
+                // Re-build the manager with the requested container tag
+                // (the default CLI manager is bound to "_default").
+                let scoped = if container != "_default" {
+                    crate::memory::MemoryManager::new(
+                        // Cheap trick: re-use the same on-disk store via a fresh
+                        // SqliteMemoryStore. The handle above is consumed by
+                        // the original manager; this opens the same path.
+                        Box::new(crate::memory::SqliteMemoryStore::new(std::path::Path::new(
+                            "~/.hyper/memory.db",
+                        ))?),
+                        "hyper",
+                    )
+                    .with_container(container)
+                } else {
+                    manager
+                };
+                let deleted = if let Some(days) = *older_than_days {
+                    scoped.forget_older_than(days, *min_importance)?
+                } else {
+                    scoped.forget_below(*below)?
+                };
+                println!(
+                    "🧹 Pruned {deleted} memories (container={container}, threshold={})",
+                    older_than_days
+                        .map(|d| format!("age>{d}d & imp<{min_importance}"))
+                        .unwrap_or_else(|| format!("score<{below}"))
+                );
+            }
         }
         Ok(())
     }

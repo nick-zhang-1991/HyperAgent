@@ -62,6 +62,20 @@ pub struct QualityStats {
     pub n_queries: usize,
 }
 
+/// Post-prune quality: how well does recall survive forget_below(threshold)?
+/// quality_retention = post_forget.recall_at_5 / pre_forget.recall_at_5
+/// Close to 1.0 = safe to prune. Below 0.5 = pruning is too aggressive.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PostForgetStats {
+    pub threshold: f64,
+    pub deleted: usize,
+    pub remaining: usize,
+    pub recall_at_5: f64,
+    pub recall_at_10: f64,
+    pub mrr: f64,
+    pub quality_retention: f64,
+}
+
 /// Full bench output
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BenchReport {
@@ -72,6 +86,7 @@ pub struct BenchReport {
     pub memory_query_latency: LatencyStats,
     pub hybrid_query_latency: LatencyStats,
     pub quality: QualityStats,
+    pub post_forget: PostForgetStats,
 }
 
 /// Deterministic PRNG (so bench is reproducible)
@@ -205,8 +220,35 @@ pub fn run(config: &BenchConfig) -> Result<BenchReport> {
         hyb_latencies.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
 
+    // ── 7) measure post-forget quality (auto-decay) ──
+    // We aggressively prune everything with score < 0.45 — that should
+    // remove the "noise" memories but keep signal-rich ones. Then re-measure
+    // recall on the same query set. If quality stays high, pruning is safe.
+    let count_before_forget = mgr.store().query(&Default::default()).unwrap().len();
+    let deleted = mgr.forget_below(0.45).unwrap_or(0);
+    let count_after_forget = mgr.store().query(&Default::default()).unwrap().len();
+    let mut mem_recall5_post = 0usize;
+    let mut mem_recall10_post = 0usize;
+    let mut mem_mrr_post = 0.0f64;
+    for q in &queries {
+        let hits = mgr.recall_fused(q, config.top_k).unwrap_or_default();
+        for (rank, sm) in hits.iter().enumerate() {
+            if sm.entry.content.contains(q) {
+                if rank < 5 {
+                    mem_recall5_post += 1;
+                }
+                if rank < 10 {
+                    mem_recall10_post += 1;
+                }
+                mem_mrr_post += 1.0 / (rank as f64 + 1.0);
+                break;
+            }
+        }
+    }
+
     let _ = std::fs::remove_dir_all(&root);
 
+    let n = queries.len();
     Ok(BenchReport {
         memories_inserted: config.memories,
         chunks_inserted: total_chunks,
@@ -215,10 +257,23 @@ pub fn run(config: &BenchConfig) -> Result<BenchReport> {
         memory_query_latency: summarize(&mem_latencies),
         hybrid_query_latency: summarize(&hyb_latencies),
         quality: QualityStats {
-            recall_at_5: mem_recall5 as f64 / queries.len() as f64,
-            recall_at_10: mem_recall10 as f64 / queries.len() as f64,
-            mrr: mem_mrr_sum / queries.len() as f64,
-            n_queries: queries.len(),
+            recall_at_5: mem_recall5 as f64 / n as f64,
+            recall_at_10: mem_recall10 as f64 / n as f64,
+            mrr: mem_mrr_sum / n as f64,
+            n_queries: n,
+        },
+        post_forget: PostForgetStats {
+            threshold: 0.45,
+            deleted,
+            remaining: count_after_forget,
+            recall_at_5: mem_recall5_post as f64 / n as f64,
+            recall_at_10: mem_recall10_post as f64 / n as f64,
+            mrr: mem_mrr_post / n as f64,
+            quality_retention: if mem_recall5 > 0 {
+                mem_recall5_post as f64 / mem_recall5 as f64
+            } else {
+                1.0
+            },
         },
     })
 }
@@ -287,6 +342,18 @@ pub fn print_report(report: &BenchReport) {
         report.quality.recall_at_5 * 100.0,
         report.quality.recall_at_10 * 100.0,
         report.quality.mrr,
+    );
+    println!("│                                                      │");
+    println!(
+        "│  After forget_below({}): {} deleted, {} remaining       │",
+        report.post_forget.threshold,
+        report.post_forget.deleted,
+        report.post_forget.remaining,
+    );
+    println!(
+        "│     recall@5  = {:>5.1}%    quality retention = {:>5.1}%        │",
+        report.post_forget.recall_at_5 * 100.0,
+        report.post_forget.quality_retention * 100.0,
     );
     println!("│                                                      │");
     println!("└──────────────────────────────────────────────────────┘");
