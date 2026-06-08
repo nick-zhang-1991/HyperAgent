@@ -653,6 +653,52 @@ impl SqliteMemoryStore {
     }
 
     // ═══════════════════════════════════════════
+    // Hash Embedding (zero-dependency semantic vectors)
+    // ═══════════════════════════════════════════
+
+    /// Generate a fixed-size embedding vector using character n-gram
+    /// feature hashing. No external model needed — pure Rust math.
+    ///
+    /// Uses 2-gram and 3-gram character sequences hashed into a 256-dim
+    /// space with TF weighting. The hash trick ensures consistent vector
+    /// sizes regardless of content length.
+    const EMBED_DIM: usize = 256;
+
+    pub fn compute_embedding(content: &str) -> Vec<f32> {
+        let mut vec = vec![0.0f32; Self::EMBED_DIM];
+        let lower = content.to_lowercase();
+
+        // 2-gram and 3-gram hashing
+        for n in 2..=3 {
+            if lower.len() < n {
+                continue;
+            }
+            for i in 0..=lower.len() - n {
+                let gram = &lower[i..i + n];
+                let hash = Self::hash_str(gram);
+                let idx = (hash as usize) % Self::EMBED_DIM;
+                // TF weighting: log-scaled to avoid over-dominance
+                vec[idx] += 1.0 / (n as f32 - 1.0);
+            }
+        }
+
+        // L2 normalize
+        let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
+        for v in &mut vec {
+            *v /= norm;
+        }
+        vec
+    }
+
+    /// Simple string hash (djb2 variant)
+    fn hash_str(s: &str) -> u64 {
+        let mut hash: u64 = 5381;
+        for b in s.bytes() {
+            hash = hash.wrapping_mul(33).wrapping_add(b as u64);
+        }
+        hash
+    }
+    // ═══════════════════════════════════════════
     // Importance Calculation (enhanced)
     // ═══════════════════════════════════════════
 
@@ -1013,8 +1059,12 @@ impl MemoryStore for SqliteMemoryStore {
         let entities_json = serde_json::to_string(&entry.entities)?;
 
         // Convert embedding to bytes for SQLite storage
-        let embedding_bytes: Option<Vec<u8>> = entry
-            .embedding
+        // Auto-compute embedding if not provided
+        let mut embed_vec = entry.embedding.clone();
+        if embed_vec.is_none() {
+            embed_vec = Some(Self::compute_embedding(&entry.content));
+        }
+        let embedding_bytes: Option<Vec<u8>> = embed_vec
             .as_ref()
             .map(|v| v.iter().flat_map(|f| f.to_le_bytes()).collect());
 
@@ -1324,7 +1374,14 @@ impl MemoryStore for SqliteMemoryStore {
             .map(|m| (m.id.clone(), m.entities.iter().cloned().collect()))
             .collect();
 
-        let query_embedding_ref = query.query_embedding.as_ref();
+        let query_embedding = if query.query_embedding.is_some() {
+            query.query_embedding.clone()
+        } else if !query.text.is_empty() {
+            Some(Self::compute_embedding(&query.text))
+        } else {
+            None
+        };
+        let query_embedding_ref = query_embedding.as_ref();
 
         let mut scored: Vec<ScoredMemory> = candidates
             .into_iter()
