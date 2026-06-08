@@ -4,12 +4,11 @@
 
 **超快 CLI 编码智能体** — 并行多智能体流水线，具备全栈代码理解、自动 LLM 故障转移与生产级安全防护。
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)](https://github.com/nick-zhang-1991/HyperAgent/actions)
-[![Rust](https://img.shields.io/badge/rust-1.78+-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
+[![CI](https://github.com/nick-zhang-1991/HyperAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/nick-zhang-1991/HyperAgent/actions)
+[![Release](https://img.shields.io/badge/release-v0.2.0-blue?style=flat-square)](https://github.com/nick-zhang-1991/HyperAgent/releases/tag/v0.2.0)
+[![Rust](https://img.shields.io/badge/rust-1.82+-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-| [![Tests](https://img.shields.io/badge/tests-130-blue?style=flat-square)](#test-suite)
-[![CLI](https://img.shields.io/badge/CLI-45%2B%20commands-9b59b6?style=flat-square)](#command-reference)
-[![Desktop](https://img.shields.io/badge/Desktop-Tauri_2-40bcd8?style=flat-square&logo=tauri)](https://github.com/nick-zhang-1991/HyperAgent/releases/latest)
+[![Stars](https://img.shields.io/github/stars/nick-zhang-1991/HyperAgent?style=flat-square)](https://github.com/nick-zhang-1991/HyperAgent/stargazers)
 
 ```bash
 # One-shot task — 一行命令完成编码任务
