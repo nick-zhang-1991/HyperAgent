@@ -2435,6 +2435,20 @@ impl Orchestrator {
                     }
                 }
             }
+            // Inject user feedback and corrections
+            if let Ok(corrections) = mem.global_search("CORRECTION FEEDBACK", 5) {
+                let recent: Vec<_> = corrections.into_iter()
+                    .filter(|c| c.seconds_since_creation() < 86400 * 30) // last 30 days
+                    .take(3)
+                    .collect();
+                if !recent.is_empty() {
+                    ctx.push_str("\n## User Feedback (do NOT ignore)\n");
+                    ctx.push_str("The user has previously corrected the agent. Follow these rules:\n");
+                    for c in &recent {
+                        ctx.push_str(&format!("- {}\n", c.entry.content));
+                    }
+                }
+            }
         }
         ctx
     }

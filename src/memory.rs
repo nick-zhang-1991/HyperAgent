@@ -225,6 +225,8 @@ pub enum MemoryType {
     BugFix,
     /// General knowledge learned during session
     Learned,
+    /// User correction / feedback for agent self-improvement
+    Correction,
     /// Ephemeral — only relevant to current session
     Ephemeral,
 }

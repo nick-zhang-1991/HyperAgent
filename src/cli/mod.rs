@@ -690,6 +690,27 @@ pub enum McpAction {
 
 #[derive(Subcommand, Debug)]
 #[derive(Subcommand, Debug, Clone)]
+/// Feedback actions for agent self-improvement
+#[derive(Subcommand, Debug, Clone)]
+pub enum FeedbackAction {
+    /// Positive feedback — the agent did something right
+    Good {
+        /// What the agent did well
+        reason: Vec<String>,
+    },
+    /// Negative feedback — correct the agent's mistake
+    Bad {
+        /// What went wrong and how to fix it
+        reason: Vec<String>,
+    },
+    /// List past feedback (learning history)
+    List {
+        #[arg(long, default_value = "10")]
+        limit: usize,
+    },
+}
+
+/// Global memory actions
 pub enum GlobalAction {
     /// List all global memories (cross-project knowledge)
     List {
@@ -825,6 +846,10 @@ impl Cli {
 
             Some(Commands::Doctor) => self.run_doctor().await,
 
+            Some(Commands::Feedback { action }) => {
+                self.handle_feedback(action).await?;
+                Ok(())
+            }
             Some(Commands::Eval { json }) => {
                 let report = crate::eval::run_all(&self.project_dir(), *json)?;
                 if *json {
