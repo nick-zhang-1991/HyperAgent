@@ -520,11 +520,30 @@ impl SqliteMemoryStore {
     /// - URL origins (e.g. `github.com`, `api.example.com`)
     /// - Quoted terms as single entities
     pub fn extract_entities(content: &str) -> Vec<String> {
+        use std::sync::OnceLock;
+
+        // ── compile all regexes once ──
+        static RE1: OnceLock<regex::Regex> = OnceLock::new();
+        static RE2: OnceLock<regex::Regex> = OnceLock::new();
+        static RE3: OnceLock<regex::Regex> = OnceLock::new();
+        static RE4: OnceLock<regex::Regex> = OnceLock::new();
+        static RE5: OnceLock<regex::Regex> = OnceLock::new();
+        static RE6: OnceLock<regex::Regex> = OnceLock::new();
+        static RE7: OnceLock<regex::Regex> = OnceLock::new();
+        static RE8: OnceLock<regex::Regex> = OnceLock::new();
+        let re1 = RE1.get_or_init(|| regex::Regex::new(r"[A-Z][a-z]+[A-Z][a-zA-Z0-9]*").unwrap());
+        let re2 = RE2.get_or_init(|| regex::Regex::new(r"\b[A-Z]{2,}(?:[A-Z][a-z]+)?\b").unwrap());
+        let re3 = RE3.get_or_init(|| regex::Regex::new(r"\b[a-z_][a-z0-9_]*::[a-zA-Z_][a-zA-Z0-9_:]*").unwrap());
+        let re4 = RE4.get_or_init(|| regex::Regex::new(r"\b[a-z]+_[a-z][a-z0-9_]*(?:_[a-z][a-z0-9_]*)*\b").unwrap());
+        let re5 = RE5.get_or_init(|| regex::Regex::new(r"\b[a-z]+-[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*\b").unwrap());
+        let re6 = RE6.get_or_init(|| regex::Regex::new(r"(?:/[a-zA-Z0-9_./-]+|\b[a-zA-Z0-9_]+\.(?:rs|ts|js|py|toml|json|yaml|md|css))").unwrap());
+        let re7 = RE7.get_or_init(|| regex::Regex::new(r#"[""''']([A-Za-z][A-Za-z0-9]+(?:\s+[A-Za-z][A-Za-z0-9]+)+)[""''']"#).unwrap());
+        let re8 = RE8.get_or_init(|| regex::Regex::new(r"https?://([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)+)").unwrap());
+
         let mut entities = Vec::new();
         let mut seen = HashSet::new();
 
-        // Pattern 1: PascalCase / CamelCase (e.g. HyperAgent, SqliteMemoryStore)
-        let re1 = regex::Regex::new(r"[A-Z][a-z]+[A-Z][a-zA-Z0-9]*").unwrap();
+        // Pattern 1: PascalCase (e.g., HyperAgent, SendSMS)
         for cap in re1.find_iter(content) {
             let e = cap.as_str().to_string();
             if seen.insert(e.clone()) {
@@ -532,8 +551,7 @@ impl SqliteMemoryStore {
             }
         }
 
-        // Pattern 2: UPPER_CASE acronyms (2+ chars, e.g. SQL, API, LLM, HTML)
-        let re2 = regex::Regex::new(r"\b[A-Z]{2,}(?:[A-Z][a-z]+)?\b").unwrap();
+        // Pattern 2: ALL_CAPS (e.g., API, SQL, JSON)
         for cap in re2.find_iter(content) {
             let e = cap.as_str().to_string();
             if seen.insert(e.clone()) {
@@ -541,8 +559,7 @@ impl SqliteMemoryStore {
             }
         }
 
-        // Pattern 3: Qualified Rust/TS names (e.g. crate::memory::MemoryManager)
-        let re3 = regex::Regex::new(r"\b[a-z_][a-z0-9_]*::[a-zA-Z_][a-zA-Z0-9_:]*").unwrap();
+        // Pattern 3: Rust path separator (e.g., crate::module::Type)
         for cap in re3.find_iter(content) {
             let e = cap.as_str().to_string();
             if seen.insert(e.clone()) {
@@ -550,8 +567,7 @@ impl SqliteMemoryStore {
             }
         }
 
-        // Pattern 4: snake_case identifiers (2+ words)
-        let re4 = regex::Regex::new(r"\b[a-z]+_[a-z][a-z0-9_]*(?:_[a-z][a-z0-9_]*)*\b").unwrap();
+        // Pattern 4: snake_case identifiers (e.g., user_name, config_file)
         for cap in re4.find_iter(content) {
             let e = cap.as_str().to_string();
             if seen.insert(e.clone()) {
@@ -559,8 +575,7 @@ impl SqliteMemoryStore {
             }
         }
 
-        // Pattern 5: kebab-case identifiers
-        let re5 = regex::Regex::new(r"\b[a-z]+-[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*\b").unwrap();
+        // Pattern 5: kebab-case (e.g., background-color, --flag)
         for cap in re5.find_iter(content) {
             let e = cap.as_str().to_string();
             if seen.insert(e.clone()) {
@@ -569,7 +584,6 @@ impl SqliteMemoryStore {
         }
 
         // Pattern 6: File paths (.ext or leading /)
-        let re6 = regex::Regex::new(r"(?:/[a-zA-Z0-9_./-]+|\b[a-zA-Z0-9_]+\.(?:rs|ts|js|py|toml|json|yaml|md|css))").unwrap();
         for cap in re6.find_iter(content) {
             let e = cap.as_str().to_string();
             if seen.insert(e.clone()) {
@@ -578,7 +592,6 @@ impl SqliteMemoryStore {
         }
 
         // Pattern 7: Quoted multi-word terms as single entity
-        let re7 = regex::Regex::new(r#"[""'']([A-Za-z][A-Za-z0-9]+(?:\s+[A-Za-z][A-Za-z0-9]+)+)[""'']"#).unwrap();
         for cap in re7.captures_iter(content) {
             if let Some(m) = cap.get(1) {
                 let e = m.as_str().to_string();
@@ -589,13 +602,10 @@ impl SqliteMemoryStore {
         }
 
         // Pattern 8: URL origins
-        let re8 = regex::Regex::new(r"https?://([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)+)").unwrap();
-        for cap in re8.captures_iter(content) {
-            if let Some(m) = cap.get(1) {
-                let e = m.as_str().to_string();
-                if seen.insert(e.clone()) {
-                    entities.push(e);
-                }
+        for cap in re8.find_iter(content) {
+            let e = cap.as_str().to_string();
+            if seen.insert(e.clone()) {
+                entities.push(e);
             }
         }
 
