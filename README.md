@@ -301,6 +301,46 @@ Dimension / 维度 | HyperAgent | Hermes Agent | Aider | Claude Code | Codex CLI
 
 ## Installation / 安装
 
+### One-liner / 一行安装
+
+```bash
+# brew (macOS/Linux)
+brew install nick-zhang-1991/hyperagent/hyperagent
+
+# cargo-binstall
+cargo binstall hyperagent
+
+# cargo (from source)
+cargo install hyperagent
+
+# bash script (any system with Rust)
+curl -fsSL https://raw.githubusercontent.com/nick-zhang-1991/HyperAgent/main/scripts/install.sh | bash
+```
+
+### Quick Start / 快速开始
+
+```bash
+# Chinese (中文)
+export HYPER_LANG=zh-CN
+
+# Set API key
+export HYPER_LLM_API_KEY="sk-..."
+export HYPER_LLM_BASE_URL="https://api.openai.com/v1"
+
+# Initialize project
+cd your-project
+hyper init
+
+# Run a task
+hyper run "add rate limiting to API gateway"
+```
+
+### Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+```
+
 ### Platform Support / 支持平台
 
 | Platform / 平台 | Status / 状态 |

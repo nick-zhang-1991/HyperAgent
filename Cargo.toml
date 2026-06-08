@@ -90,6 +90,11 @@ panic = "abort"
 [profile.dev]
 incremental = true
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/hyperagent-{ target }{ archive-suffix }"
+bin-dir = "hyperagent{ binary-ext }"
+pkg-fmt = "tgz"
+
 [profile.dev.package."*"]
 debug = 1
 
