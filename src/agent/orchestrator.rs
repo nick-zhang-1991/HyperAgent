@@ -852,11 +852,14 @@ impl Orchestrator {
 
         let system_prompt = if is_general {
             format!(
-                "You are HyperAgent's General mode — a knowledgeable, versatile assistant.\n\
-                Help with coding, writing, analysis, translation, brainstorming, research, and more.\n\
-                Be concise but thorough. Use markdown formatting when helpful.\n\
-                Answer in the same language as the question.\n\
-                If the user attaches an image, analyze it carefully and reference what you see.\n\
+                "You are HyperAgent — a versatile AI agent capable of ANY task.\n\
+                You can help with: coding, research, writing, data analysis, translation,\n\
+                brainstorming, web search, API testing, file operations, and more.\n\
+                TOOLS available: web_search, read_file, run_bash, write_file, http_request,\n\
+                memory_search, memory_add, browser, python_repl.\n\
+                Use tools proactively. For research: web_search first, then synthesize.\n\
+                For writing: compose and write_file to save. For APIs: http_request.\n\
+                Answer in the same language as the user. Format code with ```.\n\
                 Past context:\n{}\n\
                 Rules:\n\
                 - Be concise but complete\n\
@@ -1908,10 +1911,13 @@ impl Orchestrator {
         let system_prompt = format!(
             "You are HyperAgent — a versatile AI assistant capable of handling any task.\n\n\
             You have access to built-in tools:\n\
-            - **web_search(query)**: Search the web for current information (news, docs, facts, research)\n\
-            - **read_file(path)**: Read a file from the project directory (relative path)\n\
-            - **run_bash(command)**: Execute a bash command in the project root\n\
-            - **memory_search(query, limit?)**: Search persistent memory for relevant information\\n\\\n            - **memory_add(content, memory_type?)**: Save a fact to persistent memory\\n\
+            "- **web_search(query)**: Search the web for current information\n\
+            - **read_file(path)**: Read a file from the project directory\n\
+            - **write_file(path, content)**: Save content to a file (reports, data, code)\n\
+            - **run_bash(command)**: Execute a bash command\n\
+            - **http_request(url)**: Call HTTP APIs, check status, fetch data\n\
+            - **memory_search(query)**: Search persistent memory\n\
+            - **memory_add(content)**: Save a fact to memory
             General guidelines:\n\
             - Use tools proactively when you need more information\n\
             - Be concise but thorough in your answers\n\
@@ -2250,10 +2256,13 @@ impl Orchestrator {
             let system_prompt = format!(
                 "You are HyperAgent — a versatile AI assistant completing a multi-step task.\n\n\
                 You have access to tools:\n\
-                - **web_search(query)**: Search the web for current information\n\
+                "- **web_search(query)**: Search the web for current information\n\
                 - **read_file(path)**: Read a file from the project directory\n\
-                - **run_bash(command)**: Execute bash commands\n\
-                - **python_repl(code)**: Execute Python code (state persists)\n\
+                - **write_file(path, content)**: Save content to a file (reports, data, code)\n\
+                - **run_bash(command)**: Execute a bash command\n\
+                - **http_request(url)**: Call HTTP APIs, check status, fetch data\n\
+                - **memory_search(query)**: Search persistent memory\n\
+                - **memory_add(content)**: Save a fact to memory
                 - **read_document(path)**: Read PDF/Word/Excel documents\n\
                 - **browser(command, url)**: Control headless Chrome browser\n\
                 - **platform_setup(action)**: Check/setup tools\n\n\

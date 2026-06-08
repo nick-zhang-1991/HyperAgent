@@ -225,7 +225,47 @@ pub fn builtin_tool_definitions(mode: &str, with_memory: bool) -> Vec<ToolDefini
                 }),
             },
         },
+        ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "task".into(),
+                description: "Delegate a sub-task to a sub-agent. The sub-agent has access to all tools except task (to prevent infinite recursion). It returns the sub-agent response as text. Use for: research, investigation, analysis, or breaking down complex work into smaller sub-tasks.".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "Detailed prompt for the sub-agent describing what to do"
+                        }
+                    },
+                    "required": ["prompt"]
+                }),
+            },
+        },
     ];
+    // Add desktop automation tool (cross-platform)
+    tools.push(ToolDefinition {
+        tool_type: "function".into(),
+        function: ToolFunction {
+            name: "desktop".into(),
+            description: "Control the desktop via native OS automation: screenshot (capture screen), click(x,y) (mouse click at coordinates), type(text) (type text at cursor), key(name) (press key: return/escape/tab/space/up/down/left/right). No Chrome or Python required.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["screenshot", "click", "type", "key"],
+                        "description": "Action: screenshot, click (needs x,y), type (needs text), key (needs name)"
+                    },
+                    "x": { "type": "integer", "description": "X coordinate for click" },
+                    "y": { "type": "integer", "description": "Y coordinate for click" },
+                    "text": { "type": "string", "description": "Text to type" },
+                    "name": { "type": "string", "description": "Key name: return, escape, tab, space, up, down, left, right" }
+                },
+                "required": ["action"]
+            }),
+        },
+    });
 
     if with_memory {
         tools.push(ToolDefinition {
@@ -255,6 +295,39 @@ pub fn builtin_tool_definitions(mode: &str, with_memory: bool) -> Vec<ToolDefini
             "analyze_image", "platform_setup",
         ].into();
         tools.retain(|t| safe_tools.contains(t.function.name.as_str()));
+    }
+
+    // General mode: add write_file + http_request for versatility
+    if mode == "general" {
+        tools.push(ToolDefinition {
+            function: ToolFunction {
+                name: "write_file".into(),
+                description: "Write content to a file in the project directory. Creates parent directories automatically. Use for saving reports, configs, scripts, or any generated content.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative path within project root"},
+                        "content": {"type": "string", "description": "Content to write"},
+                    },
+                    "required": ["path", "content"]
+                }),
+            },
+        });
+        tools.push(ToolDefinition {
+            function: ToolFunction {
+                name: "http_request".into(),
+                description: "Send an HTTP request and get the response. Use to call APIs, check website status, download data, or test endpoints. Supports GET and POST.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Full URL to request"},
+                        "method": {"type": "string", "default": "GET", "description": "HTTP method: GET or POST"},
+                        "body": {"type": "string", "description": "Request body (for POST)"},
+                    },
+                    "required": ["url"]
+                }),
+            },
+        });
     }
 
     tools
