@@ -3,164 +3,55 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'  # Push events matching v1.0, v2.1.3, etc.
+      - 'v*'
 
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+permissions:
+  contents: write
 
 jobs:
-  build:
-    name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            artifact_name: hyperagent-linux-x86_64
-            ext: tar.gz
-            pkg_cmd: tar czf
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            artifact_name: hyperagent-linux-aarch64
-            ext: tar.gz
-            pkg_cmd: tar czf
-          - target: x86_64-apple-darwin
-            os: macos-13
-            artifact_name: hyperagent-macos-x86_64
-            ext: tar.gz
-            pkg_cmd: tar czf
-          - target: aarch64-apple-darwin
-            os: macos-14
-            artifact_name: hyperagent-macos-aarch64
-            ext: tar.gz
-            pkg_cmd: tar czf
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            artifact_name: hyperagent-windows-x86_64
-            ext: zip
-            pkg_cmd: 7z a
-
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust ${{ matrix.target }}
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cross-compilation deps (Linux ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Cache dependencies
+      - name: Cache
         uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
 
-      - name: Build release
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Strip binary (Unix)
-        if: matrix.os != 'windows-latest'
+      - name: Build all targets
         run: |
-          if [[ "${{ matrix.target }}" == *-apple-* ]]; then
-            strip target/${{ matrix.target }}/release/hyperagent
-          elif [[ "${{ matrix.target }}" == x86_64-* ]]; then
-            strip target/${{ matrix.target }}/release/hyperagent
-          fi
+          rustup target add x86_64-unknown-linux-gnu
+          cargo build --release --target x86_64-unknown-linux-gnu
+          mv target/x86_64-unknown-linux-gnu/release/hyperagent hyperagent-linux
 
-      - name: Package binary (Unix)
-        if: matrix.os != 'windows-latest'
-        shell: bash
-        run: |
-          cd target/${{ matrix.target }}/release
-          ${{ matrix.pkg_cmd }} ${{ matrix.artifact_name }}.${{ matrix.ext }} hyperagent
-          echo "package_name=${{ matrix.artifact_name }}.${{ matrix.ext }}" >> $GITHUB_ENV
-
-      - name: Package binary (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: powershell
-        run: |
-          cd target/${{ matrix.target }}/release
-          7z a ${{ matrix.artifact_name }}.${{ matrix.ext }} hyperagent.exe
-          echo "package_name=${{ matrix.artifact_name }}.${{ matrix.ext }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}.${{ matrix.ext }}
-
-  release:
-    name: Create Release
-    needs: [build, build-desktop]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Generate checksums
-        run: |
-          cd artifacts
-          for f in */hyperagent-*.tar.gz */hyperagent-*.zip; do
-            sha256sum "$f" >> checksums.txt
-          done
-
-      - name: Create GitHub Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: HyperAgent ${{ github.ref_name }}
+          name: "HyperAgent ${{ github.ref_name }}"
           body: |
             ## HyperAgent ${{ github.ref_name }}
 
-            ### CLI Installation
-
+            ### Installation
             ```bash
-            # macOS (Apple Silicon)
-            tar xzf hyperagent-macos-aarch64.tar.gz
-            sudo mv hyperagent /usr/local/bin/hyper
-
-            # macOS (Intel)
-            tar xzf hyperagent-macos-x86_64.tar.gz
-            sudo mv hyperagent /usr/local/bin/hyper
-
-            # Linux (x86_64)
-            tar xzf hyperagent-linux-x86_64.tar.gz
-            sudo mv hyperagent /usr/local/bin/hyper
-
-            # Linux (ARM64)
-            tar xzf hyperagent-linux-aarch64.tar.gz
-            sudo mv hyperagent /usr/local/bin/hyper
-
-            # Windows (x86_64)
-            # Extract hyperagent-windows-x86_64.zip and add hyperagent.exe to PATH
+            brew install nick-zhang-1991/hyperagent/hyperagent
+            # or
+            cargo binstall hyperagent
+            # or
+            cargo install hyperagent
             ```
 
-            ### Desktop App (Tauri GUI)
+            ### CLI Commands
+            ```
+            hyper run   · init · serve · analyze · swarm · ci-fix
+            hyper doctor · review · memory · session · feedback
+            ```
 
-            | Platform | Download |
-            |---|---|
-            | Linux (x86_64) | hyperagent-desktop-linux-x86_64.AppImage |
-            | macOS (Intel) | hyperagent-desktop-macos-x86_64.dmg |
-            | macOS (Apple Silicon) | hyperagent-desktop-macos-aarch64.dmg |
-            | Windows (x86_64) | hyperagent-desktop-windows-x86_64.msi |
-
-            ### Checksums
-            See checksums.txt in the release assets for SHA256 verification.
+            ### What's New
+            See [CHANGELOG.md](CHANGELOG.md) for full details.
           files: |
-            artifacts/*/hyperagent-*.tar.gz
-            artifacts/*/hyperagent-*.zip
-            artifacts/*/hyperagent-desktop-*.AppImage
-            artifacts/*/hyperagent-desktop-*.dmg
-            artifacts/*/hyperagent-desktop-*.msi
-            artifacts/checksums.txt
+            hyperagent-linux
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
