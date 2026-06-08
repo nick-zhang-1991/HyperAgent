@@ -104,7 +104,7 @@ pub enum Commands {
         model: Option<String>,
     },
 
-    /// Initialize/build code index for a project
+    /// Initialize: setup, checks, and build code index
     Init {
         /// Project root directory
         #[arg(long, short, default_value = ".")]
@@ -113,6 +113,10 @@ pub enum Commands {
         /// Force rebuild (alias: --reindex)
         #[arg(long, alias = "reindex")]
         force: bool,
+
+        /// Skip interactive checks (for CI)
+        #[arg(long)]
+        yes: bool,
 
         /// Generate project from template (rust-cli, python-fastapi, react-vite-ts, etc.)
         #[arg(long, short)]
@@ -768,7 +772,7 @@ impl Cli {
                 self.review_diff(against, dir, model.as_deref()).await
             }
 
-            Some(Commands::Init { dir, force, template, list_templates }) => {
+            Some(Commands::Init { dir, force, template, list_templates, yes }) => {
                 if *list_templates {
                     crate::scaffold_templates::list_templates();
                     Ok(())
@@ -782,6 +786,9 @@ impl Cli {
                         Ok(())
                     }
                 } else {
+                    if !*yes {
+                        Self::run_onboarding_checks(dir).await;
+                    }
                     self.build_index(dir, *force).await
                 }
             }
@@ -1630,3 +1637,77 @@ network = "Deny"
     println!("     hyper run \"explain this\" --mode ask");
     println!();
 }
+
+    /// Run onboarding system checks and print summary
+    async fn run_onboarding_checks(dir: &Path) {
+        use std::process::Command;
+
+        println!("{}", "━".repeat(50));
+        println!("  🚀  HyperAgent v{} — System Check", env!("CARGO_PKG_VERSION"));
+        println!("{}", "━".repeat(50));
+        println!();
+
+        // Check Rust toolchain
+        let rust_ok = Command::new("rustc").arg("--version").output().ok()
+            .map_or(false, |o| o.status.success());
+        println!("  {} Rust toolchain: {}",
+            if rust_ok { "✅" } else { "⚠️" },
+            if rust_ok {
+                String::from_utf8_lossy(&Command::new("rustc").arg("--version").output().unwrap().stdout)
+                    .trim().to_string()
+            } else { "Not found".into() }
+        );
+
+        // Check git
+        let git_ok = Command::new("git").arg("--version").output().ok()
+            .map_or(false, |o| o.status.success());
+        println!("  {} Git: {}",
+            if git_ok { "✅" } else { "⚠️" },
+            if git_ok {
+                String::from_utf8_lossy(&Command::new("git").arg("--version").output().unwrap().stdout)
+                    .trim().to_string()
+            } else { "Not found — required for version control".into() }
+        );
+
+        // Check Docker
+        let docker_ok = Command::new("docker").arg("--version").output().ok()
+            .map_or(false, |o| o.status.success());
+        println!("  {} Docker: {}",
+            if docker_ok { "✅" } else { "ℹ️ " },
+            if docker_ok { "Available for sandboxed execution".into() }
+            else { "Not found — sandbox mode disabled (optional)".into() }
+        );
+
+        // Check config
+        let config_ok = crate::config::Config::load().is_ok();
+        let provider_configured = crate::config::Config::load().ok()
+            .map(|c| !c.llm.providers.is_empty())
+            .unwrap_or(false);
+        println!("  {} Configuration: {}",
+            if provider_configured { "✅" } else { "⚠️" },
+            if provider_configured { "LLM provider configured".into() }
+            else { "No LLM provider configured — run `hyper config` to set up".into() }
+        );
+
+        // Check current directory is a project
+        let is_project = dir.join("Cargo.toml").exists() || dir.join("package.json").exists()
+            || dir.join("pyproject.toml").exists() || dir.join("go.mod").exists();
+        println!("  {} Project root: {} ({})",
+            if is_project { "✅" } else { "ℹ️ " },
+            dir.display(),
+            if is_project { "Project detected" } else { "No project detected — index will be empty" }
+        );
+
+        println!();
+        println!("  📖  Quick start:");
+        println!("     hyper run "explain this project"   — Ask about code");
+        println!("     hyper run "add a test for X"       — Generate code");
+        println!("     hyper run --mode ask "how does X"  — Ask-only mode");
+        println!("     hyper doctor                       — Detailed diagnostics");
+        println!("     hyper session save                 — Save session for later");
+        println!();
+        println!("  📚  Docs: https://hyperagent.dev");
+        println!("{}", "━".repeat(50));
+        println!();
+    }
+
