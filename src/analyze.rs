@@ -4,6 +4,7 @@
 //! hyper analyze [--fix] [--json]
 //! ```
 
+use crate::i18n;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
@@ -33,13 +34,13 @@ pub struct AnalysisIssue {
 pub fn run(root: &Path, fix: bool) -> Result<Vec<AnalysisIssue>> {
     let mut issues = Vec::new();
 
-    println!("🔍 HyperAgent Code Analysis\n");
-    println!("   Project: {}", root.display());
+    println!("{}\n", i18n::t("analyze_title"));
+    println!("   {}: {}", i18n::t("analyze_project"), root.display());
     println!();
 
     // 1. Cargo check (compilation errors)
     if root.join("Cargo.toml").exists() {
-        println!("   📦 Checking compilation...");
+        println!("   {}", i18n::t("analyze_checking"));
         if let Ok(out) = Command::new("cargo")
             .args(["check", "--message-format=short"])
             .current_dir(root)
@@ -56,7 +57,7 @@ pub fn run(root: &Path, fix: bool) -> Result<Vec<AnalysisIssue>> {
     }
 
     // 2. Cargo audit (security vulnerabilities)
-    println!("   🛡️  Checking security...");
+    println!("   {}", i18n::t("analyze_security"));
     if let Ok(out) = Command::new("cargo")
         .args(["audit", "--json"])
         .current_dir(root)
@@ -69,13 +70,13 @@ pub fn run(root: &Path, fix: bool) -> Result<Vec<AnalysisIssue>> {
     }
 
     // 3. Dead code detection (Tree-sitter)
-    println!("   🗑️  Detecting dead code...");
+    println!("   {}", i18n::t("analyze_dead_code"));
     let dead = detect_dead_code(root);
     issues.extend(dead);
     println!("      {} dead items found", dead.len());
 
     // 4. Complexity analysis
-    println!("   📊 Measuring complexity...");
+    println!("   {}", i18n::t("analyze_complexity"));
     let complex = detect_complexity(root);
     issues.extend(complex);
     println!("      {} complex functions found", complex.len());
@@ -88,9 +89,9 @@ pub fn run(root: &Path, fix: bool) -> Result<Vec<AnalysisIssue>> {
 
     // Auto-fix if requested
     if fix && !issues.is_empty() {
-        println!("\n   🔧 Auto-fixing P0 issues...");
+        println!("\n   {}", i18n::t("analyze_fixing"));
         let fixed = auto_fix(&issues, root)?;
-        println!("   ✅ Fixed {} issues", fixed);
+        println!("   {}", i18n::t_with("analyze_fixed", &[("count", &fixed.to_string())]));
     }
 
     Ok(issues)
