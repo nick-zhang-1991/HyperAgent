@@ -370,15 +370,15 @@ impl Orchestrator {
         // Build the augmented prompt (project context + memory + mode + MCP tools)
         let augmented_prompt = self.build_augmented_prompt(prompt, &mem_context).await;
 
-        println!("\n🚀 HyperAgent — Processing: {}", prompt);
+        println!("\n🚀 {} {}", i18n::t("welcome_banner"), prompt);
         if !mem_context.is_empty() {
-            println!("   🧠 Memory context: {} past learnings loaded",
+            println!("   🧠 {}", i18n::t_with("cli_memories_saved", &[&total_memories.to_string()]));
                 mem_context.matches('\n').count());
         }
-        println!("   🎭 Mode: {}\n", self.mode);
+        println!("   🎭 {}", i18n::t_with("cli_mode", &[&self.mode]));
 
         // Phase 1: Get relevant files from PageRank index
-        println!("🔍 Scanning codebase with PageRank...");
+        println!("🔍 {}", i18n::t("orchestrator_scanning"));
         let mut relevant_files = self.index.get_relevant_files(prompt, 15, 4000);
         println!("   Found {} relevant files\n", relevant_files.len());
 
@@ -394,7 +394,7 @@ impl Orchestrator {
 
         // Phase 2: Planning
         self.fire_hook(HookEvent::PrePlan, prompt).await;
-        println!("📋 Planning...");
+        println!("📋 {}", i18n::t("orchestrator_planning"));
 
         // ASK mode: skip plan/code/review pipeline, do direct Q&A
         if self.mode == "ask" {
@@ -410,8 +410,8 @@ impl Orchestrator {
                 return self.run_general_mode(prompt, &relevant_files, start, total_memories).await;
             }
         };
-        println!("   Plan: {}", plan.summary);
-        println!("   Intent: {:?}", plan.intent);
+        println!("   {} {}", i18n::t("orchestrator_plan_summary"), plan.summary);
+        println!("   {} {:?}", i18n::t("orchestrator_intent"), plan.intent);
         if let Some(ref steps) = plan.steps {
             for (i, step) in steps.iter().enumerate() {
                 println!("   {}. {}", i + 1, step);
@@ -422,14 +422,14 @@ impl Orchestrator {
         // Route based on LLM-classified intent
         match plan.intent {
             Intent::Ask => {
-                println!("   💬 Answering question directly...");
+                println!("   💬 {}", i18n::t("orchestrator_answering"));
                 return self.run_ask_mode(prompt, &relevant_files, start, total_memories).await;
             }
             Intent::General => {
                 // If plan agent naturally decomposed into sub-steps, execute them in sequence
                 if let Some(ref steps) = plan.steps {
                     if steps.len() > 1 {
-                        println!("   🔄 Multi-step task: {} steps", steps.len());
+                        println!("   🔄 {}", i18n::t_with("orchestrator_multi_step", &[&steps.len().to_string()]));
                         return self.run_task_mode(prompt, steps, start, total_memories).await;
                     }
                 }
@@ -479,15 +479,15 @@ impl Orchestrator {
             // This handles cases where the code agent couldn't figure out file changes
             // for a general task that the LLM misclassified as "code"
             if plan.intent != Intent::Code {
-                println!("   ℹ️ No code changes needed — switching to general-purpose mode...");
+                println!("   ℹ️ {}", i18n::t("orchestrator_no_changes"));
                 return self.run_general_mode(prompt, &relevant_files, start, total_memories).await;
             }
             // Only use keyword fallback when intent was already "code"
             if !Self::is_coding_task(prompt) {
-                println!("   ℹ️ No code changes needed — switching to general-purpose mode...");
+                println!("   ℹ️ {}", i18n::t("orchestrator_no_changes"));
                 return self.run_general_mode(prompt, &relevant_files, start, total_memories).await;
             }
-            println!("⚠️  No changes generated. Code may already satisfy the task.");
+            println!("⚠️  {}", i18n::t("orchestrator_no_changes_warn"));
             self.record_memory(
                 &format!("No changes needed for '{}' — already satisfied", prompt),
                 MemoryType::ActionOutcome,
@@ -505,7 +505,7 @@ impl Orchestrator {
 
         // Phase 4: Review
         self.fire_hook(HookEvent::PreReview, prompt).await;
-        println!("🔎 Reviewing changes...");
+        println!("🔎 {}", i18n::t("orchestrator_reviewing"));
         let review_provider = self.review_provider.as_ref().unwrap_or(&self.provider);
         let review_agent = ReviewAgent::new(review_provider);
         let approved = review_agent.review(prompt, &all_changes).await?;

@@ -7,6 +7,7 @@
 //! hyper skill create            # Create a new skill interactively
 //! ```
 
+use crate::i18n;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -62,7 +63,7 @@ pub fn list_installed() -> Result<Vec<Skill>> {
 
 /// Install a skill from a URL (GitHub Gist, raw URL, etc.)
 pub async fn install(url: &str) -> Result<Skill> {
-    println!("📦 Installing skill from: {url}");
+    println!("📦 {}", i18n::t_with("skill_installing", &[url]));
     
     let client = reqwest::Client::new();
     let resp = client.get(url)
@@ -86,7 +87,7 @@ pub async fn install(url: &str) -> Result<Skill> {
     let path = dir.join(filename);
     std::fs::write(&path, serde_json::to_string_pretty(&skill)?)?;
 
-    println!("   ✅ Installed: {} v{}", skill.name, skill.version);
+    println!("   ✅ {}", i18n::t_with("skill_installed", &[&skill.name, &skill.version]));
     println!("   📝 {}", skill.description);
     println!("   🏷️  Tags: {}", skill.tags.join(", "));
 

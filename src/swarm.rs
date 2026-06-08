@@ -7,6 +7,7 @@
 //! Master agent decomposes the task, spawns N sub-agents in parallel,
 //! waits for completion, and merges results.
 
+use crate::i18n;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -14,18 +15,18 @@ use tokio::process::Command;
 
 /// Run a swarm of agents on a complex task
 pub async fn run(prompt: &str, agents: usize, dir: &PathBuf) -> Result<()> {
-    println!("🐝 HyperAgent Swarm — {} agents in parallel", agents);
+    println!("🐝 {}", i18n::t_with("swarm_title", &[&agents.to_string()]));
     println!("   Task: {}\n", prompt);
 
     // Step 1: Master decomposes the task
-    println!("🧠 Decomposing task...");
+    println!("🧠 {}", i18n::t("swarm_decomposing"));
     let sub_tasks = decompose_task(prompt, agents).await?;
 
     if sub_tasks.is_empty() {
         anyhow::bail!("Could not decompose task into sub-tasks");
     }
 
-    println!("   Decomposed into {} sub-tasks:", sub_tasks.len());
+    println!("   {}", i18n::t_with("swarm_decomposed", &[&sub_tasks.len().to_string()]));
     for (i, t) in sub_tasks.iter().enumerate() {
         println!("   {}. {}", i + 1, t.title);
     }
@@ -41,7 +42,7 @@ pub async fn run(prompt: &str, agents: usize, dir: &PathBuf) -> Result<()> {
         let idx = i + 1;
 
         let handle = tokio::spawn(async move {
-            println!("   [Agent {}] Starting: {}", idx, task.title);
+            println!("   {}", i18n::t_with("swarm_agent_start", &[&idx.to_string(), &task.title]));
             let result = run_agent(&prompt_clone, &dir_clone, idx).await;
             match &result {
                 Ok(()) => println!("   [Agent {}] ✅ Complete", idx),

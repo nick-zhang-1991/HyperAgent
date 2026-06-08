@@ -215,11 +215,11 @@ impl Cli {
         // Print complete results
         println!();
         println!("─── Summary ────────────────────────────────────────");
-        println!("  Files modified: {}", result.files_modified);
-        println!("  Tokens:         ~{}", result.tokens_used);
-        println!("  Wall time:      {:.1}s", result.elapsed.as_secs_f64());
-        println!("  Memories saved: {}", result.memories_recorded);
-        println!("  Model:          {}", result.model_name);
+        println!("  {}", i18n::t_with("cli_files_modified", &[&result.files_modified.to_string()]));
+        println!("  {}", i18n::t_with("cli_tokens", &[&result.tokens_used.to_string()]));
+        println!("  {:.1}s", result.elapsed.as_secs_f64());
+        println!("  {}", i18n::t_with("cli_memories_saved", &[&result.memories_recorded.to_string()]));
+        println!("  {}", i18n::t_with("cli_model", &[&result.model_name]));
         println!("  Mode:           {mode}");
         println!("────────────────────────────────────────────────────");
 

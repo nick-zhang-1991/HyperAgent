@@ -5,6 +5,7 @@
 //! hyper bench eval --json   # JSON output for CI
 //! ```
 
+use crate::i18n;
 use anyhow::Result;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -158,8 +159,8 @@ fn print_report(report: &EvalReport) {
     println!("   ┌─ Eval Report ─────────────────────────────────────────┐");
     println!("   │                                                        │");
     println!("   │   Total:  {:>3}                                        │", report.total);
-    println!("   │   Passed: {:>3}  ({}%)                                │", report.passed, format!("{:.1}", report.pass_rate));
-    println!("   │   Failed: {:>3}                                        │", report.failed);
+    println!("   ✅ {}: {} ({}%)", i18n::t("eval_passed"), report.passed, format!("{:.1}", report.pass_rate));
+    println!("   ❌ {}: {}", i18n::t("eval_failed"), report.failed);
     println!("   │                                                        │");
     for cat in &report.by_category {
         println!("   │   {}: {:>3}/{} ({:.1}%)",
