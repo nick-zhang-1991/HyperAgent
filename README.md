@@ -13,6 +13,8 @@
 
 > ⚡ 启动 <0.3s · 🧠 越用越聪明的跨项目记忆 · 🐝 多 Agent 并行 · 🌐 20语言支持
 
+[English](#) | [中文](README_zh-CN.md) | [日本語](README_ja.md) | [한국어](README_ko.md) | [Español](README_es.md) | [Français](README_fr.md) | [Deutsch](README_de.md) | [Русский](README_ru.md) | [Português](README_pt.md) | [Tiếng Việt](README_vi.md) | [Italiano](README_it.md) | [Türkçe](README_tr.md) | [Polski](README_pl.md) | [العربية](README_ar.md) | [Bahasa Indonesia](README_id.md) | [Українська](README_uk.md) | [Nederlands](README_nl.md) | [ไทย](README_th.md) | [বাংলা](README_bn.md) | [हिन्दी](README_hi.md)
+
 ```bash
 # 编码任务
 hyper run "用 Rust 实现一个线程安全的 LRU 缓存"
