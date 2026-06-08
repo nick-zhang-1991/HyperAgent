@@ -42,6 +42,7 @@ mod retrieval;
 mod router;
 mod ci_fix;
 mod analyze;
+mod swarm;
 mod serve;
 mod sandbox;
 mod scaffold;
