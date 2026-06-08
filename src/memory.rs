@@ -950,15 +950,24 @@ impl SqliteMemoryStore {
 
 impl MemoryStore for SqliteMemoryStore {
     fn insert(&self, entry: MemoryEntry) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
         let entities_json = serde_json::to_string(&entry.entities)?;
 
         // Convert embedding to bytes for SQLite storage
-        let embedding_bytes: Option<Vec<u8>> = entry.embedding.as_ref().map(|v| {
-            v.iter().flat_map(|f| f.to_le_bytes()).collect()
-        });
+        let embedding_bytes: Option<Vec<u8>> = entry
+            .embedding
+            .as_ref()
+            .map(|v| v.iter().flat_map(|f| f.to_le_bytes()).collect());
 
-        conn.execute(
+        // ── P4-C: wrap the whole insert in one transaction ────────
+        // Each `execute()` without an explicit transaction is an
+        // implicit autocommit = one fsync per statement. For a memory
+        // entry with N terms + E entities, that's 1 + 2N + E*(E-1)
+        // statements = 50+ fsyncs on a typical 10-term, 5-entity row.
+        // Bundling them drops the per-insert cost by 10-50x.
+        let tx = conn.transaction()?;
+
+        tx.execute(
             "INSERT INTO memories (id, agent_id, session_id, content, memory_type, memory_layer, entities, importance, embedding, created_at, last_accessed, access_count, consolidated, container_tag)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
@@ -980,14 +989,15 @@ impl MemoryStore for SqliteMemoryStore {
         )?;
 
         // Update entity co-occurrence graph
-        Self::update_entity_cooccurrence(&conn, &entry.entities)?;
+        Self::update_entity_cooccurrence(&tx, &entry.entities)?;
 
         // Update entity links table
-        Self::update_memory_entities(&conn, &entry.id, &entry.entities)?;
+        Self::update_memory_entities(&tx, &entry.id, &entry.entities)?;
 
         // Update BM25 term indexes
-        Self::update_bm25_index(&conn, &entry.id, &entry.content)?;
+        Self::update_bm25_index(&tx, &entry.id, &entry.content)?;
 
+        tx.commit()?;
         Ok(())
     }
 
