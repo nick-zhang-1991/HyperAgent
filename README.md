@@ -9,8 +9,9 @@
 [![Rust](https://img.shields.io/badge/rust-1.82+-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/nick-zhang-1991/HyperAgent?style=flat-square)](https://github.com/nick-zhang-1991/HyperAgent/stargazers)
+[![i18n](https://img.shields.io/badge/i18n-20_languages-blue?style=flat-square)](https://github.com/nick-zhang-1991/HyperAgent)
 
-> ⚡ 启动 <0.3s · 🧠 越用越聪明的跨项目记忆 · 🐝 多 Agent 并行 · 🌐 中文原生支持
+> ⚡ 启动 <0.3s · 🧠 越用越聪明的跨项目记忆 · 🐝 多 Agent 并行 · 🌐 20语言支持
 
 ```bash
 # 编码任务
@@ -53,6 +54,8 @@ curl -fsSL https://raw.githubusercontent.com/nick-zhang-1991/HyperAgent/main/scr
 ```
 
 [中文用户请查看 README_zh-CN.md](README_zh-CN.md) | `export HYPER_LANG=zh-CN`
+
+20 languages supported: `en` `zh-CN` `es` `ar` `pt` `id` `fr` `ja` `de` `ru` `ko` `vi` `it` `tr` `pl` `uk` `nl` `th` `bn` `hi`
 
 ---
 
@@ -104,7 +107,7 @@ curl -fsSL https://raw.githubusercontent.com/nick-zhang-1991/HyperAgent/main/scr
 | 自纠错学习 | ✅ feedback | ❌ | ❌ | ❌ | ❌ |
 | 深度代码分析 | ✅ analyze | ❌ | ❌ | ❌ | ❌ |
 | CI 自动修复 | ✅ ci-fix | ❌ | ❌ | ❌ | ✅ |
-| 中文原生 | ✅ zh-CN | ❌ | ❌ | ❌ | ❌ |
+| 中文原生 | ✅ zh-CN + 20语言 | ❌ | ❌ | ❌ | ❌ |
 | Skill 市场 | ✅ | ❌ | ❌ | ❌ | ✅ |
 | SSE 流式 | ✅ | ✅ | ❌ | ✅ | ✅ |
 | VS Code 扩展 | ✅ v0.2 | ❌ | ✅ | ✅ | ✅ |
