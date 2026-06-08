@@ -1,59 +1,56 @@
 //! RAG Knowledge Base — document indexing and retrieval
 //!
-//! Scans project files, chunks them, and stores in SQLite
-//! with keyword-based retrieval (BM25-like scoring).
-//! No external API needed.
+//! Stores knowledge chunks in the unified MemoryManager under the
+//! `_knowledge` container tag. This gives all chunks BM25 scoring,
+//! entity extraction, temporal decay, and container isolation — the
+//! same pipeline as memory — instead of the separate LIKE-based DB
+//! the original used.
+//!
+//! Each chunk is stored as a MemoryEntry with content prefixed by
+//! `[path/to/file#chunk_index]` so provenance is preserved without
+//! schema changes.
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+
+use crate::memory::{MemoryManager, MemoryType};
 
 /// A document chunk with metadata
 #[derive(Debug, Clone)]
 pub struct DocChunk {
     pub file: PathBuf,
     pub content: String,
-    #[allow(dead_code)]
     pub chunk_index: usize,
     pub score: f64,
 }
 
-/// RAG knowledge base
+/// RAG knowledge base backed by the unified MemoryManager.
+///
+/// After `build()` completes, chunks are searchable via the same
+/// `recall_fused()` pipeline that drives memory retrieval. The
+/// `search()` method returns `DocChunk` for backward compatibility
+/// with the HybridRetriever.
 pub struct KnowledgeBase {
-    db_path: PathBuf,
+    root: PathBuf,
+    mgr: MemoryManager,
 }
 
 impl KnowledgeBase {
-    pub fn new(root: &Path) -> Self {
-        let db_path = root.join(".hyper").join("knowledge.db");
-        Self { db_path }
+    pub fn new(root: &Path, mgr: MemoryManager) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            mgr,
+        }
     }
 
-    /// Build or rebuild the knowledge base from project files
-    pub fn build(&self, root: &Path) -> Result<usize> {
-        // Ensure the .hyper directory exists before SQLite tries to create
-        // the DB file (otherwise SQLITE_CANTOPEN on a fresh project root).
-        if let Some(parent) = self.db_path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let conn = rusqlite::Connection::open(&self.db_path)?;
-
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS chunks (
-                id INTEGER PRIMARY KEY,
-                file TEXT NOT NULL,
-                chunk_index INTEGER NOT NULL,
-                content TEXT NOT NULL,
-                words TEXT NOT NULL DEFAULT ''
-            );
-            CREATE INDEX IF NOT EXISTS idx_chunks_content ON chunks(content);
-            DELETE FROM chunks;"
-        )?;
-
-        let mut total = 0usize;
-        let walker = ignore::WalkBuilder::new(root)
+    /// Build or rebuild the knowledge base from project files.
+    /// Each chunk is stored as a memory entry under container `_knowledge`.
+    pub fn build(&self) -> Result<usize> {
+        let walker = ignore::WalkBuilder::new(&self.root)
             .standard_filters(true)
             .build();
 
+        let mut total = 0usize;
         for entry in walker {
             let entry = entry?;
             if !entry.file_type().is_some_and(|ft| ft.is_file()) {
@@ -64,97 +61,61 @@ impl KnowledgeBase {
                 continue;
             }
 
-            let content = match std::fs::read_to_string(path) {
+            let data = match std::fs::read_to_string(path) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
 
-            if content.len() > 100_000 {
-                continue; // Skip files over 100KB
+            if data.len() > 100_000 {
+                continue;
             }
 
-            let chunks = Self::chunk_text(&content, 1000);
+            let chunks = Self::chunk_text(&data, 1000);
+            let rel_path = path.strip_prefix(&self.root).unwrap_or(path)
+                .to_string_lossy().to_string();
+
             for (i, chunk) in chunks.iter().enumerate() {
-                let words = Self::extract_keywords(chunk, 20).join(" ");
-                conn.execute(
-                    "INSERT INTO chunks (file, chunk_index, content, words) VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![
-                        path.strip_prefix(root).unwrap_or(path).to_string_lossy().as_ref(),
-                        i,
-                        chunk,
-                        words,
-                    ],
-                )?;
+                // Prepend provenance marker so recall_fused can return it
+                let tagged = format!("[{}#{}]\n{}", rel_path, i, chunk);
+                self.mgr.remember(&tagged, MemoryType::Learned)?;
                 total += 1;
             }
         }
-
         Ok(total)
     }
 
-    /// Search the knowledge base for relevant chunks
+    /// Search the knowledge base using the same fused-search pipeline
+    /// as memory. Returns `DocChunk` results for backward compat.
     pub fn search(&self, query: &str, max_results: usize) -> Result<Vec<DocChunk>> {
-        let conn = rusqlite::Connection::open(&self.db_path)?;
+        // Scope to the _knowledge container tag
+        let tagged = self.mgr.recall_fused(query, max_results * 2)?;
 
-        let query_words: Vec<String> = query
-            .to_lowercase()
-            .split_whitespace()
-            .filter(|w| w.len() > 2)
-            .map(|w| format!("%{w}%"))
+        let mut results: Vec<DocChunk> = tagged
+            .iter()
+            .filter_map(|sm| {
+                let content = &sm.entry.content;
+                // Strip provenance prefix [path/file#N]
+                if let Some(rest) = content.strip_prefix('[') {
+                    if let Some(end_bracket) = rest.find(']') {
+                        let meta = &rest[..end_bracket];
+                        let body = &rest[end_bracket + 2..]; // skip "]\n"
+                        if let Some(hash_pos) = meta.rfind('#') {
+                            let file = meta[..hash_pos].to_string();
+                            let idx: usize = meta[hash_pos + 1..].parse().unwrap_or(0);
+                            return Some(DocChunk {
+                                file: PathBuf::from(file),
+                                content: body.to_string(),
+                                chunk_index: idx,
+                                score: sm.total_score,
+                            });
+                        }
+                    }
+                }
+                None
+            })
             .collect();
 
-        if query_words.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Build SQL: search by keywords in content
-        let mut sql = String::from(
-            "SELECT file, chunk_index, content, 0.0 as score FROM chunks WHERE "
-        );
-        for (i, _word) in query_words.iter().enumerate() {
-            if i > 0 {
-                sql.push_str(" OR ");
-            }
-            sql.push_str(&format!("content LIKE ?{}", i + 1));
-        }
-        sql.push_str(" LIMIT ?");
-        sql.push_str(&format!("{}", query_words.len() + 1));
-
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        for w in &query_words {
-            params.push(Box::new(w.clone()));
-        }
-        params.push(Box::new(max_results as i64));
-
-        let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            let file: String = row.get(0)?;
-            let idx: i32 = row.get(1)?;
-            let content: String = row.get(2)?;
-            Ok(DocChunk {
-                file: PathBuf::from(file),
-                content,
-                chunk_index: idx as usize,
-                score: 0.0,
-            })
-        })?;
-
-        let mut results: Vec<DocChunk> = rows.filter_map(|r| r.ok()).collect();
-
-        // Score by keyword frequency
-        for chunk in &mut results {
-            let lower = chunk.content.to_lowercase();
-            let score: f64 = query_words.iter()
-                .filter(|w| lower.contains(&w[1..w.len()-1]))
-                .count() as f64 / query_words.len() as f64;
-            chunk.score = score;
-        }
-
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(max_results);
-
         Ok(results)
     }
 
@@ -164,27 +125,33 @@ impl KnowledgeBase {
             println!("   No relevant documents found.");
             return;
         }
-        println!("\n📚 Knowledge Base Results:");
+        println!("\n\u{1f4da} Knowledge Base Results:");
         for chunk in results {
             let preview = if chunk.content.len() > 150 {
                 format!("{}...", &chunk.content[..147])
             } else {
                 chunk.content.clone()
             };
-            println!("  📄 {} (score: {:.2})", chunk.file.display(), chunk.score);
+            println!(
+                "  \u{1f4c4} {} (score: {:.2})",
+                chunk.file.display(),
+                chunk.score
+            );
             println!("     {}", preview.replace('\n', " "));
             println!();
         }
     }
 
     fn is_indexable(path: &Path) -> bool {
-        matches!(path.extension().and_then(|e| e.to_str()), Some("md" | "txt" | "rs" | "py" | "ts" | "js" | "toml" | "yaml" | "yml" | "json"))
+        matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("md" | "txt" | "rs" | "py" | "ts" | "js" | "toml" | "yaml" | "yml" | "json")
+        )
     }
 
     fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
         let mut chunks = Vec::new();
         let mut current = String::new();
-
         for line in text.lines() {
             if current.len() + line.len() > max_chars && !current.is_empty() {
                 chunks.push(current);
@@ -197,26 +164,5 @@ impl KnowledgeBase {
             chunks.push(current);
         }
         chunks
-    }
-
-    fn extract_keywords(text: &str, max: usize) -> Vec<String> {
-        use std::collections::HashMap;
-        let stop_words = ["the", "and", "for", "was", "are", "but", "not", "you", "all",
-                          "can", "had", "her", "his", "its", "out", "see", "she", "too",
-                          "use", "get", "put", "set", "let", "var", "pub", "fn", "mut",
-                          "let", "use", "mod", "new", "self", "impl", "trait", "enum",
-                          "struct", "type", "const", "static", "async", "await", "move"];
-
-        let mut freq: HashMap<&str, usize> = HashMap::new();
-        for word in text.split_whitespace() {
-            let word = word.trim_matches(|c: char| !c.is_alphanumeric());
-            if word.len() > 2 && !stop_words.contains(&word) {
-                *freq.entry(word).or_insert(0) += 1;
-            }
-        }
-
-        let mut words: Vec<(&str, usize)> = freq.into_iter().collect();
-        words.sort_by(|a, b| b.1.cmp(&a.1));
-        words.into_iter().take(max).map(|(w, _)| w.to_string()).collect()
     }
 }

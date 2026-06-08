@@ -173,12 +173,15 @@ mod tests {
 
         // 2) knowledge base with one matching chunk
         std::fs::create_dir_all(root.join(".hyper")).unwrap();
-        let kb = KnowledgeBase::new(&root);
+        let kb_db = root.join("kb_mem.db");
+        let store = crate::memory::SqliteMemoryStore::new(&kb_db).unwrap();
+        let kb_mgr = crate::memory::MemoryManager::new(Box::new(store), "agent").with_container("_knowledge");
+        let kb = KnowledgeBase::new(&root, kb_mgr);
         let _ = std::fs::write(
             root.join("notes.md"),
             "alpha bravo charlie — important note",
         );
-        kb.build(&root).unwrap();
+        kb.build().unwrap();
 
         // 3) hybrid retrieve
         let retriever = HybridRetriever::new(&mgr, &kb);

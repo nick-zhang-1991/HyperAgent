@@ -169,8 +169,16 @@ impl Cli {
         }
 
         // Build the knowledge base (auto-create if doesn't exist)
-        let kb = crate::knowledge::KnowledgeBase::new(dir);
-        if kb.build(dir).is_ok() {
+        let knowledge_mgr = {
+            let kb_db = dir.join(".hyper").join("knowledge_mem.db");
+            use crate::memory::{MemoryManager, SqliteMemoryStore};
+            let store = SqliteMemoryStore::new(&kb_db).unwrap_or_else(|_| {
+                SqliteMemoryStore::new(&kb_db).expect("failed to open knowledge db")
+            });
+            MemoryManager::new(Box::new(store), "knowledge").with_container("_knowledge")
+        };
+        let kb = crate::knowledge::KnowledgeBase::new(dir, knowledge_mgr);
+        if kb.build().is_ok() {
             orchestrator = orchestrator.with_knowledge_base(kb);
         }
 
@@ -1275,11 +1283,19 @@ impl Cli {
     }
 
     pub(crate) async fn handle_knowledge(&self, action: &str, query: &Option<Vec<String>>, dir: &Path) -> Result<()> {
-        let kb = crate::knowledge::KnowledgeBase::new(dir);
+        let knowledge_mgr = {
+            let kb_db = dir.join(".hyper").join("knowledge_mem.db");
+            use crate::memory::{MemoryManager, SqliteMemoryStore};
+            let store = SqliteMemoryStore::new(&kb_db).unwrap_or_else(|_| {
+                SqliteMemoryStore::new(&kb_db).expect("failed to open knowledge db")
+            });
+            MemoryManager::new(Box::new(store), "knowledge").with_container("_knowledge")
+        };
+        let kb = crate::knowledge::KnowledgeBase::new(dir, knowledge_mgr);
         match action {
             "build" => {
                 println!("📚 Building knowledge base...");
-                let count = kb.build(dir)?;
+                let count = kb.build()?;
                 println!("   Indexed {count} document chunks");
             }
             "search" => {

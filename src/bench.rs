@@ -155,7 +155,10 @@ pub fn run(config: &BenchConfig) -> Result<BenchReport> {
     let mem_insert_per_sec = config.memories as f64 / mem_secs;
 
     // ── 3) knowledge base setup ──
-    let kb = KnowledgeBase::new(&root);
+    let kb_db = root.join(".hyper").join("kb_mem.db");
+    let store = crate::memory::SqliteMemoryStore::new(&kb_db).unwrap();
+    let kb_mgr = crate::memory::MemoryManager::new(Box::new(store), "agent").with_container("_knowledge");
+    let kb = KnowledgeBase::new(&root, kb_mgr);
     let kb_start = Instant::now();
     let mut total_chunks = 0usize;
     for i in 0..config.chunks / 10 {
@@ -173,7 +176,7 @@ pub fn run(config: &BenchConfig) -> Result<BenchReport> {
         std::fs::write(&path, content)?;
         total_chunks += 10;
     }
-    kb.build(&root)?;
+    kb.build()?;
     let chunk_secs = kb_start.elapsed().as_secs_f64().max(1e-9);
     let chunk_insert_per_sec = total_chunks as f64 / chunk_secs;
 

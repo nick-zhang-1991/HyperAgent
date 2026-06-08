@@ -604,11 +604,13 @@ impl SqliteMemoryStore {
             }
         }
 
-        // Pattern 8: URL origins
-        for cap in re8.find_iter(content) {
-            let e = cap.as_str().to_string();
-            if seen.insert(e.clone()) {
-                entities.push(e);
+        // Pattern 8: URL origins (extract domain from group 1)
+        for cap in re8.captures_iter(content) {
+            if let Some(m) = cap.get(1) {
+                let e = m.as_str().to_string();
+                if seen.insert(e.clone()) {
+                    entities.push(e);
+                }
             }
         }
 
