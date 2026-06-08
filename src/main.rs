@@ -43,6 +43,7 @@ mod router;
 mod ci_fix;
 mod analyze;
 mod swarm;
+mod skill_market;
 mod serve;
 mod sandbox;
 mod scaffold;

@@ -690,6 +690,25 @@ pub enum McpAction {
 
 #[derive(Subcommand, Debug)]
 #[derive(Subcommand, Debug, Clone)]
+/// Skill marketplace actions
+#[derive(Subcommand, Debug, Clone)]
+pub enum SkillAction {
+    /// Install a skill from a URL (GitHub Gist, raw URL)
+    Install {
+        url: String,
+    },
+    /// List installed skills
+    List,
+    /// Search community skill index
+    Search {
+        term: String,
+    },
+    /// Create a new skill template
+    Create {
+        name: Option<String>,
+    },
+}
+
 /// Feedback actions for agent self-improvement
 #[derive(Subcommand, Debug, Clone)]
 pub enum FeedbackAction {
@@ -846,6 +865,10 @@ impl Cli {
 
             Some(Commands::Doctor) => self.run_doctor().await,
 
+            Some(Commands::Skill { action }) => {
+                self.handle_skill(action).await?;
+                Ok(())
+            }
             Some(Commands::Feedback { action }) => {
                 self.handle_feedback(action).await?;
                 Ok(())
