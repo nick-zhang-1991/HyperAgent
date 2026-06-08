@@ -29,6 +29,8 @@ notify = "7.0"
 
 # Storage
 rusqlite = { version = "0.31", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
 sha2 = "0.10"
 
 # Graph algorithms
@@ -48,7 +50,7 @@ rustyline = "14"
 anyhow = "1.0"
 thiserror = "1.0"
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 uuid = { version = "1.10", features = ["v4"] }
 chrono = { version = "0.4.38", features = ["serde"] }
 dashmap = "6.0"

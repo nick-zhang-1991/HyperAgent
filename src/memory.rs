@@ -391,18 +391,21 @@ pub trait MemoryStore: Send + Sync {
 /// SQLite-backed memory store with multi-signal fusion ranking
 #[derive(Clone)]
 pub struct SqliteMemoryStore {
-    conn: Arc<Mutex<rusqlite::Connection>>,
+    pool: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
 }
 
 impl SqliteMemoryStore {
     pub fn new(db_path: &Path) -> anyhow::Result<Self> {
-        let conn = rusqlite::Connection::open(db_path)?;
+        let manager = r2d2_sqlite::SqliteConnectionManager::file(db_path);
+        let pool = r2d2::Pool::builder()
+            .max_size(4)
+            .build(manager)?;
+        // Initialize schema on first connection
+        let conn = pool.get()?;
         Self::build_schema(&conn)?;
-        // Apply additive migrations for pre-existing databases.
         Self::migrate_add_container_tag(&conn);
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        drop(conn);
+        Ok(Self { pool })
     }
 
     /// Build the schema for a fresh memory database.
@@ -994,7 +997,7 @@ impl SqliteMemoryStore {
 
 impl MemoryStore for SqliteMemoryStore {
     fn insert(&self, entry: MemoryEntry) -> anyhow::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.pool.get()?;
         let entities_json = serde_json::to_string(&entry.entities)?;
 
         // Convert embedding to bytes for SQLite storage
@@ -1046,7 +1049,7 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     fn query(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.pool.get()?;
         let mut sql = String::from(
             "SELECT id, agent_id, session_id, content, memory_type, memory_layer, entities, importance, embedding, created_at, last_accessed, access_count, consolidated, container_tag
              FROM memories WHERE 1=1"
@@ -1137,7 +1140,7 @@ impl MemoryStore for SqliteMemoryStore {
         // ── SQL phase: hold lock, batch-load data ──
         let (total_docs, avg_doc_len, expanded_entities, candidates,
              doc_terms_map, doc_len_map, term_doc_counts) = {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.pool.get()?;
 
         // ── Step 1: Fetch total doc count and avg doc length for BM25 ──
         let total_docs: f64 = conn
@@ -1329,7 +1332,7 @@ impl MemoryStore for SqliteMemoryStore {
 
         // ── Step 8: Update last_accessed for top results ──
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.pool.get()?;
         for sm in &scored[..scored.len().min(query.limit)] {
             let _ = conn.execute(
                 "UPDATE memories SET last_accessed = ?1, access_count = access_count + 1 WHERE id = ?2",
@@ -1345,7 +1348,7 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     fn list_entities(&self) -> anyhow::Result<Vec<(String, usize)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             "SELECT entity, COUNT(*) as cnt FROM memory_entities GROUP BY entity ORDER BY cnt DESC LIMIT 200"
         )?;
@@ -1356,7 +1359,7 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     fn mark_consolidated(&self, ids: &[String]) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.pool.get()?;
         for id in ids {
             conn.execute(
                 "UPDATE memories SET consolidated = 1 WHERE id = ?1",
@@ -1367,7 +1370,7 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     fn get_unconsolidated(&self, limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             "SELECT id, agent_id, session_id, content, memory_type, memory_layer, entities, importance, created_at, last_accessed, access_count, consolidated
              FROM memories WHERE consolidated = 0 ORDER BY created_at ASC LIMIT ?1"
@@ -1379,7 +1382,7 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     fn delete(&self, id: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.pool.get()?;
         // Remove from all auxiliary tables
         conn.execute("DELETE FROM memory_entities WHERE memory_id = ?1", params![id])?;
         conn.execute("DELETE FROM doc_terms WHERE doc_id = ?1", params![id])?;
@@ -1405,7 +1408,7 @@ impl MemoryStore for SqliteMemoryStore {
         threshold: f64,
         half_life_days: f64,
     ) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.pool.get()?;
         let cutoff_age = half_life_days * 4.0;
         // Child-table prune: same WHERE clause, but child first to
         // satisfy FKs. Use a transaction so a crash mid-prune is atomic.
@@ -1459,7 +1462,7 @@ impl MemoryStore for SqliteMemoryStore {
         days: i64,
         min_importance: f32,
     ) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.pool.get()?;
         let tx = conn.unchecked_transaction()?;
         let _ = tx.execute(
             "DELETE FROM memory_entities
@@ -1493,7 +1496,7 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     fn count(&self) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.pool.get()?;
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
         Ok(count as usize)
     }
