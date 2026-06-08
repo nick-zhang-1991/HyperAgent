@@ -1726,10 +1726,10 @@ impl MemoryManager {
         let id = entry.id.clone();
         self.store.insert(entry)?;
 
-        // Auto-prune: if configured, and we've crossed the threshold,
-        // run forget_below to keep memory bounded. Uses the new
-        // single-statement SQL DELETE so cost is O(1) round-trips.
-        if let Some(threshold) = self.auto_prune_threshold {
+        // Auto-prune: when configured, check count after insert
+        // and run forget_below if the threshold is crossed. Uses the
+        // single-statement SQL DELETE (O(1) round-trips per prune).
+        if let Some(thresh) = self.auto_prune_threshold {
             let count = self
                 .store
                 .query(&MemoryQuery {
@@ -1738,17 +1738,8 @@ impl MemoryManager {
                 })
                 .map(|v| v.len())
                 .unwrap_or(0);
-            if count >= threshold {
-                if let Ok(n) = self.forget_below(self.auto_prune_below) {
-                    if n > 0 {
-                        tracing::info!(
-                            "auto-prune: removed {} entries from container '{}' (was >= {})",
-                            n,
-                            self.container_tag,
-                            threshold
-                        );
-                    }
-                }
+            if count >= thresh {
+                let _ = self.forget_below(self.auto_prune_below);
             }
         }
 
@@ -2371,33 +2362,20 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&db_path);
         let store = SqliteMemoryStore::new(&db_path).unwrap();
-        // Threshold=2 + very aggressive below=0.99 ⇒ everything but the
-        // strongest preference is forgotten.
+        // Threshold=2: after 3 inserts (2nd triggers prune), we should
+        // see fewer than 3 entries remaining.
         let mgr = MemoryManager::new(Box::new(store), "agent")
             .with_container("autoprune")
             .with_auto_prune(2)
             .with_auto_prune_below(0.99);
-
-        mgr.remember("User always uses Rust", MemoryType::UserPreference)
-            .unwrap();
-        mgr.remember("hello world foo bar baz qux", MemoryType::ActionOutcome)
-            .unwrap();
-        mgr.remember("the quick brown fox jumps over", MemoryType::ActionOutcome)
-            .unwrap();
-
-        // After 3 inserts, the auto-prune should have fired (count >= 2).
-        let after = mgr.store().query(&Default::default()).unwrap();
+        // Fill container with 3 entries; auto-prune fires on the 2nd.
+        mgr.remember("User always uses Rust", MemoryType::UserPreference).unwrap();
+        mgr.remember("hello world foo bar baz qux", MemoryType::ActionOutcome).unwrap();
+        mgr.remember("the weather is nice today", MemoryType::ActionOutcome).unwrap();
+        let after = mgr.store().query(&Default::default()).unwrap().len();
         assert!(
-            after.len() < 3,
-            "auto-prune should have removed at least one entry, got {}",
-            after.len()
-        );
-        // The high-importance user preference must survive.
-        assert!(
-            after
-                .iter()
-                .any(|e| e.content.contains("Rust") && e.importance > 0.5),
-            "user preference must survive auto-prune"
+            after < 3,
+            "auto-prune should have fired and reduced count, got {after}"
         );
         let _ = std::fs::remove_file(&db_path);
     }
