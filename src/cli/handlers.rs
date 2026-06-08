@@ -892,7 +892,40 @@ impl Cli {
                 sm.save(&forked)?;
                 println!("🔀 Forked session: {} → {}", &source.id[..15], &forked.id[..15]);
             }
-            SessionAction::Export { output } => {
+                        SessionAction::Share { id } => {
+                let share_store = crate::session::ShareStore::new();
+                let token = share_store.share(&id);
+                let session_path = format!("{}/hyper/sessions/{}.json",
+                    dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).display(), id);
+                println!("   🔗 Session shared!");
+                println!("   Token: {}", token);
+                println!("   Web:   http://127.0.0.1:3000/api/share/{}", token);
+                println!("   CLI:   hyper session join {}", token);
+                println!("   File:  {}", session_path);
+                Ok(())
+            }
+            SessionAction::Join { token } => {
+                let share_store = crate::session::ShareStore::new();
+                match share_store.resolve(&token) {
+                    Some(session_id) => {
+                        let sessions = crate::session::SessionManager::new()?;
+                        match sessions.load(&session_id) {
+                            Ok(session) => {
+                                session.display();
+                                println!();
+                                println!("   💡 Run `hyper session fork {}` to continue this session", session_id);
+                            }
+                            Err(e) => eprintln!("   ❌ Session not found: {e}"),
+                        }
+                        Ok(())
+                    }
+                    None => {
+                        eprintln!("   ❌ Invalid or expired share token: {}", token);
+                        Ok(())
+                    }
+                }
+            }
+            SessionAction::Export {SessionAction::Export { output } => {
                 let sessions = sm.list()?;
                 let json = serde_json::to_string_pretty(&sessions)?;
                 match output {

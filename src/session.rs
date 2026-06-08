@@ -144,6 +144,52 @@ pub struct SessionManager {
     sessions_dir: PathBuf,
 }
 
+/// Shared session token store
+use std::collections::HashMap;
+
+/// Manages share tokens for cross-user session sharing
+pub struct ShareStore {
+    tokens: std::sync::Mutex<HashMap<String, String>>,  // token → session_id
+    store_path: std::path::PathBuf,
+}
+
+impl ShareStore {
+    pub fn new() -> Self {
+        let store_path = dirs_next::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("hyperagent")
+            .join("share_tokens.json");
+        let tokens = std::fs::read_to_string(&store_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        Self {
+            tokens: std::sync::Mutex::new(tokens),
+            store_path,
+        }
+    }
+
+    /// Generate a share token for a session
+    pub fn share(&self, session_id: &str) -> String {
+        let token = uuid::Uuid::new_v4().to_string();
+        let mut map = self.tokens.lock().unwrap();
+        map.insert(token.clone(), session_id.to_string());
+        let _ = std::fs::write(&self.store_path, serde_json::to_string_pretty(&*map).unwrap());
+        token
+    }
+
+    /// Resolve a share token to a session ID
+    pub fn resolve(&self, token: &str) -> Option<String> {
+        let map = self.tokens.lock().unwrap();
+        map.get(token).cloned()
+    }
+
+    /// Share store path for API access
+    pub fn path(&self) -> &std::path::Path {
+        &self.store_path
+    }
+}
+
 impl SessionManager {
     pub fn new() -> Result<Self> {
         let base = dirs_next::data_dir()
