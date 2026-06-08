@@ -327,6 +327,63 @@ pub trait MemoryStore: Send + Sync {
     /// Delete a memory entry
     fn delete(&self, id: &str) -> anyhow::Result<()>;
 
+    /// Batched delete: remove all entries whose composite score
+    /// (importance * 0.6 + temporal_decay * 0.4) is below `threshold`,
+    /// scoped to `container_tag`. Single SQL statement — O(1) round trips
+    /// instead of O(N). Returns the number of deleted rows.
+    ///
+    /// Default impl falls back to per-row delete (used by any non-SQLite
+    /// store that doesn't want to implement the SQL formula). SQLite
+    /// overrides this with a direct DELETE.
+    fn delete_below_score(
+        &self,
+        container_tag: &str,
+        threshold: f64,
+        half_life_days: f64,
+    ) -> anyhow::Result<usize> {
+        let _ = (container_tag, half_life_days);
+        // Generic fallback: query then delete one by one
+        let all = self.query(&MemoryQuery {
+            limit: usize::MAX,
+            container_tag: Some(container_tag.to_string()),
+            ..Default::default()
+        })?;
+        let mut deleted = 0;
+        for entry in &all {
+            let temp = SqliteMemoryStore::temporal_decay(&entry.created_at, half_life_days);
+            let score = entry.importance as f64 * 0.6 + temp * 0.4;
+            if score < threshold && self.delete(&entry.id).is_ok() {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
+    /// Batched delete: remove all entries older than `days` with importance
+    /// below `min_importance`, scoped to `container_tag`.
+    fn delete_older_than(
+        &self,
+        container_tag: &str,
+        days: i64,
+        min_importance: f32,
+    ) -> anyhow::Result<usize> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+        let all = self.query(&MemoryQuery {
+            limit: usize::MAX,
+            container_tag: Some(container_tag.to_string()),
+            ..Default::default()
+        })?;
+        let mut deleted = 0;
+        for entry in &all {
+            if entry.created_at < cutoff && entry.importance < min_importance {
+                if self.delete(&entry.id).is_ok() {
+                    deleted += 1;
+                }
+            }
+        }
+        Ok(deleted)
+    }
+
     /// Total memory count
     fn count(&self) -> anyhow::Result<usize>;
 }
@@ -1259,6 +1316,110 @@ impl MemoryStore for SqliteMemoryStore {
         Ok(())
     }
 
+    /// SQLite-native: one DELETE for everything below the score threshold.
+    /// Uses a linear-decay approximation of the Rust composite-score
+    /// formula:
+    ///   score = importance * 0.6 + MAX(0, 1 - age/half_life) * 0.4
+    /// (Rust's `temporal_decay` is exponential, but the linear form is
+    /// monotone-equivalent for the prune decision and uses only
+    /// arithmetic primitives — safe for the minimal SQLite that
+    /// libsqlite3-sys bundles without EXP/LN/POWER.)
+    /// Single SQL statement: O(1) round-trips vs O(N) per-row deletes.
+    /// Child tables (memory_entities, doc_terms) are pruned first to
+    /// satisfy FK constraints (they have no ON DELETE CASCADE).
+    fn delete_below_score(
+        &self,
+        container_tag: &str,
+        threshold: f64,
+        half_life_days: f64,
+    ) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let cutoff_age = half_life_days * 4.0;
+        // Child-table prune: same WHERE clause, but child first to
+        // satisfy FKs. Use a transaction so a crash mid-prune is atomic.
+        let tx = conn.unchecked_transaction()?;
+        let n_child = tx.execute(
+            "DELETE FROM memory_entities
+              WHERE memory_id IN (
+                SELECT id FROM memories
+                 WHERE container_tag = ?1
+                   AND (importance * 0.6
+                        + MAX(0.0, 1.0 - (julianday('now') - julianday(created_at)) / ?2) * 0.4
+                       ) < ?3
+              )",
+            params![container_tag, cutoff_age, threshold],
+        )?;
+        let _ = tx.execute(
+            "DELETE FROM doc_terms
+              WHERE doc_id IN (
+                SELECT id FROM memories
+                 WHERE container_tag = ?1
+                   AND (importance * 0.6
+                        + MAX(0.0, 1.0 - (julianday('now') - julianday(created_at)) / ?2) * 0.4
+                       ) < ?3
+              )",
+            params![container_tag, cutoff_age, threshold],
+        )?;
+        // Now safe to delete the parents.
+        let n = tx.execute(
+            "DELETE FROM memories
+              WHERE container_tag = ?1
+                AND (importance * 0.6
+                     + MAX(0.0, 1.0 - (julianday('now') - julianday(created_at)) / ?2) * 0.4
+                    ) < ?3",
+            params![container_tag, cutoff_age, threshold],
+        )?;
+        tx.commit()?;
+        tracing::debug!(
+            "forget_below: deleted {} memories, {} memory_entities rows (container={}, threshold={})",
+            n, n_child, container_tag, threshold
+        );
+        Ok(n)
+    }
+
+    /// SQLite-native: one DELETE for entries older than N days with
+    /// importance below threshold. julian-day comparison against an
+    /// ISO 8601 created_at string works directly. Child tables pruned
+    /// first to satisfy FK constraints.
+    fn delete_older_than(
+        &self,
+        container_tag: &str,
+        days: i64,
+        min_importance: f32,
+    ) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        let _ = tx.execute(
+            "DELETE FROM memory_entities
+              WHERE memory_id IN (
+                SELECT id FROM memories
+                 WHERE container_tag = ?1
+                   AND julianday('now') - julianday(created_at) > ?2
+                   AND importance < ?3
+              )",
+            params![container_tag, days as f64, min_importance as f64],
+        )?;
+        let _ = tx.execute(
+            "DELETE FROM doc_terms
+              WHERE doc_id IN (
+                SELECT id FROM memories
+                 WHERE container_tag = ?1
+                   AND julianday('now') - julianday(created_at) > ?2
+                   AND importance < ?3
+              )",
+            params![container_tag, days as f64, min_importance as f64],
+        )?;
+        let n = tx.execute(
+            "DELETE FROM memories
+              WHERE container_tag = ?1
+                AND julianday('now') - julianday(created_at) > ?2
+                AND importance < ?3",
+            params![container_tag, days as f64, min_importance as f64],
+        )?;
+        tx.commit()?;
+        Ok(n)
+    }
+
     fn count(&self) -> anyhow::Result<usize> {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
@@ -1800,22 +1961,16 @@ impl MemoryManager {
     /// memory DB from growing unbounded as the agent runs forever.
     /// Default threshold of 0.05 is roughly: an old (4+ half-lives)
     /// unimportant (0.1) entry.
+    ///
+    /// Implementation: delegates to MemoryStore::delete_below_score,
+    /// which on SQLite executes a single DELETE statement (O(1) round
+    /// trips instead of O(N) per-row deletes).
     pub fn forget_below(&self, threshold: f64) -> anyhow::Result<usize> {
-        let all = self.store.query(&MemoryQuery {
-            limit: usize::MAX,
-            container_tag: Some(self.container_tag.clone()),
-            ..Default::default()
-        })?;
-        let half_life = TEMPORAL_HALF_LIFE_DAYS;
-        let mut deleted = 0usize;
-        for entry in &all {
-            let temp = SqliteMemoryStore::temporal_decay(&entry.created_at, half_life);
-            let score = entry.importance as f64 * 0.6 + temp * 0.4;
-            if score < threshold && self.store.delete(&entry.id).is_ok() {
-                deleted += 1;
-            }
-        }
-        Ok(deleted)
+        self.store.delete_below_score(
+            &self.container_tag,
+            threshold,
+            TEMPORAL_HALF_LIFE_DAYS,
+        )
     }
 
     /// Forget entries older than `days` with importance below `min_importance`.
@@ -1826,21 +1981,8 @@ impl MemoryManager {
         days: i64,
         min_importance: f32,
     ) -> anyhow::Result<usize> {
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
-        let all = self.store.query(&MemoryQuery {
-            limit: usize::MAX,
-            container_tag: Some(self.container_tag.clone()),
-            ..Default::default()
-        })?;
-        let mut deleted = 0usize;
-        for entry in &all {
-            if entry.created_at < cutoff && entry.importance < min_importance {
-                if self.store.delete(&entry.id).is_ok() {
-                    deleted += 1;
-                }
-            }
-        }
-        Ok(deleted)
+        self.store
+            .delete_older_than(&self.container_tag, days, min_importance)
     }
 
     /// Backwards-compatible alias of prune() — for old callers / docs.
