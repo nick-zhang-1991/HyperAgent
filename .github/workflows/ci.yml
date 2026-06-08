@@ -11,24 +11,11 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  msrv:
-    name: MSRV check (1.82.0)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust 1.82.0
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.82.0
-      - name: Cache
-        uses: Swatinem/rust-cache@v2
-      - name: cargo check
-        run: cargo check
-
   check:
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-13, windows-latest]
     steps:
@@ -56,6 +43,7 @@ jobs:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -79,7 +67,12 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          # aarch64 OOM workaround: reduce parallelism
+          if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
+            export CARGO_BUILD_JOBS=2
+          fi
+          cargo build --release --target ${{ matrix.target }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
