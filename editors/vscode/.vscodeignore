@@ -1,0 +1,4 @@
+node_modules\n.git\n.gitignore\n*.ts\n!out/**.js\nnode_modules/**
+.vscode/**
+src/**
+tsconfig.json

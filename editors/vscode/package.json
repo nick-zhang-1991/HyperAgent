@@ -1,0 +1,97 @@
+{
+  "name": "hyperagent-vscode",
+  "displayName": "HyperAgent",
+  "description": "VS Code integration for HyperAgent — ultra-fast CLI coding agent",
+  "version": "0.2.0",
+  "publisher": "nousresearch",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "hyperagent.run",
+        "title": "HyperAgent: Run Task"
+      },
+      {
+        "command": "hyperagent.chat",
+        "title": "HyperAgent: Open Chat Panel"
+      },
+      {
+        "command": "hyperagent.review",
+        "title": "HyperAgent: Review Changes"
+      },
+      {
+        "command": "hyperagent.search",
+        "title": "HyperAgent: Web Search"
+      },
+      {
+        "command": "hyperagent.init",
+        "title": "HyperAgent: Index Codebase"
+      },
+      {
+        "command": "hyperagent.doctor",
+        "title": "HyperAgent: Run Diagnostics"
+      },
+      {
+        "command": "hyperagent.session",
+        "title": "HyperAgent: Show Session Stats"
+      },
+      {
+        "command": "hyperagent.doctor",
+        "title": "HyperAgent: Run Diagnostics"
+      },
+      {
+        "command": "hyperagent.serverStatus",
+        "title": "HyperAgent: Check Server Status"
+      }
+    ],
+    "keybindings": [
+      {
+        "key": "ctrl+shift+h",
+        "command": "hyperagent.run",
+        "when": "editorTextFocus"
+      },
+      {
+        "key": "ctrl+shift+l",
+        "command": "hyperagent.chat",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "HyperAgent",
+      "properties": {
+        "hyperagent.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:3000",
+          "description": "HyperAgent server URL (run `hyper serve` first)"
+        },
+        "hyperagent.autoStartServer": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically start `hyper serve` on activation"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
