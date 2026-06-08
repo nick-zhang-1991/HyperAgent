@@ -1790,6 +1790,9 @@ pub struct MemoryManager {
     /// Auto-prune trigger threshold (composite score). Default 0.05 —
     /// matches the forget_below default in CLI.
     auto_prune_below: f64,
+    /// Promote high-importance entries to global memory (cross-container)
+    global_promote: bool,
+    global_promote_threshold: f32,
 }
 
 impl MemoryManager {
@@ -1803,6 +1806,8 @@ impl MemoryManager {
             hooks: Arc::new(Mutex::new(SessionHooks::new())),
             auto_prune_threshold: None,
             auto_prune_below: 0.05,
+            global_promote: true,
+            global_promote_threshold: 0.7,
         }
     }
 
@@ -1939,6 +1944,21 @@ impl MemoryManager {
             if count >= thresh {
                 let _ = self.forget_below(self.auto_prune_below);
             }
+        }
+
+        // Global promotion: high-importance entries propagate across containers
+        if self.global_promote && entry.importance >= self.global_promote_threshold
+            && self.container_tag != "_global"
+        {
+            let mut global_entry = entry.clone();
+            global_entry.container_tag = Some("_global".to_string());
+            // Prefix content with source container for traceability
+            global_entry.content = format!(
+                "[from:{}] {}",
+                self.container_tag,
+                global_entry.content
+            );
+            let _ = self.store.insert(global_entry);
         }
 
         Ok(id)

@@ -2421,10 +2421,22 @@ impl Orchestrator {
 
     /// Load memory context relevant to the task
     async fn load_memory_context(&self, prompt: &str) -> String {
-        match &self.memory {
-            Some(mem) => mem.build_context(prompt, 8).unwrap_or_default(),
+        let mut ctx = match &self.memory {
+            Some(mem) => mem.build_context(prompt, 6).unwrap_or_default(),
             None => String::new(),
+        };
+        // Inject global cross-project knowledge
+        if let Some(ref mem) = self.memory {
+            if let Ok(global) = mem.global_search(prompt, 3) {
+                if !global.is_empty() {
+                    ctx.push_str("\n## Cross-Project Knowledge (applicable to any project)\n");
+                    for g in &global {
+                        ctx.push_str(&format!("- {}\n", g.entry.content));
+                    }
+                }
+            }
         }
+        ctx
     }
 
     /// Record a memory silently

@@ -689,6 +689,20 @@ pub enum McpAction {
 }
 
 #[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
+pub enum GlobalAction {
+    /// List all global memories (cross-project knowledge)
+    List {
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+    /// Remove a specific global memory entry
+    Forget {
+        id: String,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
 pub enum BenchAction {
     /// Run a memory+retrieval benchmark
     Memory {
