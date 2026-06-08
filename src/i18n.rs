@@ -77,18 +77,18 @@ pub fn init(locale: Locale) {
         Locale::En => en::translations(),
         Locale::ZhCN => zh_cn::translations(),
     };
-    *LOCALE.lock().unwrap() = Some(locale);
-    *TRANSLATIONS.lock().unwrap() = Some(map);
+    *LOCALE.lock().expect("i18n locale lock poisoned") = Some(locale);
+    *TRANSLATIONS.lock().expect("i18n translations lock poisoned") = Some(map);
 }
 
 /// Get current locale
 pub fn current_locale() -> Locale {
-    LOCALE.lock().unwrap().unwrap_or(Locale::En)
+    LOCALE.lock().expect("i18n locale lock poisoned").unwrap_or(Locale::En)
 }
 
 /// Translate a key. Returns the key itself if no translation found.
 pub fn t(key: &str) -> &str {
-    let guard = TRANSLATIONS.lock().unwrap();
+    let guard = TRANSLATIONS.lock().expect("i18n translations lock poisoned");
     match guard.as_ref() {
         Some(map) => map.get(key).copied().unwrap_or(key),
         None => key,
