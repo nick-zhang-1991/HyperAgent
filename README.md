@@ -27,6 +27,62 @@ hyper diff --side-by-side --staged
 
 ---
 
+
+
+## Feature Matrix / 功能矩阵
+
+### CLI Commands (20+)
+
+| Command | Description |
+|---------|-------------|
+| `hyper run "task"` | Execute coding task with multi-agent pipeline |
+| `hyper init` | Onboarding wizard + code index build |
+| `hyper serve` | Start Web API server (SSE streaming) |
+| `hyper analyze` | Deep code analysis (compile, security, dead code) |
+| `hyper swarm "task"` | Parallel multi-agent execution |
+| `hyper ci-fix log.txt` | Auto-fix CI failures |
+| `hyper review` | Review code changes |
+| `hyper doctor` | Run diagnostics |
+| `hyper memory global` | Cross-project knowledge |
+| `hyper session share` | Share session via token |
+| `hyper feedback good/bad` | Train agent (self-correction) |
+| `hyper skill install <url>` | Install community skills |
+| `hyper skill search <term>` | Search skill marketplace |
+| `hyper bench memory` | Performance benchmark |
+| `hyper eval` | Self-evaluation suite |
+
+### Unique Selling Points / 独家能力
+
+| 能力 | HyperAgent | Claude Code | Aider | Cursor | Devin |
+|------|-----------|------------|-------|--------|-------|
+| 多 agent 并行 | ✅ swarm | ❌ | ❌ | ❌ | ✅ |
+| 跨项目全局记忆 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 自纠错学习 | ✅ feeback | ❌ | ❌ | ❌ | ❌ |
+| 深度代码分析 | ✅ analyze | ❌ | ❌ | ❌ | ❌ |
+| CI 自动修复 | ✅ ci-fix | ❌ | ❌ | ❌ | ✅ |
+| 中文 CLI | ✅ zh-CN | ❌ | ❌ | ❌ | ❌ |
+| Skill 市场 | ✅ | ❌ | ❌ | ❌ | ✅ |
+| 自动 commit | ✅ | ✅ | ✅ | ✅ | ✅ |
+| PR Review Bot | ✅ | ❌ | ❌ | ✅ | ✅ |
+| SSE 流式输出 | ✅ | ✅ | ❌ | ✅ | ✅ |
+| VS Code 扩展 | ✅ v0.2 | ❌ | ✅ | ✅ | ✅ |
+| Desktop 原生 | ✅ Tauri | ❌ | ❌ | ✅ | ✅ |
+| Web UI | ✅ Vite+React | ❌ | ❌ | ✅ | ✅ |
+| 会话共享 | ✅ token | ❌ | ❌ | ✅ | ✅ |
+| Sandbox 执行 | ✅ Docker | ❌ | ✅ | ❌ | ✅ |
+
+### Architecture / 架构
+
+```
+CLI → hyper serve (axum+SSE) → Agent Pipeline → Memory System → SQLite+WAL
+                                  ↓
+                            ProviderPool (LLM failover)
+                                  ↓
+                            Tools (MCP+WebSearch+Browser+Desktop+Sandbox)
+```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full Mermaid diagrams.
+
 ## Table of Contents / 目录
 
 - [Quick Start / 快速开始](#quick-start--快速开始)
