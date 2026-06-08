@@ -11,44 +11,46 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  msrv:
+    name: MSRV check (1.82.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.82.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.82.0
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+      - name: cargo check
+        run: cargo check
+
   check:
-    name: Check (${{ matrix.os }} / ${{ matrix.toolchain }})
+    name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-13, windows-latest]  # Linux + macOS + Windows
-        toolchain: [stable, 1.82.0]   # MSRV check
-
+        os: [ubuntu-latest, macos-13, windows-latest]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust ${{ matrix.toolchain }}
-        uses: dtolnay/rust-toolchain@master
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
-
-      - name: Cache dependencies
+      - name: Cache
         uses: Swatinem/rust-cache@v2
-
       - name: cargo check
         run: cargo check --all-targets
-
-      - name: cargo fmt check
+      - name: cargo fmt
         run: cargo fmt --all --check
-        # rustfmt not available on Windows MSRV
-        if: matrix.os != 'windows-latest' || matrix.toolchain != '1.82.0'
-
+        if: matrix.os != 'windows-latest'
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
-
-      - name: cargo audit
-        run: cargo audit
-        # cargo-audit not yet available on Windows
-        if: matrix.os != 'windows-latest'
-
       - name: cargo test
         run: cargo test --all-targets
+      - name: cargo audit
+        run: cargo audit
+        if: matrix.os != 'windows-latest'
 
   build:
     name: Build (${{ matrix.target }})
@@ -68,21 +70,16 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: hyperagent-windows-x86_64
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
+      - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Cache dependencies
+      - name: Cache
         uses: Swatinem/rust-cache@v2
-
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
