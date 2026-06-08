@@ -479,7 +479,19 @@ impl SqliteMemoryStore {
 
             CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
             CREATE INDEX IF NOT EXISTS idx_memories_consolidated ON memories(consolidated);
-            CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+            CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);            CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+
+            -- FTS5 full-text search index
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+                content,
+                tokenize='porter unicode61',
+                detail=full
+            );
+            CREATE TABLE IF NOT EXISTS memory_fts_map (
+                fts_rowid INTEGER PRIMARY KEY,
+                memory_id TEXT NOT NULL UNIQUE,
+                FOREIGN KEY (memory_id) REFERENCES memories(id)
+            );
             CREATE INDEX IF NOT EXISTS idx_entity_cooccurrence_b ON entity_cooccurrence(entity_b);
             CREATE INDEX IF NOT EXISTS idx_doc_terms_doc ON doc_terms(doc_id);",
         )?;
@@ -1044,6 +1056,14 @@ impl MemoryStore for SqliteMemoryStore {
         // Update BM25 term indexes
         Self::update_bm25_index(&tx, &entry.id, &entry.content)?;
 
+        // Update FTS5 search index
+        tx.execute("INSERT INTO memory_fts (content) VALUES (?1)", params![&entry.content])?;
+        let fts_rowid = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT OR REPLACE INTO memory_fts_map (fts_rowid, memory_id) VALUES (?1, ?2)",
+            params![fts_rowid, &entry.id],
+        )?;
+
         tx.commit()?;
         Ok(())
     }
@@ -1139,7 +1159,7 @@ impl MemoryStore for SqliteMemoryStore {
 
         // ── SQL phase: hold lock, batch-load data ──
         let (total_docs, avg_doc_len, expanded_entities, candidates,
-             doc_terms_map, doc_len_map, term_doc_counts) = {
+             doc_terms_map, doc_len_map, term_doc_counts, mut fts_scores) = {
         let conn = self.pool.get()?;
 
         // ── Step 1: Fetch total doc count and avg doc length for BM25 ──
@@ -1256,8 +1276,33 @@ impl MemoryStore for SqliteMemoryStore {
             }
         }
 
+        // ── Step 5c: FTS5 MATCH for fast BM25 scores ──
+        let mut fts_scores: HashMap<String, f64> = HashMap::new();
+        if !query_terms.is_empty() {
+            let fts_query: Vec<&str> = query_terms.iter().map(|s| s.as_str()).collect();
+            let fts_query = fts_query.join(" OR ");
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT m.memory_id, fts.rank FROM memory_fts fts
+                 JOIN memory_fts_map m ON m.fts_rowid = fts.rowid
+                 WHERE fts.content MATCH ?1
+                 ORDER BY rank
+                 LIMIT ?2"
+            ) {
+                if let Ok(rows) = stmt.query_map(params![fts_query, query.limit], |row| {
+                    let mem_id: String = row.get(0)?;
+                    let rank: f64 = row.get(1)?;
+                    Ok((mem_id, rank))
+                }) {
+                    for r in rows.flatten() {
+                        let score = (-r.1).max(0.0);
+                        fts_scores.insert(r.0, score);
+                    }
+                }
+            }
+        }
+
         (total_docs, avg_doc_len, expanded_entities, candidates,
-         doc_terms_map, doc_len_map, term_doc_counts)
+         doc_terms_map, doc_len_map, term_doc_counts, fts_scores)
         }; // conn lock released here
 
         if candidates.is_empty() {
@@ -1311,7 +1356,9 @@ impl MemoryStore for SqliteMemoryStore {
                 let vector_score = if let (Some(qe), Some(ee)) = (query_embedding_ref, entry.embedding.as_ref()) {
                     Self::cosine_similarity(qe, ee)
                 } else { 0.0 };
+                let fts_score = fts_scores.get(&entry.id).copied().unwrap_or(0.0);
                 let total = query.keyword_weight * bm25
+                    + 0.3 * fts_score  // FTS5 BM25 bonus
                     + query.entity_weight * entity_score
                     + query.temporal_weight * temporal
                     + query.importance_weight * imp_with_layer
@@ -1386,6 +1433,15 @@ impl MemoryStore for SqliteMemoryStore {
         // Remove from all auxiliary tables
         conn.execute("DELETE FROM memory_entities WHERE memory_id = ?1", params![id])?;
         conn.execute("DELETE FROM doc_terms WHERE doc_id = ?1", params![id])?;
+        // Delete from FTS5 via map table
+        if let Ok(fts_id) = conn.query_row(
+            "SELECT fts_rowid FROM memory_fts_map WHERE memory_id = ?1",
+            params![id],
+            |row| row.get::<_, i64>(0),
+        ) {
+            conn.execute("DELETE FROM memory_fts WHERE rowid = ?1", params![fts_id]).ok();
+            conn.execute("DELETE FROM memory_fts_map WHERE memory_id = ?1", params![id]).ok();
+        }
         conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
         // Note: entity_cooccurrence and term_df are left intact (could be cleaned by periodic maintenance)
         Ok(())
@@ -1435,6 +1491,17 @@ impl MemoryStore for SqliteMemoryStore {
               )",
             params![container_tag, cutoff_age, threshold],
         )?;
+        // FTS5 map entries (FK to memories — must clean before parent)
+        let _ = tx.execute(
+            "DELETE FROM memory_fts_map WHERE memory_id IN (
+                SELECT id FROM memories
+                 WHERE container_tag = ?1
+                   AND (importance * 0.6
+                        + MAX(0.0, 1.0 - (julianday('now') - julianday(created_at)) / ?2) * 0.4
+                       ) < ?3
+            )",
+            params![container_tag, cutoff_age, threshold],
+        )?;
         // Now safe to delete the parents.
         let n = tx.execute(
             "DELETE FROM memories
@@ -1482,6 +1549,15 @@ impl MemoryStore for SqliteMemoryStore {
                    AND julianday('now') - julianday(created_at) > ?2
                    AND importance < ?3
               )",
+            params![container_tag, days as f64, min_importance as f64],
+        )?;
+        let _ = tx.execute(
+            "DELETE FROM memory_fts_map WHERE memory_id IN (
+                SELECT id FROM memories
+                 WHERE container_tag = ?1
+                   AND julianday('now') - julianday(created_at) > ?2
+                   AND importance < ?3
+            )",
             params![container_tag, days as f64, min_importance as f64],
         )?;
         let n = tx.execute(
