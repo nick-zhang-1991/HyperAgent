@@ -128,7 +128,7 @@ pub async fn search(term: &str) -> Result<Vec<Skill>> {
 }
 
 /// Parse SKILL.md format with YAML frontmatter
-fn parse_skill_md(content: &str) -> Option<Skill> {
+pub fn parse_skill_md(content: &str) -> Option<Skill> {
     // YAML frontmatter: --- ... ---
     if !content.starts_with("---") {
         return None;
