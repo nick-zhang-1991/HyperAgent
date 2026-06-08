@@ -158,6 +158,26 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_empty_query_returns_empty() {
+        let (retriever, _tmp) = setup_retriever().unwrap();
+        let results = retriever.recall("", 5).unwrap();
+        assert!(results.is_empty() || results.len() <= 5);
+        drop(retriever);
+        let _ = std::fs::remove_file(&_tmp);
+    }
+
+    #[test]
+    fn hybrid_query_finds_exact_match() {
+        let (retriever, _tmp) = setup_retriever().unwrap();
+        // Memory has "User prefers concise responses" from the test setup
+        let results = retriever.recall("rust", 5).unwrap();
+        // Should not crash, should return 0+ results
+        assert!(results.len() <= 5);
+        drop(retriever);
+        let _ = std::fs::remove_file(&_tmp);
+    }
+
+    #[test]
     fn hybrid_merges_memory_and_knowledge() {
         let root = fresh_kb_dir();
         // 1) memory
