@@ -41,6 +41,7 @@ mod repl;
 mod retrieval;
 mod router;
 mod ci_fix;
+mod analyze;
 mod serve;
 mod sandbox;
 mod scaffold;
