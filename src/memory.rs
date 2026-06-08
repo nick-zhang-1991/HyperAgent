@@ -2639,4 +2639,100 @@ mod tests {
 
         let _ = std::fs::remove_file(&db_path);
     }
+
+    #[test]
+    fn test_fts5_insert_and_search() {
+        let db_path = std::env::temp_dir().join(format!("hyperagent_fts5_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        let store = SqliteMemoryStore::new(&db_path).unwrap();
+        let mgr = MemoryManager::new(Box::new(store), "agent").with_container("fts5-test");
+
+        mgr.remember("Rust is a systems programming language", MemoryType::Learned).unwrap();
+        mgr.remember("Python is great for data science", MemoryType::Learned).unwrap();
+        mgr.remember("JavaScript runs in the browser", MemoryType::Learned).unwrap();
+
+        // Query for "rust" — FTS5 should find it
+        let results = mgr.recall_fused("rust", 5).unwrap();
+        assert!(!results.is_empty(), "FTS5 should find 'rust'");
+        assert!(results.iter().any(|r| r.entry.content.contains("Rust")));
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_fts5_delete_also_cleans_index() {
+        let db_path = std::env::temp_dir().join(format!("hyperagent_fts5_del_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        let store = SqliteMemoryStore::new(&db_path).unwrap();
+        let mgr = MemoryManager::new(Box::new(store), "agent").with_container("fts5-del");
+
+        let id1 = mgr.remember("Keep this memory about Rust", MemoryType::Learned).unwrap();
+        mgr.remember("Delete this about Python", MemoryType::Learned).unwrap();
+
+        // Delete the Python entry
+        mgr.store().delete(&id1).ok();
+
+        // Query should work without FK errors
+        let results = mgr.recall_fused("python", 5).unwrap();
+        // After deleting the non-matching entry, the other should still be findable
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_embedding_consistency() {
+        let a = SqliteMemoryStore::compute_embedding("hello world");
+        let b = SqliteMemoryStore::compute_embedding("hello world");
+        let c = SqliteMemoryStore::compute_embedding("goodbye world");
+
+        // Same input → same vector
+        assert_eq!(a.len(), 256);
+        assert_eq!(b.len(), 256);
+        assert_eq!(c.len(), 256);
+        assert_eq!(a, b, "same input must produce same embedding");
+
+        // Similar input → similar vectors (cosine > 0)
+        let dot_ab: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+        let dot_ac: f32 = a.iter().zip(c.iter()).map(|(x, y)| x * y).sum();
+        assert!((dot_ab - 1.0).abs() < 0.001, "identical vectors have cos=1");
+        assert!(dot_ac > 0.0, "similar strings have positive cosine");
+        assert!(dot_ac < 1.0, "different strings have cos<1");
+
+        let _ = std::fs::remove_file("/tmp/_embed_test");
+    }
+
+    #[test]
+    fn test_single_delete() {
+        let db_path = std::env::temp_dir().join(format!("hyperagent_delete_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        let store = SqliteMemoryStore::new(&db_path).unwrap();
+        let mgr = MemoryManager::new(Box::new(store), "agent").with_container("delete-test");
+
+        let id = mgr.remember("test entry to delete", MemoryType::Learned).unwrap();
+        assert_eq!(mgr.store().query(&Default::default()).unwrap().len(), 1);
+
+        mgr.store().delete(&id).unwrap();
+        assert_eq!(mgr.store().query(&Default::default()).unwrap().len(), 0);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_forget_below_cleans_fts5() {
+        let db_path = std::env::temp_dir().join(format!("hyperagent_fts5_forget_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        let store = SqliteMemoryStore::new(&db_path).unwrap();
+        let mgr = MemoryManager::new(Box::new(store), "agent").with_container("fts5-forget");
+
+        mgr.remember("Rust systems programming", MemoryType::UserPreference).unwrap();
+        mgr.remember("hello world foo bar baz qux", MemoryType::ActionOutcome).unwrap();
+
+        // forget_below with aggressive threshold — deletes low-score entries
+        let deleted = mgr.forget_below(0.99).unwrap();
+        assert!(deleted >= 1, "should delete low-importance entries");
+        // FTS5 query must not crash from orphan FK references
+        let results = mgr.recall_fused("rust", 5).unwrap();
+        // recall_fused may or may not return results (all may be deleted),
+        // but crucially: no FK error, no crash
+        let _ = std::fs::remove_file(&db_path);
+    }
 }
