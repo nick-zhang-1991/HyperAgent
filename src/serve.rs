@@ -203,6 +203,97 @@ async fn share_handler(
     }
 }
 
+
+/// POST /api/analyze — run deep code analysis
+async fn analyze_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let project = state.sessions.lock().await;
+    let root = std::env::current_dir().unwrap_or_default();
+    match crate::analyze::run(&root, false) {
+        Ok(issues) => Json(serde_json::json!({
+            "ok": true,
+            "total": issues.len(),
+            "critical": issues.iter().filter(|i| matches!(i.severity, crate::analyze::Severity::Critical)).count(),
+            "issues": issues,
+        })),
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+/// POST /api/eval — run self-evaluation benchmark
+async fn eval_handler() -> Json<serde_json::Value> {
+    let root = std::env::current_dir().unwrap_or_default();
+    match crate::eval::run_all(&root, true) {
+        Ok(report) => Json(serde_json::json!({
+            "ok": true,
+            "total": report.total,
+            "passed": report.passed,
+            "pass_rate": report.pass_rate,
+        })),
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+/// GET /api/memory/global — list global memories
+async fn global_memory_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let store = crate::memory::SqliteMemoryStore::new(
+        &std::path::PathBuf::from(".hyper/memory.db")
+    );
+    match store {
+        Ok(store) => {
+            let mgr = crate::memory::MemoryManager::new(Box::new(store), "web");
+            match mgr.global_search("*", 20) {
+                Ok(items) => Json(serde_json::json!({
+                    "ok": true,
+                    "count": items.len(),
+                    "memories": items.iter().map(|sm| serde_json::json!({
+                        "content": sm.entry.content,
+                        "importance": sm.entry.importance,
+                        "score": sm.total_score,
+                    })).collect::<Vec<_>>(),
+                })),
+                Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+            }
+        }
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+/// POST /api/feedback — record user feedback
+#[derive(Deserialize)]
+struct FeedbackRequest {
+    kind: String, // "good" or "bad"
+    reason: String,
+}
+
+async fn feedback_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<FeedbackRequest>,
+) -> Json<serde_json::Value> {
+    let store = crate::memory::SqliteMemoryStore::new(
+        &std::path::PathBuf::from(".hyper/memory.db")
+    );
+    match store {
+        Ok(store) => {
+            let mut mgr = crate::memory::MemoryManager::new(Box::new(store), "web");
+            mgr.with_global_promote(0.5);
+            let text = if req.kind == "good" {
+                format!("✅ [FEEDBACK] User approved: {}", req.reason)
+            } else {
+                format!("❌ [CORRECTION] User corrected: {}. DO NOT repeat this.", req.reason)
+            };
+            match mgr.remember(&text, crate::memory::MemoryType::Correction) {
+                Ok(_) => Json(serde_json::json!({"ok": true})),
+                Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+            }
+        }
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
 pub async fn start_server(port: u16, host: &str) -> anyhow::Result<()> {
     let config = crate::config::Config::load()
         .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
@@ -217,6 +308,10 @@ pub async fn start_server(port: u16, host: &str) -> anyhow::Result<()> {
         .route("/api/health", get(health_handler))
         .route("/api/sessions", get(sessions_handler))
         .route("/api/share/{token}", get(share_handler))
+        .route("/api/analyze", post(analyze_handler))
+        .route("/api/eval", post(eval_handler))
+        .route("/api/memory/global", get(global_memory_handler))
+        .route("/api/feedback", post(feedback_handler))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
 
