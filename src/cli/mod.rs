@@ -825,6 +825,13 @@ impl Cli {
 
             Some(Commands::Doctor) => self.run_doctor().await,
 
+            Some(Commands::Eval { json }) => {
+                let report = crate::eval::run_all(&self.project_dir(), *json)?;
+                if *json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                }
+                Ok(())
+            }
             Some(Commands::Bench(action)) => return self.handle_bench(action).await,
 
             Some(Commands::Config { verbose }) => self.show_config(*verbose),
