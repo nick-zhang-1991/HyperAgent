@@ -61,6 +61,9 @@ tempfile = "3.12"
 toml = "0.8.19"
 base64 = "0.22"
 
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors"] }
 ratatui = { version = "0.28", optional = true }
 crossterm = { version = "0.28", optional = true }
 

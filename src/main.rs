@@ -40,6 +40,7 @@ mod refactor;
 mod repl;
 mod retrieval;
 mod router;
+mod serve;
 mod sandbox;
 mod scaffold;
 mod scaffold_templates;
