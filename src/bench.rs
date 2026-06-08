@@ -224,7 +224,7 @@ pub fn run(config: &BenchConfig) -> Result<BenchReport> {
     // We aggressively prune everything with score < 0.45 — that should
     // remove the "noise" memories but keep signal-rich ones. Then re-measure
     // recall on the same query set. If quality stays high, pruning is safe.
-    let count_before_forget = mgr.store().query(&Default::default()).unwrap().len();
+    let _count_before_forget = mgr.store().query(&Default::default()).unwrap().len();
     let deleted = mgr.forget_below(0.45).unwrap_or(0);
     let count_after_forget = mgr.store().query(&Default::default()).unwrap().len();
     let mut mem_recall5_post = 0usize;

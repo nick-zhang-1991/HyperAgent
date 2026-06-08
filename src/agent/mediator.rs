@@ -29,7 +29,7 @@ use super::orchestrator::{Orchestrator, RunResult};
 // ═══════════════════════════════════════════════
 
 /// Typed error for agent pipeline operations
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum AgentError {
     #[error("LLM provider error: {0}")]
     Provider(String),
@@ -94,7 +94,7 @@ impl std::fmt::Display for TaskPhase {
 }
 
 /// Result of a mediated task execution
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TaskResult {
     /// The underlying orchestrator result
     pub inner: RunResult,
@@ -106,11 +106,180 @@ pub struct TaskResult {
     pub session_id: Option<String>,
     /// Number of tool calls made
     pub tool_calls: usize,
+    pub pipeline: PipelineTracker,
+}
+
+// ═══════════════════════════════════════════════
+// Pipeline tracking — per-phase metrics & events
+// ═══════════════════════════════════════════════
+
+/// Per-phase execution metrics
+#[derive(Debug, Clone, Default)]
+pub struct PhaseMetrics {
+    /// Wall-clock time spent in this phase
+    pub duration: Duration,
+    /// LLM tokens consumed
+    pub tokens_used: usize,
+    /// Number of tool calls made
+    pub tool_calls: usize,
+    /// Files modified in this phase
+    pub files_modified: usize,
+    /// Estimated USD cost
+    pub cost_estimate: f64,
+}
+
+impl PhaseMetrics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a completed phase with metrics from RunResult
+    pub fn from_run_result(r: &RunResult, elapsed: Duration) -> Self {
+        Self {
+            duration: elapsed,
+            tokens_used: r.tokens_used,
+            tool_calls: 0, // RunResult doesn't expose tool call count
+            files_modified: r.files_modified,
+            cost_estimate: r.cost_estimate,
+        }
+    }
+}
+
+/// Events that fire during agent pipeline execution
+#[derive(Debug, Clone)]
+pub enum PipelineEvent {
+    /// A phase has started
+    PhaseStarted(TaskPhase),
+    /// A phase has completed with metrics
+    PhaseCompleted(TaskPhase, PhaseMetrics),
+    /// The pipeline encountered an error
+    Error(TaskPhase, AgentError),
+    /// The pipeline completed successfully
+    Completed(TaskResult),
+}
+
+/// Tracks the full pipeline lifecycle with per-phase metrics
+#[derive(Debug, Clone)]
+pub struct PipelineTracker {
+    phases: Vec<(TaskPhase, PhaseMetrics)>,
+    start_time: Instant,
+    phase_start: Instant,
+    current: TaskPhase,
+    pub total_tokens: usize,
+    pub total_tool_calls: usize,
+    pub total_files_modified: usize,
+    pub total_cost: f64,
+    events: Vec<PipelineEvent>,
+}
+
+impl PipelineTracker {
+    pub fn new() -> Self {
+        Self {
+            phases: Vec::with_capacity(5),
+            start_time: Instant::now(),
+            phase_start: Instant::now(),
+            current: TaskPhase::Planning,
+            total_tokens: 0,
+            total_tool_calls: 0,
+            total_files_modified: 0,
+            total_cost: 0.0,
+            events: Vec::new(),
+        }
+    }
+
+    /// Transition to a new pipeline phase
+    pub fn transition(&mut self, phase: TaskPhase) -> PipelineEvent {
+        let elapsed = self.phase_start.elapsed();
+        let metrics = PhaseMetrics {
+            duration: elapsed,
+            ..Default::default()
+        };
+        self.phases.push((self.current.clone(), metrics.clone()));
+        self.events.push(PipelineEvent::PhaseCompleted(self.current.clone(), metrics));
+        
+        self.current = phase;
+        self.phase_start = Instant::now();
+        let event = PipelineEvent::PhaseStarted(self.current.clone());
+        self.events.push(event.clone());
+        event
+    }
+
+    /// Record metrics for the current phase (called when phase completes)
+    pub fn complete_phase(&mut self, r: &RunResult) -> PipelineEvent {
+        let elapsed = self.phase_start.elapsed();
+        let metrics = PhaseMetrics::from_run_result(r, elapsed);
+        
+        self.total_tokens += metrics.tokens_used;
+        self.total_files_modified += metrics.files_modified;
+        self.total_cost += metrics.cost_estimate;
+        
+        self.phases.push((self.current.clone(), metrics.clone()));
+        let event = PipelineEvent::PhaseCompleted(self.current.clone(), metrics);
+        self.events.push(event.clone());
+        event
+    }
+
+    /// Get metrics for a specific phase
+    pub fn phase_metrics(&self, phase: &TaskPhase) -> Option<&PhaseMetrics> {
+        self.phases.iter()
+            .find(|(p, _)| p == phase)
+            .map(|(_, m)| m)
+    }
+
+    /// Total elapsed time since pipeline start
+    pub fn total_elapsed(&self) -> Duration {
+        self.start_time.elapsed()
+    }
+
+    /// Number of phases completed so far
+    pub fn phase_count(&self) -> usize {
+        self.phases.len()
+    }
+
+    /// All pipeline events collected during execution
+    pub fn events(&self) -> &[PipelineEvent] {
+        &self.events
+    }
+
+    /// Display a summary of the pipeline execution
+    pub fn summary(&self) -> String {
+        let elapsed = self.total_elapsed();
+        let secs = elapsed.as_secs_f64();
+        let mut lines = Vec::new();
+        lines.push(format!("Pipeline: {} phases in {:.1}s", self.phases.len(), secs));
+        lines.push(format!("  Tokens: {} | Files: {} | Cost: ${:.4}", 
+            self.total_tokens, self.total_files_modified, self.total_cost));
+        for (phase, metrics) in &self.phases {
+            let d = metrics.duration.as_secs_f64();
+            lines.push(format!("  {phase}: {d:.1}s, {t}tok, {f}files, ${c:.4}",
+                t = metrics.tokens_used, f = metrics.files_modified, c = metrics.cost_estimate));
+        }
+        lines.join("\n")
+    }
+}
+
+impl Default for PipelineTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ═══════════════════════════════════════════════
 // TaskCoordinator
 // ═══════════════════════════════════════════════
+
+/// Parse a tool result string into a typed Result.
+/// Tool results with "Error: " prefix are treated as failures.
+pub fn parse_tool_result(result: &str, _tool_name: &str) -> Result<String, AgentError> {
+    if result.starts_with("Error: ") {
+        Err(AgentError::Tool(result[7..].to_string()))
+    } else if result.starts_with("⚠️") || result.starts_with("❌") {
+        // Emoji-prefixed errors (from some built-in tools)
+        Err(AgentError::Tool(result.to_string()))
+    } else {
+        Ok(result.to_string())
+    }
+}
 
 /// Coordinates the full agent pipeline — wraps Orchestrator with 
 /// typed errors, phase tracking, and session integration.
@@ -139,6 +308,7 @@ pub struct TaskCoordinator {
     provider_pool: Option<ProviderPool>,
     plan_provider: Option<LlmProvider>,
     review_provider: Option<LlmProvider>,
+    tracker: PipelineTracker,
 }
 
 impl TaskCoordinator {
@@ -168,6 +338,7 @@ impl TaskCoordinator {
             provider_pool: None,
             plan_provider: None,
             review_provider: None,
+            tracker: PipelineTracker::new(),
         }
     }
 
@@ -352,6 +523,7 @@ impl TaskCoordinator {
                     total_elapsed: elapsed,
                     session_id: self.session.as_ref().map(|s| s.id.clone()),
                     tool_calls: 0,
+                    pipeline: PipelineTracker::new(),
                 };
             }
         };
@@ -369,11 +541,14 @@ impl TaskCoordinator {
                     total_elapsed: elapsed,
                     session_id: self.session.as_ref().map(|s| s.id.clone()),
                     tool_calls: 0,
+            pipeline: PipelineTracker::new(),
                 };
             }
         };
 
+        self.tracker.complete_phase(&inner_result);
         self.current_phase = TaskPhase::Complete;
+        self.tracker.transition(TaskPhase::Complete);
 
         // Save session if session manager is active
         let session_id = self.session.as_ref().map(|s| s.id.clone()).or(None);
@@ -384,6 +559,7 @@ impl TaskCoordinator {
             total_elapsed: start.elapsed(),
             session_id,
             tool_calls: 0, // orchestrator doesn't expose tool call count yet
+            pipeline: PipelineTracker::new(),
         }
     }
 }
@@ -433,6 +609,68 @@ mod tests {
         assert_eq!(coord.mode, Some("ask".into()));
         assert_eq!(coord.task_id, "test-1");
         assert!(coord.sandbox_enabled);
+    }
+
+    #[test]
+    fn test_pipeline_tracker_basic() {
+        let mut pt = PipelineTracker::new();
+        assert_eq!(pt.phase_count(), 0);
+        
+        pt.transition(TaskPhase::Coding);
+        assert_eq!(pt.phase_count(), 1);
+        
+        // Quick sleep to ensure non-zero duration
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        pt.transition(TaskPhase::Reviewing);
+        assert_eq!(pt.phase_count(), 2);
+        
+        let elapsed = pt.total_elapsed();
+        assert!(elapsed.as_secs_f64() > 0.0);
+    }
+
+    #[test]
+    fn test_pipeline_tracker_summary() {
+        let mut pt = PipelineTracker::new();
+        pt.transition(TaskPhase::Coding);
+        pt.transition(TaskPhase::Complete);
+        
+        let summary = pt.summary();
+        assert!(summary.contains("Pipeline:"));
+        assert!(summary.contains("phases"));
+    }
+
+    #[test]
+    fn test_pipeline_tracker_events() {
+        let mut pt = PipelineTracker::new();
+        pt.transition(TaskPhase::Coding);
+        pt.transition(TaskPhase::Complete);
+        
+        let events = pt.events();
+        assert!(events.len() >= 2);
+        // First event should be PhaseCompleted(Planning) and start of Coding
+    }
+
+    #[test]
+    fn test_parse_tool_result_success() {
+        let result = parse_tool_result("Search results: found 5 items", "web_search");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Search results: found 5 items");
+    }
+
+    #[test]
+    fn test_parse_tool_result_error() {
+        let result = parse_tool_result("Error: web search failed: timeout", "web_search");
+        assert!(result.is_err());
+        match result {
+            Err(AgentError::Tool(msg)) => assert_eq!(msg, "web search failed: timeout"),
+            _ => panic!("Expected Tool error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tool_result_emoji_error() {
+        let result = parse_tool_result("⚠️ Memory not found", "memory_search");
+        assert!(result.is_err());
     }
 
     #[test]

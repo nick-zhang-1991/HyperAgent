@@ -1,4 +1,5 @@
 //! HyperAgent - Ultra-Fast CLI Coding Agent
+#![allow(dead_code)]
 //!
 //! Key differentiators:
 //! 1. **TurboIndex** - Tree-sitter based global code index with PageRank relevance
