@@ -725,6 +725,35 @@ impl SqliteMemoryStore {
     // BM25 Scoring
     // ═══════════════════════════════════════════
 
+    /// Calculate BM25 score for a single document against query terms
+    /// using PRE-LOADED term data (no SQL round-trips per candidate).
+    fn bm25_score_preloaded(
+        doc_len: f64,
+        doc_term_freqs: &HashMap<String, usize>,
+        query_terms: &HashSet<String>,
+        term_doc_counts: &HashMap<String, f64>,
+        total_docs: f64,
+        avg_doc_len: f64,
+    ) -> f64 {
+        let k1 = 1.2;
+        let b = 0.75;
+        let mut score = 0.0;
+        for term in query_terms {
+            let df = term_doc_counts.get(term).copied().unwrap_or(0.0);
+            if df == 0.0 {
+                continue;
+            }
+            let idf = ((total_docs - df + 0.5) / (df + 0.5) + 1.0).ln();
+            let tf = *doc_term_freqs.get(term).unwrap_or(&0) as f64;
+            if tf == 0.0 {
+                continue;
+            }
+            let normalized_tf = (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * doc_len / avg_doc_len.max(1.0)));
+            score += idf * normalized_tf;
+        }
+        score
+    }
+
     /// Calculate BM25 score for a single document against query terms.
     /// Uses average document length from the database for length normalization.
     fn bm25_score(
@@ -1199,6 +1228,57 @@ impl MemoryStore for SqliteMemoryStore {
             return Ok(Vec::new());
         }
 
+        // ── Step 5b: Batch-load BM25 data (avoids N+1 queries per candidate) ──
+        let candidate_ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
+        // Build doc_terms map: doc_id -> { term -> freq }
+        let mut doc_terms_map: HashMap<String, HashMap<String, usize>> = HashMap::new();
+        {
+            let placeholders: Vec<String> = candidate_ids.iter().enumerate()
+                .map(|(i, _)| format!("?{}", i + 1)).collect();
+            let sql = format!(
+                "SELECT doc_id, term, freq FROM doc_terms WHERE doc_id IN ({})",
+                placeholders.join(",")
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::types::ToSql> = candidate_ids.iter()
+                .map(|id| id as &dyn rusqlite::types::ToSql).collect();
+            let rows = stmt.query_map(params.as_slice(), |row| {
+                let doc_id: String = row.get(0)?;
+                let term: String = row.get(1)?;
+                let freq: usize = row.get(2)?;
+                Ok((doc_id, term, freq))
+            })?;
+            for r in rows.flatten() {
+                doc_terms_map.entry(r.0).or_default().insert(r.1, r.2);
+            }
+        }
+        // Compute doc_len from the loaded doc_terms
+        let mut doc_len_map: HashMap<String, f64> = HashMap::new();
+        for (doc_id, terms) in &doc_terms_map {
+            let total: f64 = terms.values().sum::<usize>() as f64;
+            doc_len_map.insert(doc_id.clone(), total);
+        }
+        // Build term -> doc_count map for query terms
+        let mut term_doc_counts: HashMap<String, f64> = HashMap::new();
+        if !query_terms.is_empty() {
+            let placeholders: Vec<String> = (1..=query_terms.len()).map(|i| format!("?{}", i)).collect();
+            let sql = format!(
+                "SELECT term, doc_count FROM term_df WHERE term IN ({})",
+                placeholders.join(",")
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let qt_refs: Vec<&dyn rusqlite::types::ToSql> = query_terms.iter()
+                .map(|t| t as &dyn rusqlite::types::ToSql).collect();
+            let rows = stmt.query_map(qt_refs.as_slice(), |row| {
+                let term: String = row.get(0)?;
+                let doc_count: f64 = row.get(1)?;
+                Ok((term, doc_count))
+            })?;
+            for r in rows.flatten() {
+                term_doc_counts.insert(r.0, r.1);
+            }
+        }
+
         // ── Step 6: Score each candidate ──
         let half_life = TEMPORAL_HALF_LIFE_DAYS;
 
@@ -1213,11 +1293,16 @@ impl MemoryStore for SqliteMemoryStore {
         let mut scored: Vec<ScoredMemory> = candidates
             .into_iter()
             .map(|entry| {
-                // ── Keyword / BM25 score ──
+                // ── Keyword / BM25 score (pre-loaded data, no SQL) ──
                 let bm25 = if query_terms.is_empty() {
                     0.0
                 } else {
-                    Self::bm25_score(&conn, &entry.id, &query_terms, total_docs, avg_doc_len)
+                    let doc_term_freqs = doc_terms_map.get(&entry.id).cloned().unwrap_or_default();
+                    let doc_len = *doc_len_map.get(&entry.id).unwrap_or(&0.0);
+                    Self::bm25_score_preloaded(
+                        doc_len, &doc_term_freqs, &query_terms,
+                        &term_doc_counts, total_docs, avg_doc_len,
+                    )
                 };
 
                 // ── Entity score ──
