@@ -14,6 +14,7 @@
 
 use anyhow::Result;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use crate::diff::FileChange;
 use crate::hooks::{HookEvent, HookRegistry};
@@ -26,8 +27,11 @@ use super::apply_agent::ApplyAgent;
 use super::review_agent::ReviewAgent;
 use super::plan_agent::Intent;
 
+/// Maximum depth for sub-agent task tool to prevent infinite recursion.
+pub const MAX_TASK_DEPTH: u32 = 3;
+
 /// Result of an orchestrator run
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct RunResult {
     pub files_modified: usize,
     pub tokens_used: usize,
@@ -65,6 +69,8 @@ pub struct Orchestrator {
     sandbox_enabled: bool,
     /// Loaded plugin tools from .hyper/tools/
     plugin_manager: Option<crate::plugin::PluginManager>,
+    /// Current sub-agent task depth (incremented by task tool)
+    task_depth: AtomicU32,
 }
 
 impl Orchestrator {
@@ -96,6 +102,7 @@ impl Orchestrator {
             knowledge_base: None,
             sandbox_enabled: false,
             plugin_manager: None,
+            task_depth: AtomicU32::new(0),
         }
     }
 
@@ -545,10 +552,12 @@ impl Orchestrator {
         let has_cargo = self.root.join("Cargo.toml").exists();
         let has_ts = self.root.join("tsconfig.json").exists();
         if has_cargo || has_ts {
-            let fix_attempts = 3;
-            for fix_round in 1..=fix_attempts {
+            let max_attempts = 5;
+            let mut seen_errors: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for fix_round in 1..=max_attempts {
                 let linter = if has_cargo { "cargo check" } else { "tsc --noEmit" };
-                println!("   🔧 Lint check ({linter})...");
+                print!("   🔧 Lint check ({linter}, round {fix_round}/{max_attempts})...");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
 
                 let check_result = if has_cargo {
                     std::process::Command::new("cargo")
@@ -566,36 +575,70 @@ impl Orchestrator {
 
                 match check_result {
                     Some(out) if out.status.success() => {
-                        println!("   ✅ Lint passed ({})", linter);
+                        println!(" ✅");
                         break;
                     }
                     Some(out) => {
                         let stderr = String::from_utf8_lossy(&out.stderr);
-                        let error_snippet: Vec<&str> = stderr.lines()
-                            .filter(|l| l.contains("error[") || l.contains("error:"))
-                            .take(5)
-                            .collect();
-
-                        if error_snippet.is_empty() {
-                            println!("   ✅ Lint passed ({})", linter);
-                            break;
+                        // Extract all error lines with file:line
+                        let mut new_errors: Vec<String> = Vec::new();
+                        for line in stderr.lines() {
+                            let line = line.trim();
+                            // Match: "error[E0308]" or "error: ..." or "....rs:line:col: error["
+                            let is_error = line.contains("error[")
+                                || line.starts_with("error:")
+                                || (line.ends_with(".rs") && line.contains("error"))
+                                || line.contains("aborting due to");
+                            if is_error {
+                                if seen_errors.insert(line.to_string()) {
+                                    new_errors.push(line.to_string());
+                                }
+                            }
                         }
 
-                        let errors = error_snippet.join("\n");
-                        println!("   ⚠️  Lint errors detected (round {fix_round}/{fix_attempts}):");
-                        for e in &error_snippet {
+                        if new_errors.is_empty() {
+                            // Check if there are any real errors at all
+                            let has_errors = stderr.lines().any(|l| l.contains("error["));
+                            if !has_errors {
+                                println!(" ✅ (no actionable errors)");
+                                break;
+                            }
+                        }
+
+                        println!(); // newline after the "checking..." message
+                        println!(
+                            "   ⚠️  {} new lint errors (round {fix_round}/{max_attempts}, {} total seen):",
+                            new_errors.len(),
+                            seen_errors.len()
+                        );
+                        for e in new_errors.iter().take(10) {
                             println!("      {e}");
                         }
+                        if new_errors.len() > 10 {
+                            println!("      ... and {} more", new_errors.len() - 10);
+                        }
 
-                        if fix_round >= fix_attempts {
-                            println!("   ❌ Max fix attempts reached — manual intervention needed");
+                        if fix_round >= max_attempts {
+                            println!("   ❌ Max fix attempts ({max_attempts}) reached — {}
+      Errors remaining: {} unique, {} new this round",
+                                if seen_errors.len() <= 3 { "likely a deep issue" } else { "manual intervention needed" },
+                                seen_errors.len(), new_errors.len());
                             break;
                         }
 
-                        // Ask LLM to fix the errors
-                        println!("   🔄 Requesting auto-fix from LLM...");
+                        // Build error context (full stderr, trimmed to relevant parts)
+                        let error_context: String = stderr.lines()
+                            .filter(|l| {
+                                l.contains("error[") || l.starts_with("error:")
+                                    || l.starts_with("  --> ") || l.starts_with("   = ")
+                                    || l.starts_with("help:") || l.starts_with("note:")
+                                    || l.trim().starts_with("|")
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
 
                         // Read the current file content for each approved change
+                        println!("   🔄 Requesting auto-fix from LLM (round {fix_round}/{max_attempts})...");
                         let fix_files: Vec<crate::diff::FileChange> = approved.iter()
                             .filter_map(|c| {
                                 let path = &c.file;
@@ -615,10 +658,21 @@ impl Orchestrator {
                             .collect();
 
                         let review_input = crate::agent::review_agent::build_review_context_for_lint(
-                            "Fix compile errors in the changed files", &fix_files, &errors
+                            &format!("Fix compile errors in the changed files (attempt {fix_round})"), &fix_files, &error_context
                         );
 
-                        let fix_system_prompt = "You are a code fixer. The following compile errors were found after applying changes.\n                                 Output ONLY the corrected file content in JSON format:\n                                 {{\"file\": \"relative/path\", \"content\": \"COMPLETE corrected file content\"}}\n                                 RULES:\n                                 - Output one JSON object per file that needs fixing\n                                 - Do NOT change anything beyond what is needed to fix the errors\n                                 - Keep the existing code structure intact\n                                 - Each JSON must be on its own line";
+                        let fix_system_prompt = &format!(
+                            "You are a code fixer. The following compile errors were found after applying changes.\
+                             Output ONLY the corrected file content in JSON format:\\n\
+                             {}\"file\": \"relative/path\", \"content\": \"COMPLETE corrected file content\"{}\\n\
+                             RULES:\\n\
+                             - Output one JSON object per file that needs fixing\\n\
+                             - Do NOT change anything beyond what is needed to fix the errors\\n\
+                             - Keep the existing code structure intact\\n\
+                             - Each JSON must be on its own line",
+                            '{', '}'
+                        );
+
                         let fix_response = self.provider.chat(vec![
                             Message::text("system", fix_system_prompt),
                             Message::text("user", review_input),
@@ -626,10 +680,16 @@ impl Orchestrator {
 
                         match fix_response {
                             Ok(response) => {
-                                // Parse the fix output and apply corrections
                                 let fixed = crate::agent::code_agent::CodeAgent::parse_fix_response(
                                     &response, &self.root
                                 );
+                                if fixed.is_empty() {
+                                    println!("   ⚠️  LLM couldn't generate fixes — stopping auto-fix");
+                                    let remaining: Vec<&String> = seen_errors.iter().take(3).collect();
+                                    let remaining_sample: Vec<&str> = remaining.iter().map(|s| s.as_str()).collect();
+                    println!("      Remaining errors (sample): {}", remaining_sample.join("; "));
+                                    break;
+                                }
                                 for (path, content) in &fixed {
                                     if let Some(parent) = path.parent() {
                                         let _ = std::fs::create_dir_all(parent);
@@ -639,11 +699,6 @@ impl Orchestrator {
                                     } else {
                                         println!("   ✅ Fixed: {}", path.display());
                                     }
-                                }
-
-                                if fixed.is_empty() {
-                                    println!("   ⚠️  LLM couldn't generate fixes — stopping auto-fix");
-                                    break;
                                 }
                             }
                             Err(e) => {
@@ -659,7 +714,6 @@ impl Orchestrator {
                 }
             }
         }
-
         // Sync worktree changes back to main repo and clean up
         if let Some(ref mut wt) = _wt_manager {
             Self::sync_worktree_and_cleanup(wt, &self.root).await;
@@ -1083,8 +1137,8 @@ impl Orchestrator {
                 match crate::web_search::search(query, 6).await {
                     Ok(results) => {
                         let mut output = String::new();
-                        for (i, (title, url, snippet)) in results.iter().enumerate() {
-                            output.push_str(&format!("{}. **{}**\n   URL: {}\n   {}\n\n", i + 1, title, url, snippet));
+                        for (i, r) in results.iter().enumerate() {
+                            output.push_str(&format!("{}. **{}**\n   URL: {}\n   {}\n\n", i + 1, r.title, r.url, r.snippet));
                         }
                         if output.is_empty() {
                             output = format!("No search results found for: {query}");
@@ -1717,6 +1771,68 @@ impl Orchestrator {
                     }
                     Err(e) => {
                         format!("Error: vision analysis failed: {e}\n\nThe provider may not support vision. Try using a vision-capable model (e.g. GPT-4o, Claude Sonnet).")
+                    }
+                }
+            }
+            "desktop" => {
+                let action = args["action"].as_str().unwrap_or("");
+                match action {
+                    "screenshot" => {
+                        let tmp = std::env::temp_dir().join(format!("hyper_screenshot_{}.png", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+                        match crate::computer_use_cross::ComputerUse::screenshot(tmp.to_str().unwrap_or("/tmp/hyper_screenshot.png")) {
+                            Ok(_) => format!("Screenshot saved. The desktop is visible. Path: {}", tmp.display()),
+                            Err(e) => format!("Error: screenshot failed: {e}"),
+                        }
+                    }
+                    "click" => {
+                        let x = args["x"].as_i64().unwrap_or(0) as i32;
+                        let y = args["y"].as_i64().unwrap_or(0) as i32;
+                        match crate::computer_use_cross::ComputerUse::click(x, y) {
+                            Ok(_) => format!("Clicked at ({x}, {y})"),
+                            Err(e) => format!("Error: click failed: {e}"),
+                        }
+                    }
+                    "type" => {
+                        let text = args["text"].as_str().unwrap_or("");
+                        if text.is_empty() { return "Error: 'text' parameter required for type action".to_string(); }
+                        match crate::computer_use_cross::ComputerUse::type_text(text) {
+                            Ok(_) => format!("Typed text at cursor"),
+                            Err(e) => format!("Error: type failed: {e}"),
+                        }
+                    }
+                    "key" => {
+                        let name = args["name"].as_str().unwrap_or("");
+                        if name.is_empty() { return "Error: 'name' parameter required for key action".to_string(); }
+                        match crate::computer_use_cross::ComputerUse::key_press(name) {
+                            Ok(_) => format!("Pressed key: {name}"),
+                            Err(e) => format!("Error: key press failed: {e}"),
+                        }
+                    }
+                    _ => format!("Error: unknown desktop action '{action}'. Use: screenshot, click, type, key"),
+                }
+            }
+            "task" => {
+                let prompt = args["prompt"].as_str().unwrap_or("");
+                if prompt.is_empty() {
+                    return "Error: 'prompt' parameter is required".to_string();
+                }
+                let current = self.task_depth.fetch_add(1, Ordering::Relaxed);
+                if current >= MAX_TASK_DEPTH - 1 {
+                    self.task_depth.fetch_sub(1, Ordering::Relaxed);
+                    return format!("Error: sub-agent task depth exceeded (max {MAX_TASK_DEPTH}). Cannot delegate further. Complete the task yourself.");
+                }
+                let messages = vec![
+                    Message::text("system", "You are a helpful sub-agent. Complete the task given below. Be concise and thorough. Do NOT call the task tool yourself — you are already a sub-agent."),
+                    Message::text("user", prompt),
+                ];
+                match self.provider.chat(messages).await {
+                    Ok(response) => {
+                        self.task_depth.fetch_sub(1, Ordering::Relaxed);
+                        response
+                    }
+                    Err(e) => {
+                        self.task_depth.fetch_sub(1, Ordering::Relaxed);
+                        format!("Error: sub-agent task failed: {e}")
                     }
                 }
             }
@@ -2897,7 +3013,7 @@ edition = "2021"
                 matches!(name,
                     "web_search" | "read_file" | "knowledge_search"
                     | "memory_search" | "read_document" | "browser"
-                    | "analyze_image" | "platform_setup"
+                    | "analyze_image" | "platform_setup" | "desktop"
                 ),
                 "Unexpected tool '{name}' in ask mode"
             );
