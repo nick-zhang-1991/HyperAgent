@@ -409,8 +409,11 @@ impl SqliteMemoryStore {
     fn build_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA mmap_size=268435456;
              PRAGMA busy_timeout=5000;
              PRAGMA cache_size=-64000;
+             PRAGMA temp_store=MEMORY;
 
              CREATE TABLE IF NOT EXISTS memories (
                 id               TEXT PRIMARY KEY,
