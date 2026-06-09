@@ -1,0 +1,13 @@
+services:
+  agent-platform:
+    build: .
+    ports:
+      - "4000:4000"
+    restart: always
+    environment:
+      - JWT_SECRET=agent-platform-cn2-secret-v3
+    volumes:
+      - platform_data:/root/.local/share/agent-platform
+
+volumes:
+  platform_data:
