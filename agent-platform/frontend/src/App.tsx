@@ -127,6 +127,8 @@ function AgentGrid({ orgId }: { orgId: string }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [events, setEvents] = useState<string[]>([]);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
 
   const load = useCallback(async () => {
     const [ar, tr] = await Promise.all([
@@ -148,10 +150,30 @@ function AgentGrid({ orgId }: { orgId: string }) {
     return () => ws.close();
   }, [load]);
 
-  const agentTasks = (agentId: string) => tasks.filter(t => t.agent_id === agentId).slice(-5);
+  const filteredTasks = tasks.filter(t => {
+    const matchSearch = !search || t.description.toLowerCase().includes(search.toLowerCase()) || (t.result||'').toLowerCase().includes(search.toLowerCase());
+    const matchStatus = !statusFilter || t.status === statusFilter;
+    return matchSearch && matchStatus;
+  });
+  const agentTasks = (agentId: string) => filteredTasks.filter(t => t.agent_id === agentId).slice(-10);
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="flex-1 relative">
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <input type="text" placeholder="Search tasks..." value={search} onChange={e => setSearch(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 rounded-lg bg-[#0d0d15] border border-gray-800 text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-indigo-500 transition-colors" />
+        </div>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          className="px-3 py-2 rounded-lg bg-[#0d0d15] border border-gray-800 text-sm text-gray-400 focus:outline-none focus:border-indigo-500">
+          <option value="">All Status</option>
+          <option value="completed">Completed</option>
+          <option value="running">Running</option>
+          <option value="pending">Pending</option>
+          <option value="failed">Failed</option>
+        </select>
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
         {agents.map(a => (
           <AgentCard key={a.id} agent={a} tasks={agentTasks(a.id)} orgId={orgId} onUpdate={load} />
@@ -216,6 +238,20 @@ function AgentCard({ agent, tasks, orgId, onUpdate }: { agent: Agent; tasks: Tas
           </span>
         </div>
         <p className="text-xs text-gray-600 line-clamp-2">{agent.description}</p>
+              <div className="flex gap-4 mt-3 pt-2 border-t border-gray-800">
+                <div className="text-center">
+                  <div className="text-xs font-semibold text-gray-300">{agent.total_tasks}</div>
+                  <div className="text-[10px] text-gray-600">Total</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-xs font-semibold text-green-400">{agent.completed_tasks}</div>
+                  <div className="text-[10px] text-gray-600">Done</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-xs font-semibold text-indigo-400">{agent.total_tasks > 0 ? Math.round(agent.completed_tasks/agent.total_tasks*100) : 0}%</div>
+                  <div className="text-[10px] text-gray-600">Rate</div>
+                </div>
+              </div>
       </div>
 
       {/* Tasks */}
