@@ -37,7 +37,13 @@ struct Db { conn: Mutex<rusqlite::Connection> }
 impl Db {
     fn new(path: &str) -> anyhow::Result<Self> {
         let conn = rusqlite::Connection::open(path)?;
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS orgs (id TEXT PRIMARY KEY, name TEXT, description TEXT, api_key TEXT, created_at TEXT); CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, org_id TEXT, name TEXT, role TEXT, description TEXT, status TEXT, current_task TEXT, total_tasks INTEGER DEFAULT 0, completed_tasks INTEGER DEFAULT 0, created_at TEXT); CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, org_id TEXT, agent_id TEXT, description TEXT, status TEXT, result TEXT, duration_ms INTEGER, created_at TEXT, completed_at TEXT); CREATE INDEX IF NOT EXISTS idx_agents_org ON agents(org_id); CREATE INDEX IF NOT EXISTS idx_tasks_org ON tasks(org_id);")?;
+        let _ = conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS orgs (id TEXT PRIMARY KEY, name TEXT, description TEXT, api_key TEXT, created_at TEXT);
+            -- Migration: add api_key if column missing
+            ALTER TABLE orgs ADD COLUMN api_key TEXT;
+            -- Migration: add task metrics if columns missing  
+            ALTER TABLE agents ADD COLUMN total_tasks INTEGER DEFAULT 0;
+            ALTER TABLE agents ADD COLUMN completed_tasks INTEGER DEFAULT 0; (id TEXT PRIMARY KEY, name TEXT, description TEXT, api_key TEXT, created_at TEXT); CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, org_id TEXT, name TEXT, role TEXT, description TEXT, status TEXT, current_task TEXT, total_tasks INTEGER DEFAULT 0, completed_tasks INTEGER DEFAULT 0, created_at TEXT); CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, org_id TEXT, agent_id TEXT, description TEXT, status TEXT, result TEXT, duration_ms INTEGER, created_at TEXT, completed_at TEXT); CREATE INDEX IF NOT EXISTS idx_agents_org ON agents(org_id); CREATE INDEX IF NOT EXISTS idx_tasks_org ON tasks(org_id);");
         Ok(Self { conn: Mutex::new(conn) })
     }
 

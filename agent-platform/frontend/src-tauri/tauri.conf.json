@@ -1,5 +1,4 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nick-zhang-1991/HyperAgent/main/agent-platform/frontend/src-tauri/tauri.conf.json",
   "productName": "Agent Platform",
   "version": "0.1.0",
   "identifier": "com.hyperagent.agent-platform",
@@ -10,25 +9,20 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "title": "Agent Platform",
     "windows": [
       {
-        "title": "Agent Platform — Orchestration Dashboard",
+        "title": "Agent Platform",
         "width": 1280,
         "height": 800,
-        "resizable": true,
-        "fullscreen": false
+        "resizable": true
       }
-    ]
+    ],
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "msi"],
-    "icon": ["icons/icon.png"]
-  },
-  "plugins": {
-    "shell": {
-      "open": true
-    }
+    "targets": ["dmg", "msi"]
   }
 }
