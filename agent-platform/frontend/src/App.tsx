@@ -24,8 +24,8 @@ function Sidebar() {
   const [showCreate, setShowCreate] = useState(false);
 
   const load = useCallback(async () => {
-    const r = await fetch(`${API}/api/orgs`);
-    setOrgs(await r.json());
+    try { const r = await fetch(`${API}/api/orgs`); if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    setOrgs(await r.json()); } catch(e) { console.warn('Backend not available:', e); }
   }, []);
 
   useEffect(() => { load(); }, [load]);
