@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Agent Orchestration Platform — manage orgs, agents, and tasks"
 
+[workspace]
+
 [dependencies]
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
