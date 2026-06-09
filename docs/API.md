@@ -1,104 +1,131 @@
 # HyperAgent API Reference
 
-## Web API (hyper serve)
+## Authentication
 
-The Web API uses Server-Sent Events (SSE) for streaming responses.
+All endpoints require no auth — the server runs locally on `127.0.0.1`.
 
-### POST /api/chat
+## Endpoints
 
-Send a message to the agent. Returns SSE stream of tokens.
+### POST /api/chat — Chat with the Agent
 
-**Request:**
-```json
-{
-  "message": "Your prompt here",
-  "session_id": "optional-session-uuid"
-}
+Streaming SSE response. Tokens arrive in real-time.
+
+```bash
+curl -N -X POST http://127.0.0.1:3000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "explain Rust ownership"}'
 ```
 
-**Response (SSE):**
+Response (SSE):
 ```
-data: I'll
-data:  help
-data:  you
-data:  with
-data:  that
+data: Rust
+data:  ownership
+data:  is
+data:  a
+data:  system...
 data: [DONE]
 ```
 
-**Session persistence:** Sessions are stored in memory. Reuse `session_id` to continue a conversation.
+---
 
-### GET /api/health
+### POST /api/analyze — Code Analysis
 
-Check server status.
+```bash
+curl -X POST http://127.0.0.1:3000/api/analyze
+```
 
+Response:
 ```json
 {
-  "status": "ok",
-  "version": "0.2.0",
-  "name": "HyperAgent"
+  "ok": true,
+  "total": 12,
+  "critical": 2,
+  "issues": [
+    {"severity": "Critical", "file": "src/auth.rs", "line": 42, "message": "unwrap() in production path"}
+  ]
 }
 ```
 
-### GET /api/sessions
+---
 
-List active sessions.
+### POST /api/eval — Self-Evaluation
 
+```bash
+curl -X POST http://127.0.0.1:3000/api/eval
+```
+
+Response:
+```json
+{"ok": true, "total": 4, "passed": 3, "fail_rate": 75.0}
+```
+
+---
+
+### GET /api/memory/global — Global Knowledge
+
+```bash
+curl http://127.0.0.1:3000/api/memory/global
+```
+
+Response:
 ```json
 {
-  "count": 3,
-  "sessions": ["uuid-1", "uuid-2", "uuid-3"]
+  "ok": true,
+  "count": 5,
+  "memories": [
+    {"content": "User prefers Rust for systems code", "importance": 0.92, "score": 0.85}
+  ]
 }
 ```
 
-### GET /api/share/:token
+---
 
-Resolve a shared session token.
+### POST /api/feedback — Train the Agent
 
+```bash
+# Positive feedback
+curl -X POST http://127.0.0.1:3000/api/feedback \
+  -d '{"kind":"good","reason":"followed Rust conventions"}'
+
+# Correction
+curl -X POST http://127.0.0.1:3000/api/feedback \
+  -d '{"kind":"bad","reason":"used unwrap() instead of ?"}'
+```
+
+---
+
+### GET /api/health — Health Check
+
+```bash
+curl http://127.0.0.1:3000/api/health
+```
 ```json
-{
-  "session_id": "...",
-  "summary": "Session summary line",
-  "messages": [{"role": "user", "content": "..."}],
-  "token": "uuid-token"
-}
+{"status":"ok","version":"0.2.0","name":"HyperAgent"}
 ```
 
-## CLI API
+### GET /api/sessions — List Sessions
 
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `HYPER_LLM_API_KEY` | LLM provider API key | (required) |
-| `HYPER_LLM_MODEL` | Model name | `gpt-4o` |
-| `HYPER_LLM_BASE_URL` | API base URL | `https://api.openai.com/v1` |
-| `HYPER_LANG` | UI language (`en` or `zh-CN`) | Auto-detect from `LANG` |
-| `HYPER_LLM_MAX_RETRIES` | Max retry attempts | 3 |
-| `HYPER_LLM_TIMEOUT` | Request timeout (seconds) | 60 |
-| `RUST_LOG` | Log level | `info` |
-
-### Config File
-
-Location: `~/.config/hyper/config.toml` (Linux) or `~/Library/Application Support/hyper/config.toml` (macOS)
-
-```toml
-[llm]
-providers = [
-  { model = "gpt-4o", base_url = "https://api.openai.com/v1", api_key = "${HYPER_LLM_API_KEY}" },
-]
-
-[sandbox]
-enabled = true
-image = "hyperagent-sandbox:latest"
-
-[memory]
-max_entries = 10000
-auto_prune_threshold = 5000
-auto_prune_below = 0.1
-global_promote_threshold = 0.7
-
-[git]
-auto_commit = true
-commit_style = "conventional"
+```bash
+curl http://127.0.0.1:3000/api/sessions
 ```
+```json
+{"count":3,"sessions":["uuid-1","uuid-2","uuid-3"]}
+```
+
+### GET /api/share/:token — Resolve Shared Session
+
+```bash
+curl http://127.0.0.1:3000/api/share/abc123-def456
+```
+```json
+{"session_id":"...","summary":"API design session","token":"abc123-def456"}
+```
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HYPER_LLM_API_KEY` | (required) | LLM API key |
+| `HYPER_LLM_MODEL` | `gpt-4o` | Model name |
+| `HYPER_LLM_BASE_URL` | `https://api.openai.com/v1` | API base URL |
+| `HYPER_LANG` | Auto-detect | UI language (en, zh-CN, ja, etc.) |
