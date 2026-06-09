@@ -1,7 +1,5 @@
 # HyperAgent 🚀
 
-**通用 AI Agent** — 编码、分析、自动化、协作一体。并行多智能体架构，内置世界级记忆系统。
-
 **General-Purpose AI Agent** — Code, analyze, automate, collaborate. Parallel multi-agent architecture with world-class memory.
 
 [![CI](https://github.com/nick-zhang-1991/HyperAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/nick-zhang-1991/HyperAgent/actions)
@@ -11,189 +9,180 @@
 [![Stars](https://img.shields.io/github/stars/nick-zhang-1991/HyperAgent?style=flat-square)](https://github.com/nick-zhang-1991/HyperAgent/stargazers)
 [![i18n](https://img.shields.io/badge/i18n-20_languages-blue?style=flat-square)](https://github.com/nick-zhang-1991/HyperAgent)
 
-> ⚡ 启动 <0.3s · 🧠 越用越聪明的跨项目记忆 · 🐝 多 Agent 并行 · 🌐 20语言支持
+> ⚡ Starts <0.3s · 🧠 Cross-project memory · 🐝 Multi-agent parallel · 🌐 20 languages
 
 [English](#) | [中文](README_zh-CN.md) | [日本語](README_ja.md) | [한국어](README_ko.md) | [Español](README_es.md) | [Français](README_fr.md) | [Deutsch](README_de.md) | [Русский](README_ru.md) | [Português](README_pt.md) | [Tiếng Việt](README_vi.md) | [Italiano](README_it.md) | [Türkçe](README_tr.md) | [Polski](README_pl.md) | [العربية](README_ar.md) | [Bahasa Indonesia](README_id.md) | [Українська](README_uk.md) | [Nederlands](README_nl.md) | [ไทย](README_th.md) | [বাংলা](README_bn.md) | [हिन्दी](README_hi.md)
 
 ```bash
-# 编码任务
-hyper run "用 Rust 实现一个线程安全的 LRU 缓存"
+# Coding
+hyper run "implement a thread-safe LRU cache in Rust"
 
-# 深度分析
-hyper analyze                    # 安全、复杂度、死代码全面审计
+# Analysis
+hyper analyze
 
-# 自动化
-hyper swarm "构建 REST API + 认证 + 限流 + 测试"    # 多 Agent 并行
+# Multi-agent
+hyper swarm "build REST API + auth + rate limiting"
 
-# 研究搜索
-hyper run "对比 2024 年 Rust vs Go 的性能基准测试" --mode ask
+# Research
+hyper run "compare Rust vs Go performance" --mode ask
 
 # DevOps
-hyper ci-fix build.log --push    # CI 管道自动修复
-hyper run "优化 Dockerfile 减小镜像体积 50%"
+hyper ci-fix build.log --push
 
-# 自我进化
-hyper feedback good "遵循了 Rust 社区约定"
-hyper feedback bad "不应该在库代码里用 unwrap()"
+# Self-improvement
+hyper feedback good "followed Rust conventions"
 ```
 
 ---
 
-## Installation / 安装
+## Installation
 
 ```bash
 # macOS/Linux
 brew install nick-zhang-1991/hyperagent/hyperagent
 
-# 或 cargo-binstall（推荐，秒装）
+# or cargo-binstall (fastest)
 cargo binstall hyperagent
 
-# 或源码编译
+# or from source
 cargo install hyperagent
 
-# 或一键脚本
+# or one-liner
 curl -fsSL https://raw.githubusercontent.com/nick-zhang-1991/HyperAgent/main/scripts/install.sh | bash
 ```
 
-[中文用户请查看 README_zh-CN.md](README_zh-CN.md) | `export HYPER_LANG=zh-CN`
+---
 
-20 languages supported: `en` `zh-CN` `es` `ar` `pt` `id` `fr` `ja` `de` `ru` `ko` `vi` `it` `tr` `pl` `uk` `nl` `th` `bn` `hi`
+## What Can It Do?
+
+| Scenario | Example |
+|---------|---------|
+| 🖥️ Coding | `hyper run "add JWT auth middleware"` |
+| 🔍 Analysis | `hyper analyze` — security, complexity, dead code audit |
+| 🤖 Automation | `hyper swarm "split monolith into microservices"` |
+| 🧪 Testing | `hyper run "write unit tests for UserService"` |
+| 📚 Research | `hyper run "compare Rust async vs Go goroutines" --mode ask` |
+| 🔧 DevOps | `hyper ci-fix ci.log` |
+| 🔒 Security | `hyper run "audit codebase for vulnerabilities"` |
+| 📦 Packaging | `hyper run "generate Kubernetes deployment config"` |
+| 🌍 Maintenance | Analyze → find bugs → create PR → approve |
+| 🧠 Evolution | `hyper feedback good/bad` — teach the agent |
 
 ---
 
-## What Can It Do? / 能做什么
+## CLI Commands
 
-| 场景 | 命令示例 |
-|------|---------|
-| 🖥️ **编码** | `hyper run "添加 JWT 认证中间件"` |
-| 🔍 **分析** | `hyper analyze` — 安全漏洞 / 复杂度过高 / 死代码 |
-| 🤖 **自动化** | `hyper swarm "拆分单体为微服务"` — 多 Agent 并行开工 |
-| 🧪 **测试** | `hyper run "为 UserService 写单元测试"` |
-| 📚 **研究** | `hyper run "Rust async vs Go goroutine 深度对比" --mode ask` |
-| 🔧 **DevOps** | `hyper ci-fix ci.log` — CI 挂了自动修 |
-| 🔒 **安全** | `hyper run "审计代码库的安全漏洞"` |
-| 📦 **部署** | `hyper run "生成 Kubernetes deployment 配置"` |
-| 🌍 **维护** | 自动分析 → 发现 bug → 生成 PR → 你审批 |
-| 🧠 **进化** | `hyper feedback good/bad` — 告诉 Agent 什么做对了、什么需要改 |
+| Command | What it does |
+|---------|-------------|
+| `hyper run` | Execute any task with multi-agent pipeline |
+| `hyper init` | Onboarding wizard + code index |
+| `hyper serve` | Web API server (SSE streaming) |
+| `hyper analyze` | Security, complexity, dead code audit |
+| `hyper swarm` | Parallel multi-agent execution |
+| `hyper ci-fix` | Auto-fix CI pipeline failures |
+| `hyper review` | Review staged changes |
+| `hyper doctor` | System diagnostics |
+| `hyper memory global` | Cross-project knowledge |
+| `hyper session share` | Share session via token |
+| `hyper feedback` | Teach the agent (RLHF-lite) |
+| `hyper skill` | Install/search/create community skills |
+| `hyper bench memory` | Memory system benchmark |
+| `hyper eval` | Self-evaluation suite |
 
 ---
 
-## Feature Matrix / 功能矩阵
+## Unique Selling Points
 
-### CLI Commands (20+)
-
-| Command | 中文 | What it does |
-|---------|------|-------------|
-| `hyper run` | 运行任务 | Execute any task with multi-agent pipeline |
-| `hyper init` | 初始化 | Onboarding wizard + code index |
-| `hyper serve` | 启动服务 | Web API server (SSE streaming) |
-| `hyper analyze` | 代码分析 | Security, complexity, dead code audit |
-| `hyper swarm` | 集群协作 | Parallel multi-agent execution |
-| `hyper ci-fix` | CI 修复 | Auto-fix CI pipeline failures |
-| `hyper review` | 代码审查 | Review staged changes |
-| `hyper doctor` | 诊断 | System diagnostics |
-| `hyper memory global` | 全局记忆 | Cross-project knowledge |
-| `hyper session share` | 会话共享 | Share session via token |
-| `hyper feedback` | 反馈训练 | Teach the agent (RLHF-lite) |
-| `hyper skill` | 技能市场 | Install/search/create community skills |
-| `hyper bench memory` | 性能测试 | Memory system benchmark |
-| `hyper eval` | 自评估 | Self-evaluation suite |
-
-### Unique Selling Points / 独家能力
-
-| 能力 | HyperAgent | Claude Code | Aider | Cursor | Devin |
-|------|-----------|------------|-------|--------|-------|
-| 通用任务（非仅编码） | ✅ | ❌ 仅编码 | ❌ 仅编码 | ❌ 仅编码 | ✅ |
-| 多 Agent 并行 | ✅ swarm | ❌ | ❌ | ❌ | ✅ |
-| 跨项目全局记忆 | ✅ | ❌ | ❌ | ❌ | ❌ |
-| 自纠错学习 | ✅ feedback | ❌ | ❌ | ❌ | ❌ |
-| 深度代码分析 | ✅ analyze | ❌ | ❌ | ❌ | ❌ |
-| CI 自动修复 | ✅ ci-fix | ❌ | ❌ | ❌ | ✅ |
-| 中文原生 | ✅ zh-CN + 20语言 | ❌ | ❌ | ❌ | ❌ |
-| Skill 市场 | ✅ | ❌ | ❌ | ❌ | ✅ |
-| SSE 流式 | ✅ | ✅ | ❌ | ✅ | ✅ |
-| VS Code 扩展 | ✅ v0.2 | ❌ | ✅ | ✅ | ✅ |
-| Desktop 原生 | ✅ Tauri | ❌ | ❌ | ✅ | ✅ |
+| Feature | HyperAgent | Claude Code | Aider | Cursor | Devin |
+|---------|-----------|------------|-------|--------|-------|
+| General-purpose | ✅ | ❌ code only | ❌ code only | ❌ code only | ✅ |
+| Multi-agent parallel | ✅ swarm | ❌ | ❌ | ❌ | ✅ |
+| Cross-project memory | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Self-correction | ✅ feedback | ❌ | ❌ | ❌ | ❌ |
+| Deep code analysis | ✅ analyze | ❌ | ❌ | ❌ | ❌ |
+| CI auto-fix | ✅ ci-fix | ❌ | ❌ | ❌ | ✅ |
+| i18n (20 languages) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Skill marketplace | ✅ | ❌ | ❌ | ❌ | ✅ |
+| SSE streaming | ✅ | ✅ | ❌ | ✅ | ✅ |
+| VS Code extension | ✅ v0.2 | ❌ | ✅ | ✅ | ✅ |
+| Desktop native | ✅ Tauri | ❌ | ❌ | ✅ | ✅ |
 | Web UI | ✅ | ❌ | ❌ | ✅ | ✅ |
-| 会话共享 | ✅ token | ❌ | ❌ | ✅ | ✅ |
-| Docker Sandbox | ✅ | ❌ | ✅ | ❌ | ✅ |
+| Session sharing | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Docker sandbox | ✅ | ❌ | ✅ | ❌ | ✅ |
 
 ---
 
-## Architecture / 架构
+## Architecture
 
 ```
-User Request
-    ↓
-CLI · Web UI · Desktop · VS Code
+User Request → CLI · Web · Desktop · VS Code
     ↓
 hyper serve (axum + SSE streaming)
     ↓
 Agent Pipeline (Plan → Code → Review → Apply → Fix)
-    ↓                    ↓                    ↓
-Memory System     LLM Provider Pool     Tool System
-(14 types,        (failover,            (MCP, Web Search,
- FTS5, embed,      health check,         Browser, Desktop,
- auto-prune,       circuit breaker)      Sandbox, REPL)
+    ↓                        ↓                    ↓
+Memory System         LLM Provider Pool     Tool System
+(14 types, FTS5,      (failover, health,    (MCP, Search,
+ embed, auto-prune,    circuit breaker)      Browser, REPL)
  global memory)
-    ↓                    ↓                    ↓
-Global Memory     Community Skills     Plugin System
-(cross-project    (marketplace,        (hooks, events,
- knowledge)        install/share)       extensions)
+    ↓                        ↓                    ↓
+Global Memory         Community Skills     Plugin System
 ```
 
 [Full Mermaid diagrams → docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ---
 
-## Quick Start / 快速开始
+## Quick Start
 
 ```bash
-# 1. 安装
+# Install
 brew install nick-zhang-1991/hyperagent/hyperagent
 
-# 2. 配置 LLM
+# Configure LLM
 export HYPER_LLM_API_KEY=***   export HYPER_LLM_MODEL="gpt-4o"
 export HYPER_LLM_BASE_URL="https://api.openai.com/v1"
 
-# 3. 中文界面
-export HYPER_LANG=zh-CN
+# Set language (optional)
+export HYPER_LANG=zh-CN   # or ja, ko, fr, de, es...
 
-# 4. 初始化项目
+# Initialize
 cd your-project && hyper init
 
-# 5. 开始使用
-hyper run "给我解释这个项目的架构"
-hyper analyze                     # 全面审计
-hyper serve                       # 启动 Web 界面
+# Use it
+hyper run "explain this project's architecture"
+hyper analyze
+hyper serve
 ```
 
 ---
 
-## Community / 社区
+## Community
 
 - [Contributing Guide](CONTRIBUTING.md)
 - [Security Policy](SECURITY.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Changelog](CHANGELOG.md)
 
-### Skills / 技能市场
+### Skills Marketplace
 
 Share your expertise: `hyper skill create` → edit → GitHub Gist → `hyper skill install <gist-url>`
 
-Browse community skills:
-- `hyper skill search rust`  — 搜索
-- `hyper skill list`          — 已安装
-- [skills/](skills/)          — 种子技能库
+```bash
+hyper skill search rust
+hyper skill list
+```
+
+Browse [skills/](skills/) for seed skills.
 
 ---
 
-## Documentation / 文档
+## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [API Reference](docs/API.md)
 - [Competitive Analysis](docs/COMPETITIVE_ANALYSIS.md)
-- [Roadmap](docs/ROADMAP_2026-06-08.md)
-- [Chinese README / 中文文档](README_zh-CN.md)
 
 ---
 
