@@ -100,23 +100,22 @@ pub async fn run_repl() -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let dir = cwd.clone();
 
-    // Build or load index once — persists across turns in the REPL
-    print!("📚 Indexing codebase... ");
-    std::io::Write::flush(&mut std::io::stdout())?;
-    let mut index = match HyperIndex::new_or_load(&dir) {
-        Ok(mut idx) => {
-            if !idx.has_cache() {
-                idx.build()?;
-            }
-            let stats = idx.stats()?;
-            println!("done ({} files, {} symbols)", stats.files, stats.symbols);
-            Some(idx)
-        }
-        Err(e) => {
-            println!("⚠️  could not build index: {e}");
-            None
-        }
-    };
+    // IMPORTANT: we do NOT eagerly build the project index here.
+    //
+    // The REPL default mode is "ask" (Q&A). For pure Q&A the LLM should
+    // answer directly from its own knowledge — no need to walk the project
+    // tree, no PageRank lookup, no file scanning. Building the index is
+    // expensive on large repos and very annoying for someone who just
+    // wants to ask a quick question.
+    //
+    // The index is now loaded lazily:
+    //   * ask / general modes → never load (direct LLM chat path)
+    //   * code / debug / architect modes → load on first use (cache hit is
+    //     instant, cache miss builds once and persists)
+    //
+    // `/reindex` (or `hyper init` outside the REPL) is the explicit way to
+    // pre-warm the cache.
+    let mut index: Option<HyperIndex> = None;
 
     // Memory path — create once, reuse across turns
     let memory_path = dir.join(".hyper").join("memory.db");
@@ -161,6 +160,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
+    println!("  Index:     lazy (built on first code/debug/architect prompt)");
     println!("  Commands:  /exit  /mode <ask|code|debug|architect|general>  /image <path>  /help  /clear");
     println!();
 
@@ -429,8 +429,24 @@ pub async fn run_repl() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Modes that answer the user directly from the LLM without scanning
+/// the project. Kept in sync with the gating in `run_prompt`.
+const PASSTHROUGH_MODES: &[&str] = &["ask", "general"];
+
+fn is_passthrough_mode(mode: &str) -> bool {
+    PASSTHROUGH_MODES.contains(&mode)
+}
+
 /// Execute a single prompt through the agent orchestrator
 /// Reuses the persisted index and memory store across turns.
+///
+/// Routing:
+///   * ask / general → direct LLM chat (no project scan, no index, no
+///     orchestrator — just answer the question from the model's knowledge
+///     and the running conversation history).
+///   * code / debug / architect → full pipeline: lazy index, plan/code/
+///     review, then apply. The index is loaded on first use, cached for
+///     the rest of the REPL session.
 #[allow(clippy::too_many_arguments)]
 async fn run_prompt(
     prompt: &str,
@@ -444,17 +460,36 @@ async fn run_prompt(
 ) -> Option<String> {
     let start = Instant::now();
 
+    // ── Fast path: ask / general ───────────────────────────────
+    // Skip the index entirely. Build a small chat context, call the LLM,
+    // print the answer. This is what makes the REPL feel responsive when
+    // the user just wants to ask a question.
+    if is_passthrough_mode(mode) {
+        return run_passthrough_chat(
+            prompt, dir, mode, provider, conversation_history, start,
+        ).await;
+    }
+
+    // ── Code / debug / architect: lazy index + full pipeline ───
     if index.is_none() {
+        print!("  📚 Indexing codebase... ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
         match HyperIndex::new_or_load(dir) {
             Ok(mut idx) => {
                 if !idx.has_cache() {
                     idx.build().ok();
                 }
+                let stats = idx.stats().ok();
+                if let Some(s) = stats {
+                    println!("done ({} files, {} symbols)", s.files, s.symbols);
+                } else {
+                    println!("done");
+                }
                 *index = Some(idx);
             }
-            Err(_) => {
-                println!("  ⚠️  Index not available");
-                return None;
+            Err(e) => {
+                println!("⚠️  could not build index: {e}");
+                println!("  ℹ️  Continuing without code context (Orchestrator may not find files)");
             }
         }
     }
@@ -514,8 +549,79 @@ async fn run_prompt(
             }
         }
     } else {
-        println!("  ⚠️  Index not available");
-        None
+        // Index is unavailable and the mode requires it — fall back to
+        // the passthrough chat so the user still gets an answer.
+        eprintln!("  ℹ️  Falling back to direct LLM chat (no code index)");
+        run_passthrough_chat(
+            prompt, dir, mode, provider, conversation_history, start,
+        ).await
+    }
+}
+
+/// Direct LLM chat for ask / general — no project scan, no orchestrator.
+///
+/// We keep the system prompt intentionally short and mode-aware. The LLM
+/// is told it's answering from general knowledge (and the running
+/// conversation) — NOT from any code index.
+async fn run_passthrough_chat(
+    prompt: &str,
+    _dir: &Path,
+    mode: &str,
+    provider: &LlmProvider,
+    conversation_history: &[(String, String)],
+    start: Instant,
+) -> Option<String> {
+    let system_prompt = match mode {
+        "ask" => "You are HyperAgent's ask mode — a helpful assistant.\n\
+                  Answer the user's question concisely and accurately.\n\
+                  Use the conversation history for context.\n\
+                  Format code with ```language```.\n\
+                  Answer in the same language as the question.\n\
+                  Rules:\n\
+                  - Be concise but complete\n\
+                  - Reference prior turns when relevant\n\
+                  - Don't propose file edits — this is a read-only chat",
+        "general" => "You are HyperAgent in general mode — a versatile AI assistant.\n\
+                      Handle any task: coding, writing, analysis, translation,\n\
+                      brainstorming, research, math, general knowledge.\n\
+                      Use the conversation history for context.\n\
+                      Format code with ```language```.\n\
+                      Answer in the same language as the question.\n\
+                      Rules:\n\
+                      - Be helpful, concise, and accurate\n\
+                      - For code questions, give runnable examples\n\
+                      - If the user asks for file edits, suggest commands but\n\
+                        do not claim to have modified anything",
+        _ => "You are HyperAgent. Answer concisely in the same language as the question.",
+    }
+    .to_string();
+
+    let mut messages: Vec<crate::llm::Message> = Vec::new();
+    messages.push(crate::llm::Message::text("system", system_prompt));
+
+    for (prev_user, prev_assistant) in conversation_history {
+        messages.push(crate::llm::Message::text("user", prev_user.clone()));
+        messages.push(crate::llm::Message::text("assistant", prev_assistant.clone()));
+    }
+    messages.push(crate::llm::Message::text("user", prompt));
+
+    print!("\n  💬 ");
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+
+    match provider.chat(messages).await {
+        Ok(response) => {
+            println!("{}", response);
+            let elapsed = start.elapsed();
+            println!(
+                "  ⏱️  {:.1}s | direct chat (no code scan)",
+                elapsed.as_secs_f64()
+            );
+            Some(response)
+        }
+        Err(e) => {
+            eprintln!("\n  ⚠️  Error: {e}");
+            None
+        }
     }
 }
 
