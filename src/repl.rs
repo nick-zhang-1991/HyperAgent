@@ -102,19 +102,16 @@ pub async fn run_repl() -> anyhow::Result<()> {
 
     // IMPORTANT: we do NOT eagerly build the project index here.
     //
-    // The REPL default mode is "ask" (Q&A). For pure Q&A the LLM should
-    // answer directly from its own knowledge — no need to walk the project
-    // tree, no PageRank lookup, no file scanning. Building the index is
-    // expensive on large repos and very annoying for someone who just
-    // wants to ask a quick question.
+    // The REPL doesn't pre-load the index. Whether to scan the project
+    // is decided per-prompt by `looks_like_coding_task`:
+    //   * Questions / chat / explanations → direct LLM call, no scan.
+    //   * Coding tasks (imperative verbs, file refs, code blocks, dev
+    //     commands) → lazy load (cache hit is instant, miss builds
+    //     once and persists for the rest of the session).
     //
-    // The index is now loaded lazily:
-    //   * ask / general modes → never load (direct LLM chat path)
-    //   * code / debug / architect modes → load on first use (cache hit is
-    //     instant, cache miss builds once and persists)
-    //
-    // `/reindex` (or `hyper init` outside the REPL) is the explicit way to
-    // pre-warm the cache.
+    // `/reindex` (or `hyper init` outside the REPL) is the explicit
+    // way to pre-warm the cache. `/code` is no longer needed because
+    // routing is automatic.
     let mut index: Option<HyperIndex> = None;
 
     // Memory path — create once, reuse across turns
@@ -160,8 +157,8 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Index:     lazy (built on first code/debug/architect prompt)");
-    println!("  Commands:  /exit  /mode <ask|code|debug|architect|general>  /image <path>  /help  /clear");
+    println!("  Index:     auto (loaded only when prompt looks like a coding task)");
+    println!("  Commands:  /exit  /mode <ask|code|debug|architect|general>  /image <path>  /help  /clear  /reindex");
     println!();
 
     // REPL loop
@@ -207,7 +204,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  Commands:");
                     println!("  ───────────────────────────────────────");
                     println!("  /exit, /quit       Exit the REPL");
-                    println!("  /mode <mode>       Switch mode (ask/code/debug/architect/general)");
+                    println!("  /mode <mode>       Switch LLM tone (ask/code/debug/architect/general)");
                     println!("  /mode              Show current mode");
                     println!("  /clear, /cls       Clear screen");
                     println!("  /help              Show this help");
@@ -215,10 +212,13 @@ pub async fn run_repl() -> anyhow::Result<()> {
                     println!("  /memory            Show memory stats");
                     println!("  /reindex           Force-rebuild the code index");
                     println!("  ───────────────────────────────────────");
+                    println!("  Routing is automatic per prompt:");
+                    println!("    Q&A / chat       → direct LLM (no project scan)");
+                    println!("    coding tasks     → lazy index + full pipeline");
+                    println!("  Use /code <prompt> to force the code path.");
                     println!("  ↑↓ arrow keys      Browse command history");
                     println!("  Ctrl+C             Cancel current input");
                     println!("  Ctrl+D             Exit REPL");
-                    println!("  Just type anything to ask the agent!");
                     println!();
                 }
                 "/clear" | "/cls" => {
@@ -271,6 +271,35 @@ pub async fn run_repl() -> anyhow::Result<()> {
                             }
                         }
                     }
+                }
+                cmd if cmd.starts_with("/code ") => {
+                    // Force the code path: bypass the classifier and always
+                    // load the project index / run the full pipeline.
+                    let force_prompt = cmd[6..].trim().to_string();
+                    if force_prompt.is_empty() {
+                        println!("  Usage: /code <prompt>");
+                        println!("  Force the code path (skip auto-routing).");
+                        continue;
+                    }
+                    rl.add_history_entry(&force_prompt).ok();
+                    println!("  🧠 [forced code path]");
+                    if let Some(response_text) = run_prompt(
+                        &force_prompt,
+                        &dir,
+                        &current_mode,
+                        &provider,
+                        &memory_path,
+                        &memory_store,
+                        &mut index,
+                        &conversation_history,
+                        true, // force_code
+                    ).await {
+                        conversation_history.push((force_prompt.clone(), response_text));
+                        if conversation_history.len() > 10 {
+                            conversation_history.remove(0);
+                        }
+                    }
+                    continue;
                 }
                 cmd if cmd.starts_with("/mode ") => {
                     let new_mode = cmd[6..].trim().to_lowercase();
@@ -387,7 +416,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
             continue;
         }
 
-        // Run the agent with the prompt
+        // Run the agent with the prompt (auto-routed by looks_like_coding_task)
         if let Some(response_text) = run_prompt(
             &trimmed,
             &dir,
@@ -397,6 +426,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
             &memory_store,
             &mut index,
             &conversation_history,
+            false, // auto-route; use /code to force
         ).await {
             conversation_history.push((trimmed.clone(), response_text));
             if conversation_history.len() > 10 {
@@ -429,24 +459,164 @@ pub async fn run_repl() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Modes that answer the user directly from the LLM without scanning
-/// the project. Kept in sync with the gating in `run_prompt`.
-const PASSTHROUGH_MODES: &[&str] = &["ask", "general"];
+/// Heuristic classifier: does this prompt need the project index, or can
+/// the LLM answer it directly from its own knowledge?
+///
+/// Design goal: **default to Q&A** (the fast path). Only classify as a
+/// coding task if the prompt contains strong signals that the user wants
+/// the agent to actually work on the codebase — not merely talk about it.
+///
+/// Why: a user running `hyper` and typing "what is a closure?" should get
+/// an instant answer, not a 30-second project tree walk. But typing
+/// "refactor the UserService to use async/await" should still trigger
+/// the full index + Orchestrator pipeline.
+///
+/// This is intentionally simple and conservative. If it's ambiguous,
+/// treat it as Q&A — the user can prefix with `/code` to force the
+/// code path, or `/reindex` to pre-warm the cache.
+fn looks_like_coding_task(prompt: &str) -> bool {
+    let p = prompt.trim();
+    if p.is_empty() {
+        return false;
+    }
+    let lower = p.to_lowercase();
 
-fn is_passthrough_mode(mode: &str) -> bool {
-    PASSTHROUGH_MODES.contains(&mode)
+    // Strong signal 1: code blocks (fenced ``` or inline backticks with
+    // a function call / path / namespace inside).
+    if p.contains("```") {
+        return true;
+    }
+    if p.contains('`') && (p.contains('(') || p.contains("::") || p.contains('/')) {
+        return true;
+    }
+
+    // Strong signal 2: explicit file path references to source files.
+    const CODE_EXTS: &[&str] = &[
+        ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+        ".go", ".java", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
+        ".cs", ".rb", ".php", ".swift", ".kt", ".kts", ".scala", ".rs",
+        ".sh", ".bash", ".zsh", ".ps1",
+        ".toml", ".yaml", ".yml", ".json", ".xml", ".html", ".css",
+        ".scss", ".less", ".sql", ".lua", ".r", ".dart", ".vue", ".svelte",
+        ".lock", ".proto", ".graphql", ".gql",
+    ];
+    for ext in CODE_EXTS {
+        if lower.contains(ext) {
+            return true;
+        }
+    }
+    if lower.contains("cargo.toml") || lower.contains("package.json") || lower.contains("pyproject.toml") {
+        return true;
+    }
+
+    // Strong signal 3: imperative verbs that mean "do something to the code".
+    // Match as a word-starting prefix to avoid false positives like
+    // "fixed" appearing in normal text.
+    let coding_verbs: &[&str] = &[
+        // Chinese
+        "实现", "写一个", "写个", "写一段", "加上", "添加", "新增",
+        "修改", "改成", "改为", "改为", "改成", "改成", "改成",
+        "删除", "移除", "去掉", "删掉",
+        "重构", "重写", "优化", "调整", "改造", "改成", "改写",
+        "修复", "修一下", "修这个", "修好", "解决", "排查",
+        "创建", "新建", "建一个", "建个",
+        "导入", "引用", "引入", "封装", "抽象", "提取",
+        "补全", "补上", "加上", "写完",
+        "把 ", "将 ", "把代码", "把函数", "把这段",
+        // English
+        "implement", "refactor", "rewrite", "optimize", "fix",
+        "add a", "add the", "add this", "add an",
+        "remove the", "remove this", "remove a", "remove an",
+        "create a", "create the", "create an",
+        "update the", "update this", "update a",
+        "patch the", "patch this",
+        "make it", "make the", "turn it", "turn the",
+        "rename", "extract", "inline", "wrap",
+        "migrate", "port", "convert to", "upgrade",
+        "write a", "write the", "write this", "write an",
+        "edit the", "edit this", "edit a",
+        "modify the", "modify this",
+    ];
+    // For each verb, check if it appears as a word-starting token
+    // (preceded by start-of-string, whitespace, or punctuation).
+    for verb in coding_verbs {
+        if let Some(idx) = lower.find(verb) {
+            let before_ok = idx == 0
+                || !lower.as_bytes()[idx - 1].is_ascii_alphanumeric();
+            let after_ok = idx + verb.len() >= lower.len()
+                || !lower.as_bytes()[idx + verb.len()].is_ascii_alphanumeric()
+                || lower.as_bytes()[idx + verb.len()] == b' ';
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+    }
+
+    // Strong signal 4: dev commands / build tools mentioned as actions.
+    let dev_cmds: &[&str] = &[
+        "cargo build", "cargo test", "cargo run", "cargo check",
+        "cargo install", "cargo add", "cargo fmt", "cargo clippy",
+        "npm install", "npm run", "npm test", "npm i ", "pnpm install", "pnpm add",
+        "yarn add", "yarn install", "yarn run",
+        "go build", "go test", "go run", "go mod",
+        "make ", "cmake ", "docker ", "kubectl ",
+        "git commit", "git push", "git merge", "git rebase", "git checkout",
+        "pytest", "jest ", "mocha", "rspec", "xcodebuild",
+        "pip install", "pip3 install",
+    ];
+    for cmd in dev_cmds {
+        if lower.contains(cmd) {
+            return true;
+        }
+    }
+
+    // Strong signal 5: "in <file>" / "在 <file> 中" patterns.
+    let in_file_patterns: &[&str] = &[
+        " in src/", " in tests/", " in lib/", " in app/",
+        " in the file", " in the code", " in the repo", " in this file",
+        " in this repo", " in the project",
+        "在 src", "在 .", "在文件", "在代码", "在项目",
+        "在 main.", "在 lib.", "在 index.", "在 app.",
+    ];
+    for pat in in_file_patterns {
+        if lower.contains(pat) {
+            return true;
+        }
+    }
+
+    // Strong signal 6: code-construction keywords (function/class names in
+    // dev context). Heavier weight than plain mentions.
+    let dev_keywords: &[&str] = &[
+        " fn ", " struct ", " enum ", " trait ", " impl ",
+        " class ", " def ", " function ", " method ",
+        " const ", " let ", " var ", " pub fn",
+        " interface ", " type ", " module ",
+    ];
+    for kw in dev_keywords {
+        if lower.contains(kw) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Execute a single prompt through the agent orchestrator
 /// Reuses the persisted index and memory store across turns.
 ///
-/// Routing:
-///   * ask / general → direct LLM chat (no project scan, no index, no
-///     orchestrator — just answer the question from the model's knowledge
-///     and the running conversation history).
-///   * code / debug / architect → full pipeline: lazy index, plan/code/
-///     review, then apply. The index is loaded on first use, cached for
-///     the rest of the REPL session.
+/// Routing is **prompt-driven, not mode-driven**. The classifier
+/// (`looks_like_coding_task`) decides whether to:
+///   * Skip the index entirely and call the LLM directly — for any
+///     prompt that's a question, explanation, or chat ("what is X?",
+///     "explain Y", "how does Z work").
+///   * Build/load the project index, create an Orchestrator, and run
+///     the full plan/code/review/apply pipeline — for any prompt that
+///     contains code, file references, or imperative verbs targeting
+///     the codebase ("implement X", "refactor Y", "fix the bug in Z").
+///
+/// The user doesn't have to switch `/mode` for this to work — it's
+/// automatic per-prompt. Mode still controls the system-prompt tone
+/// in the chat path.
 #[allow(clippy::too_many_arguments)]
 async fn run_prompt(
     prompt: &str,
@@ -457,17 +627,32 @@ async fn run_prompt(
     _memory_store: &Option<SqliteMemoryStore>,
     index: &mut Option<HyperIndex>,
     conversation_history: &[(String, String)],
+    force_code: bool,
 ) -> Option<String> {
     let start = Instant::now();
 
-    // ── Fast path: ask / general ───────────────────────────────
-    // Skip the index entirely. Build a small chat context, call the LLM,
-    // print the answer. This is what makes the REPL feel responsive when
-    // the user just wants to ask a question.
-    if is_passthrough_mode(mode) {
+    // ── Classify the prompt ────────────────────────────────────
+    // Default to Q&A. Only treat as a coding task if the prompt
+    // contains strong signals (code blocks, file paths, imperative
+    // verbs targeting code, dev commands, etc.). The user is free
+    // to type "what is a closure?" or "explain Rust's borrow checker"
+    // — those never need the project index.
+    //
+    // `force_code` (set by the /code command) bypasses the classifier
+    // and goes straight to the code path.
+    let is_coding = force_code || looks_like_coding_task(prompt);
+
+    // ── Fast path: question / chat / general knowledge ─────────
+    if !is_coding {
         return run_passthrough_chat(
             prompt, dir, mode, provider, conversation_history, start,
         ).await;
+    }
+
+    if force_code {
+        println!("  🧠 [code path forced by /code]");
+    } else {
+        println!("  🧠 [coding task detected — loading project index]");
     }
 
     // ── Code / debug / architect: lazy index + full pipeline ───
