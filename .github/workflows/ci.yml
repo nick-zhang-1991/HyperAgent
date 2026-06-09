@@ -80,3 +80,18 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/hyperagent${{ matrix.os == 'windows-latest' && '.exe' || '' }}
             target/${{ matrix.target }}/release/hyper${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+
+
+  bench:
+    name: Benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Self-Evaluation
+        run: ./target/release/hyperagent eval --json
+      - name: Memory Bench
+        run: ./target/release/hyperagent bench memory --memories 100 --chunks 30 --queries 5

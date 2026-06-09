@@ -170,7 +170,19 @@ fn print_report(report: &EvalReport) {
 }
 
 fn all_tasks() -> Vec<EvalTask> {
-    vec![
+        vec![
+        // ── Code Generation ──
+        EvalTask { id: "fib", name: "Fibonacci", category: "code-gen", prompt: "Write a Rust function fn fib(n: u64) -> u64 that returns the nth Fibonacci number iteratively. Include tests.", check: |dir| { let src = dir.join("src/lib.rs"); Ok(std::fs::read_to_string(&src).unwrap_or_default().contains("fn fib")) }, },
+        EvalTask { id: "struct-new", name: "Struct with new()", category: "code-gen", prompt: "Create a struct Config with fields host:String, port:u16, debug:bool and implement Config::new() with defaults.", check: |dir| { let src = dir.join("src/lib.rs"); Ok(std::fs::read_to_string(&src).unwrap_or_default().contains("impl Config")) }, },
+        // ── Error Handling ──
+        EvalTask { id: "error-handle", name: "Error handling", category: "error-handling", prompt: "Write a function fn read_config(path:&str)->Result<Config,String> that reads a JSON file and returns a Config or a proper error message. Include tests for file-not-found.", check: |dir| { Ok(std::fs::read_to_string(&dir.join("src/lib.rs")).unwrap_or_default().contains("Result<")) }, },
+        // ── Safety ──
+        EvalTask { id: "avoid-unwrap", name: "Avoid unwrap()", category: "safety", prompt: "Write a function fn parse_port(s:&str)->Option<u16> that safely parses a port number without using unwrap().", check: |dir| { let src = std::fs::read_to_string(&dir.join("src/lib.rs")).unwrap_or_default(); Ok(src.contains("fn parse_port") && !src.contains("unwrap()")) }, },
+        // ── Performance ──
+        EvalTask { id: "iterator", name: "Iterator methods", category: "performance", prompt: "Write a function that sums all even numbers in a Vec<i32> using iterator combinators (filter+sum) instead of a loop.", check: |dir| { Ok(std::fs::read_to_string(&dir.join("src/lib.rs")).unwrap_or_default().contains(".filter(")) }, },
+        // ── Testing ──
+        EvalTask { id: "test-mod", name: "Test module", category: "testing", prompt: "Create a module with a function add(a:i32,b:i32)->i32 and include a #[test] that verifies it works.", check: |dir| { Ok(std::fs::read_to_string(&dir.join("src/lib.rs")).unwrap_or_default().contains("#[test]")) }, },
+    ];
         EvalTask {
             id: "fibonacci",
             name: "Fibonacci function",
