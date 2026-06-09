@@ -1,0 +1,16 @@
+[Unit]
+Description=Agent Platform API Server
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/agent-platform
+Environment="JWT_SECRET=change-me-to-a-random-string"
+Environment="RUST_LOG=info"
+ExecStart=/opt/agent-platform/agent-platform
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
