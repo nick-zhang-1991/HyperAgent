@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
+import { tt, sl, al, gl } from './i18n';
 
-const API = 'http://127.0.0.1:4000';
+// Auto-detect: use CN2 if accessing from remote, localhost if local
+const isRemote = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+const API = isRemote ? `http://${window.location.hostname}:4000` : 'http://127.0.0.1:4000';
 
 interface AuthProps { onAuth: (token: string, user: any) => void }
 
@@ -31,13 +34,16 @@ export default function AuthPage({ onAuth }: AuthProps) {
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 mx-auto flex items-center justify-center text-2xl font-bold mb-3">A</div>
-          <h1 className="text-xl font-semibold">Agent Platform</h1>
+          <h1 className="text-xl font-semibold">{tt('dashboard')}</h1>
           <p className="text-sm text-gray-500 mt-1">Multi-Agent Orchestration</p>
+          <select value={gl()} onChange={e=>sl(e.target.value)} className="mt-3 text-xs bg-[#06060a] border border-gray-800 rounded px-2 py-1 text-gray-400">
+            {al().map(l=><option key={l.code} value={l.code}>{l.name}</option>)}
+          </select>
         </div>
         <div className="bg-[#0d0d15] border border-gray-800 rounded-xl p-6">
           <div className="flex mb-6 bg-[#06060a] rounded-lg p-1">
-            <button onClick={()=>setMode('login')} className={`flex-1 py-2 text-sm rounded-md transition-colors ${mode==='login'?'bg-indigo-600 text-white':'text-gray-500'}`}>Sign In</button>
-            <button onClick={()=>setMode('register')} className={`flex-1 py-2 text-sm rounded-md transition-colors ${mode==='register'?'bg-indigo-600 text-white':'text-gray-500'}`}>Register</button>
+            <button onClick={()=>setMode('login')} className={`flex-1 py-2 text-sm rounded-md transition-colors ${mode==='login'?'bg-indigo-600 text-white':'text-gray-500'}`}>{tt('signIn')}</button>
+            <button onClick={()=>setMode('register')} className={`flex-1 py-2 text-sm rounded-md transition-colors ${mode==='register'?'bg-indigo-600 text-white':'text-gray-500'}`}>{tt('register')}</button>
           </div>
           {mode === 'register' && (
             <input value={name} onChange={e=>setName(e.target.value)} placeholder="Name" className="w-full px-3 py-2.5 rounded-lg bg-[#06060a] border border-gray-800 text-sm mb-3 focus:outline-none focus:border-indigo-500" autoFocus />

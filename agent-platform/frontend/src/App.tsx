@@ -2,7 +2,9 @@ import './index.css';
 import AuthPage from './AuthPage';
 import { useState, useEffect, useCallback } from 'react';
 
-const API = 'http://127.0.0.1:4000';
+// Auto-detect: use CN2 if accessing from remote, localhost if local
+const isRemote = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+const API = isRemote ? `http://${window.location.hostname}:4000` : 'http://127.0.0.1:4000';
 const WS = 'ws://127.0.0.1:4000/api/ws';
 
 type T = Record<string,any>;
