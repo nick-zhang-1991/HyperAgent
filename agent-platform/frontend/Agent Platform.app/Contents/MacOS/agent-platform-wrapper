@@ -1,0 +1,23 @@
+#!/bin/bash
+# Agent Platform Launcher
+DIR="/Users/a/workspace/hyperagent/agent-platform/frontend"
+BASE="/Users/a/workspace/hyperagent"
+
+# Start backend
+"$BASE/agent-platform/backend/target/debug/agent-platform" &
+BACKEND_PID=$!
+sleep 2
+
+# Start Vite dev server (serves frontend)
+cd "$BASE/agent-platform/frontend"
+./node_modules/.bin/vite --host 0.0.0.0 --port 5173 &
+VITE_PID=$!
+sleep 3
+
+# Launch desktop
+"$BASE/agent-platform/frontend/src-tauri/target/debug/agent-platform" &
+DESKTOP_PID=$!
+
+# Wait for desktop to close
+wait $DESKTOP_PID
+kill $BACKEND_PID $VITE_PID 2>/dev/null
