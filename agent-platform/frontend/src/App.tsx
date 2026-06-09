@@ -5,7 +5,7 @@ const API = 'http://127.0.0.1:4000';
 const WS = 'ws://127.0.0.1:4000/api/ws';
 
 type Org = { id: string; name: string; description: string; created_at: string };
-type Agent = { id: string; org_id: string; name: string; role: string; description: string; status: 'idle'|'working'|'completed'|'error'; current_task?: string; created_at: string };
+type Agent = { id: string; org_id: string; name: string; role: string; description: string; status: 'idle'|'working'|'completed'|'error'; current_task?: string; total_tasks: number; completed_tasks: number; created_at: string };
 type Task = { id: string; org_id: string; agent_id: string; description: string; status: 'pending'|'running'|'completed'|'failed'; result?: string; created_at: string; completed_at?: string };
 
 export default function App() {
@@ -190,9 +190,9 @@ function AgentGrid({ orgId }: { orgId: string }) {
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
         {agents.map(a => (
-          <AgentCard key={a.id} agent={a} tasks={agentTasks(a.id)} orgId={orgId} onUpdate={load} />
+          <AgentCard key={a.id} agent={a} tasks={agentTasks(a.id)} orgId={orgId} onUpdate={load} progress={agentProgress} />
         ))}
-        {tasks.filter(t=>t.agent_id===agent.id).slice(-10).length === 0 && !agentProgress[agent.id] && (
+        {agents.length === 0 && (
           <div className="col-span-full text-center py-20 text-gray-600">
             <div className="text-4xl mb-3">🤖</div>
             <p className="text-sm">No agents yet. Create your first agent to get started.</p>
@@ -219,7 +219,7 @@ function AgentGrid({ orgId }: { orgId: string }) {
 }
 
 // ── Agent Card ──
-function AgentCard({ agent, tasks, orgId, onUpdate }: { agent: Agent; tasks: Task[]; orgId: string; onUpdate: () => void }) {
+function AgentCard({ agent, tasks, orgId, onUpdate, progress }: { agent: Agent; tasks: Task[]; orgId: string; onUpdate: () => void; progress: Record<string,string> }) {
   const [showTask, setShowTask] = useState(false);
   const pulse = agent.status === 'working';
 
@@ -279,7 +279,7 @@ function AgentCard({ agent, tasks, orgId, onUpdate }: { agent: Agent; tasks: Tas
             </div>
           </div>
         ))}
-        {tasks.filter(t=>t.agent_id===agent.id).slice(-10).length === 0 && !agentProgress[agent.id] && (
+        {tasks.length === 0 && !progress[agent.id] && (
           <p className="text-xs text-gray-700 text-center py-3">No tasks assigned</p>
         )}
       </div>
@@ -473,7 +473,7 @@ function createStore<T>(initial: T) {
   return {
     get: () => state,
     set: (fn: (s: T) => T) => { state = fn(state); listeners.forEach(l => l()); },
-    sub: (l: () => void) => { listeners.add(l); return () => listeners.delete(l); },
+    sub: (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; },
   };
 }
 
@@ -484,7 +484,7 @@ const orgStore = createStore<{ selectedOrg: string | null; setSelectedOrg: (id: 
 
 function useOrgStore<T>(selector: (s: { selectedOrg: string | null; setSelectedOrg: (id: string | null) => void }) => T): T {
   const [, force] = useState({});
-  useEffect(() => orgStore.sub(() => force({})), []);
+  useEffect(() => { const unsub = orgStore.sub(() => force({})); return unsub; }, []);
   return selector(orgStore.get());
 }
 
