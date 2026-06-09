@@ -127,6 +127,7 @@ function AgentGrid({ orgId }: { orgId: string }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [events, setEvents] = useState<string[]>([]);
+  const [agentProgress, setAgentProgress] = useState<Record<string,string>>({});
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
 
@@ -144,7 +145,20 @@ function AgentGrid({ orgId }: { orgId: string }) {
   useEffect(() => {
     const ws = new WebSocket(WS);
     ws.onmessage = (e) => {
-      setEvents(prev => [...prev.slice(-100), e.data]);
+      const msg = e.data;
+      setEvents(prev => [...prev.slice(-100), msg]);
+      if (msg.startsWith('progress:')) {
+        const parts = msg.split(':');
+        const agentId = parts[1];
+        const action = parts.slice(2).join(':');
+        setAgentProgress(prev => ({...prev, [agentId]: action}));
+      } else if (msg.startsWith('done:')) {
+        setTimeout(() => setAgentProgress(prev => {
+          const next = {...prev};
+          Object.keys(next).forEach(k => { if (next[k].includes(msg.substring(5,11))) delete next[k]; });
+          return next;
+        }), 3000);
+      }
       load();
     };
     return () => ws.close();
@@ -178,7 +192,7 @@ function AgentGrid({ orgId }: { orgId: string }) {
         {agents.map(a => (
           <AgentCard key={a.id} agent={a} tasks={agentTasks(a.id)} orgId={orgId} onUpdate={load} />
         ))}
-        {agents.length === 0 && (
+        {tasks.filter(t=>t.agent_id===agent.id).slice(-10).length === 0 && !agentProgress[agent.id] && (
           <div className="col-span-full text-center py-20 text-gray-600">
             <div className="text-4xl mb-3">🤖</div>
             <p className="text-sm">No agents yet. Create your first agent to get started.</p>
@@ -265,7 +279,7 @@ function AgentCard({ agent, tasks, orgId, onUpdate }: { agent: Agent; tasks: Tas
             </div>
           </div>
         ))}
-        {tasks.length === 0 && (
+        {tasks.filter(t=>t.agent_id===agent.id).slice(-10).length === 0 && !agentProgress[agent.id] && (
           <p className="text-xs text-gray-700 text-center py-3">No tasks assigned</p>
         )}
       </div>
