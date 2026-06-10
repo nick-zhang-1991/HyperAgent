@@ -33,7 +33,11 @@ export default function App() {
   const auth = useCallback((t:string,u:T)=>{setToken(t);setUser(u);localStorage.setItem('token',t);},[]);
   const logout = ()=>{setToken('');setUser(null);localStorage.removeItem('token');};
 
-  const load = useCallback(async ()=>{
+  // Two separate effects: identity (me+orgs) is one cycle, while agents+tasks
+  // re-fire whenever the selected org changes. Splitting avoids a closure bug
+  // where setOrg() set the state mid-fetch but the next `if(org)` still saw
+  // the old null value, dropping the agents/tasks load until the 5s interval.
+  const loadIdentity = useCallback(async ()=>{
     if(!token)return;
     try{
       const [u,o] = await Promise.all([
@@ -41,25 +45,59 @@ export default function App() {
         fetch(url('/api/orgs'),{headers}).then(r=>r.ok?r.json():[])
       ]);
       setUser(u); setOrgs(o);
-      if(o.length>0 && !org) setOrg(o[0]);
-      if(org){
-        const [a,t] = await Promise.all([
-          fetch(url(`/api/orgs/${org.id}/agents`),{headers}).then(r=>r.ok?r.json():[]),
-          fetch(url(`/api/orgs/${org.id}/agents/_/tasks`),{headers}).then(r=>r.ok?r.json():[])
-        ]);
-        setAgents(a); setTasks(t);
-      }
+      // Auto-select the first org if user has none selected.
+      // Use functional setter so we read the latest value, not a stale closure.
+      setOrg(prev => prev ?? (o.length>0 ? o[0] : null));
     }catch(e){}
-  },[token,org]);
+  },[token]);
 
-  useEffect(()=>{load();const i=setInterval(load,5000);return ()=>clearInterval(i);},[load]);
+  const loadAgentsTasks = useCallback(async ()=>{
+    if(!token || !org) return;
+    try{
+      const [a,t] = await Promise.all([
+        fetch(url(`/api/orgs/${org.id}/agents`),{headers}).then(r=>r.ok?r.json():[]),
+        fetch(url(`/api/orgs/${org.id}/agents/_/tasks`),{headers}).then(r=>r.ok?r.json():[])
+      ]);
+      setAgents(a); setTasks(t);
+    }catch(e){}
+  },[token, org]);
+
+  useEffect(()=>{loadIdentity();const i=setInterval(loadIdentity,5000);return ()=>clearInterval(i);},[loadIdentity]);
+  useEffect(()=>{loadAgentsTasks();const i=setInterval(loadAgentsTasks,5000);return ()=>clearInterval(i);},[loadAgentsTasks]);
 
   useEffect(()=>{
     if(!token)return;
-    const ws = new WebSocket(wsBase() + '/api/ws');
-    ws.onmessage = e=>{setEvents(p=>[...p.slice(-50),e.data]);if(e.data.startsWith('progress:')){const[,aid,...r]=e.data.split(':');setProgress(p=>({...p,[aid]:r.join(':')}));}load();};
-    return ()=>ws.close();
-  },[token]);
+    let ws: WebSocket | null = null;
+    let retry = 0;
+    let cancelled = false;
+    let retryTimer: number | null = null;
+    const connect = () => {
+      if (cancelled) return;
+      ws = new WebSocket(wsBase() + '/api/ws');
+      ws.onmessage = e=>{
+        const data = e.data;
+        setEvents(p=>[...p.slice(-50),data]);
+        if(data.startsWith('progress:')){
+          const[,aid,...r]=data.split(':');
+          setProgress(p=>({...p,[aid]:r.join(':')}));
+        } else if(data.startsWith('done:') || data.startsWith('fail:') || data.startsWith('task:')) {
+          // Task finished — clear any in-flight progress for ALL agents so badges
+          // drop back to the agent's real DB status (idle).
+          setProgress({});
+        }
+        loadAgentsTasks();
+      };
+      ws.onclose = () => {
+        if (cancelled) return;
+        retry = Math.min(retry + 1, 6);
+        const delay = Math.min(1000 * (2 ** (retry - 1)), 15000);
+        retryTimer = window.setTimeout(connect, delay);
+      };
+      ws.onopen = () => { retry = 0; };
+    };
+    connect();
+    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); if (ws) ws.close(); };
+  },[token, loadAgentsTasks]);
 
   if(!token) return <AuthPage onAuth={auth}/>;
 
@@ -151,14 +189,14 @@ export default function App() {
 
       {/* Modals */}
       {showCreateOrg && <Modal onClose={()=>setShowCreateOrg(false)} title={tt('newOrg')}>
-        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await fetch(url('/api/orgs'),{method:'POST',headers,body:JSON.stringify({name:f.get('name'),description:f.get('desc')})});setShowCreateOrg(false);load();}}>
+        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);const r=await fetch(url('/api/orgs'),{method:'POST',headers,body:JSON.stringify({name:f.get('name'),description:f.get('desc')})});if(r.ok){const newOrg=await r.json();setOrg(newOrg);setOrgs(p=>[newOrg,...p]);}setShowCreateOrg(false);loadIdentity();}}>
           <Field name="name" label={tt('name')} />
           <Field name="desc" label={tt('description')} />
           <Submit label={tt('create')} />
         </form>
       </Modal>}
       {showCreateAgent && <Modal onClose={()=>setShowCreateAgent(false)} title={tt('newAgent')}>
-        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await fetch(url(`/api/orgs/${org!.id}/agents`),{method:'POST',headers,body:JSON.stringify({name:f.get('name'),role:f.get('role'),description:f.get('desc')})});setShowCreateAgent(false);load();}}>
+        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);const r=await fetch(url(`/api/orgs/${org!.id}/agents`),{method:'POST',headers,body:JSON.stringify({name:f.get('name'),role:f.get('role'),description:f.get('desc')})});if(r.ok){const newA=await r.json();setAgents(p=>[newA,...p]);}setShowCreateAgent(false);loadAgentsTasks();}}>
           <Field name="name" label={tt('name')} />
           <div className="mb-3"><label className="block text-[10px] mb-1" style={{color:MUTED}}>{tt('role')}</label><select name="role" className="w-full px-4 py-3 rounded-xl text-sm outline-none" style={{background:INPUT,border:'1px solid rgba(99,102,241,0.15)',color:TEXT}} onChange={e=>{const d=(document.querySelector('[name=desc]')as HTMLInputElement);const roles:Record<string,string>={'Developer':'Code, architecture','Reviewer':'Safety, quality','Tester':'Test, verify','DevOps':'CI/CD, deploy','Analyst':'Data, reports'};if(d)d.value=roles[e.target.value]||'';}}>
               <option value="">Select...</option>
@@ -170,7 +208,7 @@ export default function App() {
       </Modal>}
       {showAssignTask && <Modal onClose={()=>setShowAssignTask(null)} title={`${tt('assignTask')} → ${showAssignTask.name}`}>
         <p className="text-xs mb-4" style={{color:MUTED}}>{showAssignTask.role}</p>
-        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await fetch(url(`/api/orgs/${org!.id}/agents/${showAssignTask.id}/tasks`),{method:'POST',headers,body:JSON.stringify({description:f.get('task')})});setShowAssignTask(null);load();}}>
+        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);const r=await fetch(url(`/api/orgs/${org!.id}/agents/${showAssignTask.id}/tasks`),{method:'POST',headers,body:JSON.stringify({description:f.get('task')})});if(r.ok){const newT=await r.json();setTasks(p=>[newT,...p]);}setShowAssignTask(null);loadAgentsTasks();}}>
           <textarea name="task" placeholder={tt('taskDesc')} className="w-full px-4 py-3 rounded-xl text-sm mb-4 h-24 resize-none outline-none" style={{background:INPUT,border:'1px solid rgba(99,102,241,0.15)',color:TEXT}} autoFocus />
           <Submit label={tt('assignTask')} />
         </form>

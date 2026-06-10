@@ -43,12 +43,44 @@ struct Db { conn: Mutex<rusqlite::Connection> }
 impl Db {
     fn new(path: &str) -> anyhow::Result<Self> {
         let conn = rusqlite::Connection::open(path)?;
-        let _ = conn.execute_batch("
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
+        conn.execute_batch("
             CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE, name TEXT, password_hash TEXT, org_id TEXT, model_provider TEXT DEFAULT 'openai', model_name TEXT DEFAULT 'gpt-4o', model_key TEXT DEFAULT '', model_temp REAL DEFAULT 0.7, created_at TEXT);
             CREATE TABLE IF NOT EXISTS orgs (id TEXT PRIMARY KEY, name TEXT, description TEXT, owner_id TEXT, created_at TEXT);
             CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, org_id TEXT, name TEXT, role TEXT, description TEXT, status TEXT, current_task TEXT, total_tasks INTEGER DEFAULT 0, completed_tasks INTEGER DEFAULT 0, created_at TEXT);
             CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, org_id TEXT, agent_id TEXT, description TEXT, status TEXT, result TEXT, duration_ms INTEGER, created_at TEXT, completed_at TEXT);
-        ");
+        ")?;
+        // Forward-migrations: add columns that older DBs may be missing.
+        // Each ALTER is wrapped in try-block so existing columns don't error.
+        for stmt in &[
+            "ALTER TABLE orgs ADD COLUMN owner_id TEXT",
+            "ALTER TABLE orgs ADD COLUMN api_key TEXT",
+            "ALTER TABLE agents ADD COLUMN current_task TEXT",
+            "ALTER TABLE agents ADD COLUMN total_tasks INTEGER DEFAULT 0",
+            "ALTER TABLE agents ADD COLUMN completed_tasks INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN result TEXT",
+            "ALTER TABLE tasks ADD COLUMN duration_ms INTEGER",
+            "ALTER TABLE tasks ADD COLUMN completed_at TEXT",
+        ] {
+            if let Err(e) = conn.execute_batch(stmt) {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column") && !msg.contains("no such column") {
+                    eprintln!("migration note ({stmt}): {msg}");
+                }
+            }
+        }
+        // Backfill: any existing org without owner_id becomes owned by the first user
+        // (rare — only matters if the DB was created with a stale schema)
+        let _: Result<i64, _> = conn.query_row("SELECT 1", [], |_| Ok(0));
+        let owners: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM orgs WHERE owner_id IS NULL OR owner_id = ''", [], |r| r.get(0))?;
+        if owners > 0 {
+            if let Ok(first_uid) = conn.query_row::<String, _, _>(
+                "SELECT id FROM users ORDER BY created_at ASC LIMIT 1", [], |r| r.get(0)) {
+                let _ = conn.execute("UPDATE orgs SET owner_id = ?1 WHERE owner_id IS NULL OR owner_id = ''",
+                    rusqlite::params![first_uid]);
+            }
+        }
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -62,10 +94,10 @@ impl Db {
             })).ok()
     }
 
-    async fn user_create(&self, u: &User, hash: &str) {
+    async fn user_create(&self, u: &User, hash: &str) -> Result<(), rusqlite::Error> {
         let c = self.conn.lock().await;
-        c.execute("INSERT INTO users VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            rusqlite::params![u.id, u.email, u.name, hash, u.org_id, u.model.provider, u.model.model, u.model.api_key, u.model.temperature, u.created_at]).ok();
+        c.execute("INSERT INTO users (id,email,name,password_hash,org_id,model_provider,model_name,model_key,model_temp,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            rusqlite::params![u.id, u.email, u.name, hash, u.org_id, u.model.provider, u.model.model, u.model.api_key, u.model.temperature, u.created_at]).map(|_| ())
     }
 
     async fn user_by_id(&self, id: &str) -> Option<User> {
@@ -95,9 +127,10 @@ impl Db {
         stmt.query_map(rusqlite::params![owner_id], |r| Ok(Organization { id:r.get(0)?,name:r.get(1)?,description:r.get(2)?,owner_id:r.get(3)?,created_at:r.get(4)? })).unwrap().filter_map(|r|r.ok()).collect()
     }
 
-    async fn org_create(&self, org: &Organization) {
+    async fn org_create(&self, org: &Organization) -> Result<(), rusqlite::Error> {
         let c = self.conn.lock().await;
-        c.execute("INSERT INTO orgs VALUES (?1,?2,?3,?4,?5)", rusqlite::params![org.id,org.name,org.description,org.owner_id,org.created_at]).ok();
+        c.execute("INSERT INTO orgs (id,name,description,owner_id,created_at) VALUES (?1,?2,?3,?4,?5)",
+            rusqlite::params![org.id,org.name,org.description,org.owner_id,org.created_at]).map(|_| ())
     }
 
     async fn org_exists(&self, id: &str) -> bool {
@@ -111,9 +144,10 @@ impl Db {
             .unwrap().filter_map(|r|r.ok()).collect()
     }
 
-    async fn agent_create(&self, a: &Agent) {
+    async fn agent_create(&self, a: &Agent) -> Result<(), rusqlite::Error> {
         let c = self.conn.lock().await;
-        c.execute("INSERT INTO agents VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", rusqlite::params![a.id,a.org_id,a.name,a.role,a.description,a.status,a.current_task,a.total_tasks,a.completed_tasks,a.created_at]).ok();
+        c.execute("INSERT INTO agents (id,org_id,name,role,description,status,current_task,total_tasks,completed_tasks,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            rusqlite::params![a.id,a.org_id,a.name,a.role,a.description,a.status,a.current_task,a.total_tasks,a.completed_tasks,a.created_at]).map(|_| ())
     }
 
     async fn agent_update(&self, id: &str, status: &str, task: Option<&str>) {
@@ -134,9 +168,10 @@ impl Db {
             .unwrap().filter_map(|r|r.ok()).collect()
     }
 
-    async fn task_create(&self, t: &Task) {
+    async fn task_create(&self, t: &Task) -> Result<(), rusqlite::Error> {
         let c = self.conn.lock().await;
-        c.execute("INSERT INTO tasks VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)", rusqlite::params![t.id,t.org_id,t.agent_id,t.description,t.status,t.result,t.duration_ms,t.created_at,t.completed_at]).ok();
+        c.execute("INSERT INTO tasks (id,org_id,agent_id,description,status,result,duration_ms,created_at,completed_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            rusqlite::params![t.id,t.org_id,t.agent_id,t.description,t.status,t.result,t.duration_ms,t.created_at,t.completed_at]).map(|_| ())
     }
 
     async fn task_complete(&self, id: &str, result: &str, ms: u64) {
@@ -185,7 +220,7 @@ async fn register(State(s): State<Arc<AppState>>, Json(b): Json<RegisterReq>) ->
     let id = Uuid::new_v4().to_string();
     let hash = bcrypt::hash(&b.password, 8).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let user = User { id: id.clone(), email: b.email.clone(), name: b.name, org_id: None, model: ModelConfig::default(), created_at: chrono::Utc::now().to_rfc3339() };
-    s.db.user_create(&user, &hash).await;
+    s.db.user_create(&user, &hash).await.map_err(|e| { eprintln!("user_create failed: {e}"); StatusCode::INTERNAL_SERVER_ERROR })?;
     let token = jsonwebtoken::encode(&jsonwebtoken::Header::default(),
         &serde_json::json!({"sub": id, "exp": chrono::Utc::now().timestamp() + 86400 * 30}),
         &jsonwebtoken::EncodingKey::from_secret(s.jwt_secret.as_bytes())).unwrap();
@@ -221,7 +256,7 @@ async fn update_model(State(s): State<Arc<AppState>>, headers: HeaderMap, Json(b
 async fn create_org(State(s): State<Arc<AppState>>, headers: HeaderMap, Json(b): Json<CreateOrg>) -> Result<Json<Organization>, StatusCode> {
     let uid = extract_user(&headers, &s).ok_or(StatusCode::UNAUTHORIZED)?.id;
     let o = Organization { id: Uuid::new_v4().to_string(), name: b.name, description: b.description, owner_id: uid.clone(), created_at: chrono::Utc::now().to_rfc3339() };
-    s.db.org_create(&o).await;
+    s.db.org_create(&o).await.map_err(|e| { eprintln!("org_create failed: {e}"); StatusCode::INTERNAL_SERVER_ERROR })?;
     s.db.user_set_org(&uid, &o.id).await;
     let _ = s.tx.send(format!("org:{} created", o.id));
     Ok(Json(o))
@@ -235,7 +270,7 @@ async fn list_orgs(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Result
 async fn create_agent(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(oid): Path<String>, Json(b): Json<CreateAgent>) -> Result<Json<Agent>, StatusCode> {
     let uid = extract_user(&headers, &s).ok_or(StatusCode::UNAUTHORIZED)?.id;
     let a = Agent { id: Uuid::new_v4().to_string(), org_id: oid, name: b.name, role: b.role, description: b.description, status: "idle".into(), current_task: None, total_tasks: 0, completed_tasks: 0, created_at: chrono::Utc::now().to_rfc3339() };
-    s.db.agent_create(&a).await;
+    s.db.agent_create(&a).await.map_err(|e| { eprintln!("agent_create failed: {e}"); StatusCode::INTERNAL_SERVER_ERROR })?;
     let _ = s.tx.send(format!("agent:{} created", a.id));
     Ok(Json(a))
 }
@@ -261,7 +296,7 @@ async fn create_task(State(s): State<Arc<AppState>>, headers: HeaderMap, Path((o
     }
 
     let t = Task { id: Uuid::new_v4().to_string(), org_id: oid.clone(), agent_id: aid.clone(), description: b.description, status: "pending".into(), result: None, duration_ms: None, created_at: chrono::Utc::now().to_rfc3339(), completed_at: None };
-    s.db.task_create(&t).await; s.db.agent_update(&aid, "working", Some(&t.id)).await; s.db.agent_inc(&aid, true).await;
+    s.db.task_create(&t).await.map_err(|e| { eprintln!("task_create failed: {e}"); StatusCode::INTERNAL_SERVER_ERROR })?; s.db.agent_update(&aid, "working", Some(&t.id)).await; s.db.agent_inc(&aid, true).await;
     let _ = s.tx.send(format!("task:{} created", t.id));
     let chain = b.chain_to_agent.clone();
     let sc = s.clone(); let tc = t.clone();
@@ -275,7 +310,7 @@ async fn list_tasks(State(s): State<Arc<AppState>>, Path((oid, _)): Path<(String
 
 async fn webhook_handler(State(s): State<Arc<AppState>>, Json(b): Json<WebhookPayload>) -> Result<Json<Task>, StatusCode> {
     let t = Task { id: Uuid::new_v4().to_string(), org_id: b.org_id.clone(), agent_id: b.agent_id.clone(), description: format!("[{}] {}", b.event, b.description), status: "pending".into(), result: None, duration_ms: None, created_at: chrono::Utc::now().to_rfc3339(), completed_at: None };
-    s.db.task_create(&t).await; s.db.agent_update(&b.agent_id, "working", Some(&t.id)).await; s.db.agent_inc(&b.agent_id, true).await;
+    s.db.task_create(&t).await.map_err(|e| { eprintln!("task_create(webhook) failed: {e}"); StatusCode::INTERNAL_SERVER_ERROR })?; s.db.agent_update(&b.agent_id, "working", Some(&t.id)).await; s.db.agent_inc(&b.agent_id, true).await;
     let _ = s.tx.send(format!("webhook:{} -> task:{}", b.event, t.id));
     let sc = s.clone(); let tc = t.clone();
     tokio::spawn(async move { run_task(&sc, &tc, None).await; });
