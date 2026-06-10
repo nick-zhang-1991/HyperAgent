@@ -1,6 +1,7 @@
 import './index.css';
 import AuthPage from './AuthPage';
 import { tt, sl, al, gl } from './i18n';
+import { apiBase, wsBase } from './api';
 import { useState, useEffect, useCallback } from 'react';
 
 const BG = 'linear-gradient(135deg, #05051a 0%, #0a0a2e 30%, #0d0d28 60%, #060622 100%)';
@@ -28,6 +29,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
 
   const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const url = (p: string) => apiBase() + p;
   const auth = useCallback((t:string,u:T)=>{setToken(t);setUser(u);localStorage.setItem('token',t);},[]);
   const logout = ()=>{setToken('');setUser(null);localStorage.removeItem('token');};
 
@@ -35,15 +37,15 @@ export default function App() {
     if(!token)return;
     try{
       const [u,o] = await Promise.all([
-        fetch('/api/auth/me',{headers}).then(r=>r.ok?r.json():null),
-        fetch('/api/orgs',{headers}).then(r=>r.ok?r.json():[])
+        fetch(url('/api/auth/me'),{headers}).then(r=>r.ok?r.json():null),
+        fetch(url('/api/orgs'),{headers}).then(r=>r.ok?r.json():[])
       ]);
       setUser(u); setOrgs(o);
       if(o.length>0 && !org) setOrg(o[0]);
       if(org){
         const [a,t] = await Promise.all([
-          fetch(`/api/orgs/${org.id}/agents`,{headers}).then(r=>r.ok?r.json():[]),
-          fetch(`/api/orgs/${org.id}/agents/_/tasks`,{headers}).then(r=>r.ok?r.json():[])
+          fetch(url(`/api/orgs/${org.id}/agents`),{headers}).then(r=>r.ok?r.json():[]),
+          fetch(url(`/api/orgs/${org.id}/agents/_/tasks`),{headers}).then(r=>r.ok?r.json():[])
         ]);
         setAgents(a); setTasks(t);
       }
@@ -54,8 +56,7 @@ export default function App() {
 
   useEffect(()=>{
     if(!token)return;
-    const wsUrl = window.location.hostname==='localhost'?'ws://127.0.0.1:4000/api/ws':`wss://${window.location.hostname}/api/ws`;
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(wsBase() + '/api/ws');
     ws.onmessage = e=>{setEvents(p=>[...p.slice(-50),e.data]);if(e.data.startsWith('progress:')){const[,aid,...r]=e.data.split(':');setProgress(p=>({...p,[aid]:r.join(':')}));}load();};
     return ()=>ws.close();
   },[token]);
@@ -150,14 +151,14 @@ export default function App() {
 
       {/* Modals */}
       {showCreateOrg && <Modal onClose={()=>setShowCreateOrg(false)} title={tt('newOrg')}>
-        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await fetch('/api/orgs',{method:'POST',headers,body:JSON.stringify({name:f.get('name'),description:f.get('desc')})});setShowCreateOrg(false);load();}}>
+        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await fetch(url('/api/orgs'),{method:'POST',headers,body:JSON.stringify({name:f.get('name'),description:f.get('desc')})});setShowCreateOrg(false);load();}}>
           <Field name="name" label={tt('name')} />
           <Field name="desc" label={tt('description')} />
           <Submit label={tt('create')} />
         </form>
       </Modal>}
       {showCreateAgent && <Modal onClose={()=>setShowCreateAgent(false)} title={tt('newAgent')}>
-        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await fetch(`/api/orgs/${org!.id}/agents`,{method:'POST',headers,body:JSON.stringify({name:f.get('name'),role:f.get('role'),description:f.get('desc')})});setShowCreateAgent(false);load();}}>
+        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await fetch(url(`/api/orgs/${org!.id}/agents`),{method:'POST',headers,body:JSON.stringify({name:f.get('name'),role:f.get('role'),description:f.get('desc')})});setShowCreateAgent(false);load();}}>
           <Field name="name" label={tt('name')} />
           <div className="mb-3"><label className="block text-[10px] mb-1" style={{color:MUTED}}>{tt('role')}</label><select name="role" className="w-full px-4 py-3 rounded-xl text-sm outline-none" style={{background:INPUT,border:'1px solid rgba(99,102,241,0.15)',color:TEXT}} onChange={e=>{const d=(document.querySelector('[name=desc]')as HTMLInputElement);const roles:Record<string,string>={'Developer':'Code, architecture','Reviewer':'Safety, quality','Tester':'Test, verify','DevOps':'CI/CD, deploy','Analyst':'Data, reports'};if(d)d.value=roles[e.target.value]||'';}}>
               <option value="">Select...</option>
@@ -169,13 +170,13 @@ export default function App() {
       </Modal>}
       {showAssignTask && <Modal onClose={()=>setShowAssignTask(null)} title={`${tt('assignTask')} → ${showAssignTask.name}`}>
         <p className="text-xs mb-4" style={{color:MUTED}}>{showAssignTask.role}</p>
-        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await fetch(`/api/orgs/${org!.id}/agents/${showAssignTask.id}/tasks`,{method:'POST',headers,body:JSON.stringify({description:f.get('task')})});setShowAssignTask(null);load();}}>
+        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await fetch(url(`/api/orgs/${org!.id}/agents/${showAssignTask.id}/tasks`),{method:'POST',headers,body:JSON.stringify({description:f.get('task')})});setShowAssignTask(null);load();}}>
           <textarea name="task" placeholder={tt('taskDesc')} className="w-full px-4 py-3 rounded-xl text-sm mb-4 h-24 resize-none outline-none" style={{background:INPUT,border:'1px solid rgba(99,102,241,0.15)',color:TEXT}} autoFocus />
           <Submit label={tt('assignTask')} />
         </form>
       </Modal>}
       {showSettings && <Modal onClose={()=>setShowSettings(false)} title={tt('settings')}>
-        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await fetch('/api/auth/model',{method:'POST',headers,body:JSON.stringify({provider:f.get('provider'),model:f.get('model'),api_key:f.get('key'),temperature:parseFloat(f.get('temp')as string)})});setShowSettings(false);}}>
+        <form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await fetch(url('/api/auth/model'),{method:'POST',headers,body:JSON.stringify({provider:f.get('provider'),model:f.get('model'),api_key:f.get('key'),temperature:parseFloat(f.get('temp')as string)})});setShowSettings(false);}}>
           <div className="mb-3"><label className="block text-[10px] mb-1" style={{color:MUTED}}>{tt('provider')}</label><select name="provider" defaultValue={user?.model?.provider||'openai'} className="w-full px-4 py-3 rounded-xl text-sm outline-none" style={{background:INPUT,border:'1px solid rgba(99,102,241,0.15)',color:TEXT}}>{['openai','anthropic','deepseek','groq','together','local'].map(p=><option key={p}>{p}</option>)}</select></div>
           <Field name="model" label={tt('model')} defaultValue={user?.model?.model||'gpt-4o'} />
           <Field name="key" label={tt('apiKey')} type="password" defaultValue={user?.model?.api_key||''} />

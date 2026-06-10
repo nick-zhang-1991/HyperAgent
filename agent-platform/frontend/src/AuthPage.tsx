@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { tt, sl, al, gl } from './i18n';
+import { apiBase } from './api';
 
 export default function AuthPage({ onAuth }: { onAuth: (t: string, u: any) => void }) {
   const [mode, setMode] = useState<'login'|'register'>('login');
@@ -10,16 +11,19 @@ export default function AuthPage({ onAuth }: { onAuth: (t: string, u: any) => vo
 
   const submit = async () => {
     setError('');
-    const api = '';
     const ep = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
     const body: any = { email, password };
     if (mode === 'register') body.name = name || email.split('@')[0];
     try {
-      const r = await fetch(api + ep, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
-      const d = await r.json();
+      const r = await fetch(apiBase() + ep, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+      let d: any = {};
+      try { d = await r.json(); } catch {}
       if (r.ok) { onAuth(d.token, d.user) }
-      else { setError(d.error || 'Failed') }
-    } catch { setError('Connection failed') }
+      else { setError(d.error || `Server error (${r.status})`) }
+    } catch (e: any) {
+      const api = apiBase();
+      setError(`Connection failed — backend not reachable at ${api || 'same origin'}`)
+    }
   };
 
   return (
