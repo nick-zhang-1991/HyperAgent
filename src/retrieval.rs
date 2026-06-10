@@ -157,24 +157,45 @@ mod tests {
         p
     }
 
+    /// Build an empty HybridRetriever backed by a temp dir + sqlite memory store.
+    /// Returns (retriever, temp_dir_path) so the caller can clean up.
+    fn setup_retriever() -> (HybridRetriever<'static>, std::path::PathBuf) {
+        // Note: HybridRetriever borrows from mgr/kb. We leak them via Box::leak to
+        // obtain 'static references for the test fixture's lifetime. The returned
+        // PathBuf is the temp dir so the caller can clean up.
+        let root = fresh_kb_dir();
+        let mem_db = root.join("mem.db");
+        let store = SqliteMemoryStore::new(&mem_db).unwrap_or_else(|e| {
+            panic!("SqliteMemoryStore::new failed for {}: {e}", mem_db.display())
+        });
+        let mgr: &'static MemoryManager = Box::leak(Box::new(
+            MemoryManager::new(Box::new(store), "agent").with_container("hybrid-test"),
+        ));
+        let kb_store_path = root.join("kb_mem.db");
+        let kb_store = SqliteMemoryStore::new(&kb_store_path).unwrap();
+        let kb_mgr = MemoryManager::new(Box::new(kb_store), "agent").with_container("_knowledge");
+        let kb: &'static KnowledgeBase = Box::leak(Box::new(KnowledgeBase::new(&root, kb_mgr)));
+        (HybridRetriever::new(mgr, kb), root)
+    }
+
     #[test]
     fn hybrid_empty_query_returns_empty() {
-        let (retriever, _tmp) = setup_retriever().unwrap();
+        let (retriever, _tmp) = setup_retriever();
         let results = retriever.recall("", 5).unwrap();
         assert!(results.is_empty() || results.len() <= 5);
         drop(retriever);
-        let _ = std::fs::remove_file(&_tmp);
+        let _ = std::fs::remove_dir_all(&_tmp);
     }
 
     #[test]
     fn hybrid_query_finds_exact_match() {
-        let (retriever, _tmp) = setup_retriever().unwrap();
+        let (retriever, _tmp) = setup_retriever();
         // Memory has "User prefers concise responses" from the test setup
         let results = retriever.recall("rust", 5).unwrap();
         // Should not crash, should return 0+ results
         assert!(results.len() <= 5);
         drop(retriever);
-        let _ = std::fs::remove_file(&_tmp);
+        let _ = std::fs::remove_dir_all(&_tmp);
     }
 
     #[test]
