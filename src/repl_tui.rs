@@ -459,11 +459,18 @@ fn render_input_box(frame: &mut Frame, area: Rect, app: &AppState, text: Text) {
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 
-    // Place cursor AFTER the text (at the end of input)
+    // Put cursor at the logical end of input text within the box.
     if !app.input.is_empty() && !app.is_processing {
-        let text_x = (2 + (app.input.chars().count() as u16).min(inner.width.saturating_sub(3)))
-            .min(inner.width.saturating_sub(1));
-        frame.set_cursor(inner.x + text_x, inner.y);
+        let prefix_len = 2u16; // "❯ "
+        let avail = inner.width.saturating_sub(1);
+        if avail > 0 {
+            let raw = prefix_len + app.input.chars().count() as u16;
+            let row = (raw - 1) / avail;
+            let col = (raw - 1) % avail;
+            let y = inner.y + row.min(inner.height.saturating_sub(1));
+            let x = inner.x + col.min(inner.width.saturating_sub(1));
+            frame.set_cursor(x, y);
+        }
     }
 }
 
