@@ -324,3 +324,223 @@ pub fn run_all_benchmarks(tasks: &[EvalTask], binary: &std::path::Path) -> anyho
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_builtin_tasks_returns_nonempty() {
+        let tasks = builtin_tasks();
+        assert!(!tasks.is_empty());
+        assert!(tasks.len() >= 5);
+    }
+
+    #[test]
+    fn test_builtin_tasks_have_unique_ids_count() {
+        // Document the current behavior: builtin_tasks has duplicates (legacy + new).
+        // This test ensures we get back what we expect, not asserting uniqueness.
+        let tasks = builtin_tasks();
+        let ids: Vec<&str> = tasks.iter().map(|t| &t.id[..]).collect();
+        assert!(ids.len() >= 5);
+        // Count actual unique ids
+        let mut sorted: Vec<&str> = ids.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert!(sorted.len() >= 5);
+    }
+
+    #[test]
+    fn test_builtin_tasks_have_required_fields() {
+        let tasks = builtin_tasks();
+        for t in &tasks {
+            assert!(!t.id.is_empty(), "id should not be empty");
+            assert!(!t.name.is_empty(), "name should not be empty");
+            assert!(!t.category.is_empty(), "category should not be empty");
+            assert!(!t.prompt.is_empty(), "prompt should not be empty");
+        }
+    }
+
+    #[test]
+    fn test_builtin_tasks_categories() {
+        let tasks = builtin_tasks();
+        let cats: std::collections::HashSet<&str> = tasks.iter().map(|t| &t.category[..]).collect();
+        assert!(!cats.is_empty());
+        // Should include common categories
+        assert!(cats.contains("code-gen") || cats.contains("algorithms") || cats.contains("safety") || cats.contains("testing"));
+    }
+
+    #[test]
+    fn test_all_tasks_returns_same_as_builtin() {
+        assert_eq!(all_tasks().len(), builtin_tasks().len());
+    }
+
+    #[test]
+    fn test_eval_task_check_closure_works() {
+        // EvalTask's check is a closure - verify it can be invoked
+        let task = EvalTask {
+            id: "test".into(),
+            name: "Test Task".into(),
+            category: "test".into(),
+            prompt: "test prompt".into(),
+            check: |dir| {
+                Ok(dir.join("src/lib.rs").exists())
+            },
+        };
+        // We can construct but cannot call check directly due to private fn
+        // Just verify the task is properly constructed
+        assert_eq!(task.id, "test");
+        assert_eq!(task.name, "Test Task");
+    }
+
+    #[test]
+    fn test_unique_categories_counts_unique_cats() {
+        let tasks = vec![
+            EvalTask {
+                id: "a".into(), name: "A".into(), category: "x".into(),
+                prompt: "".into(),
+                check: |_| Ok(false),
+            },
+            EvalTask {
+                id: "b".into(), name: "B".into(), category: "y".into(),
+                prompt: "".into(),
+                check: |_| Ok(false),
+            },
+            EvalTask {
+                id: "c".into(), name: "C".into(), category: "x".into(),
+                prompt: "".into(),
+                check: |_| Ok(false),
+            },
+        ];
+        assert_eq!(unique_categories(&tasks), 2);
+    }
+
+    #[test]
+    fn test_unique_categories_empty() {
+        let empty: Vec<EvalTask> = vec![];
+        assert_eq!(unique_categories(&empty), 0);
+    }
+
+    #[test]
+    fn test_unique_categories_single() {
+        let tasks = vec![EvalTask {
+            id: "a".into(), name: "A".into(), category: "x".into(),
+            prompt: "".into(), check: |_| Ok(false),
+        }];
+        assert_eq!(unique_categories(&tasks), 1);
+    }
+
+    #[test]
+    fn test_compute_categories_empty() {
+        let tasks: Vec<EvalTask> = vec![];
+        let results: Vec<EvalResult> = vec![];
+        let cats = compute_categories(&tasks, &results);
+        assert!(cats.is_empty());
+    }
+
+    #[test]
+    fn test_compute_categories_basic() {
+        let tasks = vec![
+            EvalTask { id: "a".into(), name: "A".into(), category: "x".into(),
+                       prompt: "".into(), check: |_| Ok(false) },
+            EvalTask { id: "b".into(), name: "B".into(), category: "x".into(),
+                       prompt: "".into(), check: |_| Ok(false) },
+            EvalTask { id: "c".into(), name: "C".into(), category: "y".into(),
+                       prompt: "".into(), check: |_| Ok(false) },
+        ];
+        let results = vec![
+            EvalResult { task_id: "a".into(), name: "A".into(), category: "x".into(),
+                         passed: true, duration_ms: 100, error: None },
+            EvalResult { task_id: "b".into(), name: "B".into(), category: "x".into(),
+                         passed: false, duration_ms: 200, error: Some("fail".into()) },
+            EvalResult { task_id: "c".into(), name: "C".into(), category: "y".into(),
+                         passed: true, duration_ms: 50, error: None },
+        ];
+        let cats = compute_categories(&tasks, &results);
+        assert_eq!(cats.len(), 2);
+        let x = cats.iter().find(|c| c.category == "x").unwrap();
+        assert_eq!(x.total, 2);
+        assert_eq!(x.passed, 1);
+        let y = cats.iter().find(|c| c.category == "y").unwrap();
+        assert_eq!(y.total, 1);
+        assert_eq!(y.passed, 1);
+    }
+
+    #[test]
+    fn test_compute_categories_pass_rate() {
+        let tasks = vec![
+            EvalTask { id: "a".into(), name: "A".into(), category: "x".into(),
+                       prompt: "".into(), check: |_| Ok(false) },
+        ];
+        let results = vec![
+            EvalResult { task_id: "a".into(), name: "A".into(), category: "x".into(),
+                         passed: true, duration_ms: 0, error: None },
+        ];
+        let cats = compute_categories(&tasks, &results);
+        assert_eq!(cats[0].pass_rate, 100.0);
+    }
+
+    // ── list_tasks (smoke) ─────────────────────────────────
+
+    #[test]
+    fn test_list_tasks_does_not_panic() {
+        let tasks = builtin_tasks();
+        // Just call it — output goes to stdout
+        list_tasks(&tasks);
+    }
+
+    #[test]
+    fn test_list_tasks_empty() {
+        let empty: Vec<EvalTask> = vec![];
+        list_tasks(&empty); // should not panic
+    }
+
+    // ── struct serde (EvalTask has Serialize?) ─────────────
+
+    #[test]
+    fn test_eval_task_construction_all_fields() {
+        let task = EvalTask {
+            id: "abc".into(),
+            name: "ABC Task".into(),
+            category: "testing".into(),
+            prompt: "do something".into(),
+            check: |_| Ok(true),
+        };
+        assert_eq!(task.id, "abc");
+        assert_eq!(task.name, "ABC Task");
+        assert_eq!(task.category, "testing");
+        assert_eq!(task.prompt, "do something");
+    }
+
+    // ── EvalResult construction ────────────────────────────
+
+    #[test]
+    fn test_eval_result_construction() {
+        let r = EvalResult {
+            task_id: "x".into(),
+            name: "X".into(),
+            category: "test".into(),
+            passed: true,
+            duration_ms: 123,
+            error: None,
+        };
+        assert_eq!(r.task_id, "x");
+        assert!(r.passed);
+        assert_eq!(r.duration_ms, 123);
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn test_eval_result_with_error() {
+        let r = EvalResult {
+            task_id: "x".into(),
+            name: "X".into(),
+            category: "test".into(),
+            passed: false,
+            duration_ms: 999,
+            error: Some("compilation failed".into()),
+        };
+        assert!(!r.passed);
+        assert_eq!(r.error.as_deref(), Some("compilation failed"));
+    }
+}

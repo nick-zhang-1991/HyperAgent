@@ -103,14 +103,20 @@ fn test_container_isolation() {
         .with_container("container-b");
     mgr_b.remember("secret for B", hyperagent::memory::MemoryType::Learned).ok();
 
-    // Container A should only see its own entries
+    // Container A should only see its own entries (filtered by container_tag)
     let store_c = hyperagent::memory::SqliteMemoryStore::new(&db).unwrap();
     let mgr_c = hyperagent::memory::MemoryManager::new(Box::new(store_c), "agent-c")
         .with_container("container-a");
-    let entries_a = mgr_c.store().query(&Default::default()).unwrap();
+    let q = hyperagent::memory::MemoryQuery {
+        container_tag: Some("container-a".to_string()),
+        limit: 100,
+        ..Default::default()
+    };
+    let entries_a = mgr_c.store().query(&q).unwrap();
     for e in &entries_a {
         assert!(e.content.contains("A"), "Container A leaked into B: {}", e.content);
     }
+    assert_eq!(entries_a.len(), 1, "Container A should have exactly 1 entry");
     
     let _ = std::fs::remove_file(&db);
 }

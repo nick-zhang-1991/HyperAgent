@@ -96,3 +96,67 @@ fn is_legacy_windows_console() -> bool {
         false // Unix always supports ANSI
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn test_spinner_start_and_drop() {
+        // start a spinner, then let it drop (Drop::stop should run cleanly)
+        {
+            let _s = Spinner::start("loading");
+            // give the thread a moment to start
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // If Drop impl is correct, this returns without hanging or panic.
+    }
+
+    #[test]
+    fn test_spinner_explicit_stop_returns_quickly() {
+        let mut s = Spinner::start("working");
+        let t0 = Instant::now();
+        s.stop();
+        let elapsed = t0.elapsed();
+        // stop should join the thread in <1s
+        assert!(elapsed < Duration::from_secs(2),
+                "stop() took too long: {:?}", elapsed);
+    }
+
+    #[test]
+    fn test_spinner_double_stop_is_safe() {
+        let mut s = Spinner::start("test");
+        s.stop();
+        // second stop should be a no-op (handle is None)
+        s.stop();
+    }
+
+    #[test]
+    fn test_spinner_accepts_string_and_str() {
+        // Verify Into<String> works for both &str and String
+        let s1 = Spinner::start("from str");
+        drop(s1);
+        let owned = String::from("from String");
+        let s2 = Spinner::start(owned);
+        drop(s2);
+    }
+
+    #[test]
+    fn test_spinner_runs_multiple_concurrently() {
+        // Verify multiple spinners don't conflict
+        let mut a = Spinner::start("task a");
+        let mut b = Spinner::start("task b");
+        std::thread::sleep(Duration::from_millis(50));
+        a.stop();
+        b.stop();
+    }
+
+    #[test]
+    fn test_is_legacy_windows_console_returns_false_on_unix() {
+        // On non-Windows, this should always return false.
+        #[cfg(not(windows))]
+        assert!(!is_legacy_windows_console());
+    }
+}

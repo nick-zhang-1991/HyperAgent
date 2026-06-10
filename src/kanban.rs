@@ -367,3 +367,284 @@ impl KanbanBoard {
         output
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_dir(suffix: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("hyperagent_kanban_{}_{}", suffix, std::process::id()));
+        let _ = std::fs::create_dir_all(&p);
+        p
+    }
+
+    #[tokio::test]
+    async fn test_kanban_new() {
+        let dir = temp_dir("new");
+        let board = KanbanBoard::new(&dir, 4);
+        assert_eq!(board.max_concurrency, 4);
+        let summary = board.summary().await;
+        assert_eq!(summary.total, 0);
+    }
+
+    #[tokio::test]
+    async fn test_kanban_add_card() {
+        let dir = temp_dir("add");
+        let board = KanbanBoard::new(&dir, 4);
+        let id = board.add_card("title1", "desc1", Priority::High, "code", vec![], vec![]).await;
+        assert!(!id.is_empty());
+        let summary = board.summary().await;
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.todo, 1);
+    }
+
+    #[tokio::test]
+    async fn test_kanban_add_card_with_tags_and_deps() {
+        let dir = temp_dir("add_full");
+        let board = KanbanBoard::new(&dir, 4);
+        let id = board.add_card(
+            "t2", "d2", Priority::Critical, "code",
+            vec!["dep1".into()],
+            vec!["tag1".into(), "tag2".into()]
+        ).await;
+        let card = board.get_card(&id).await.expect("card exists");
+        assert_eq!(card.title, "t2");
+        assert_eq!(card.priority, Priority::Critical);
+        assert_eq!(card.dependencies.len(), 1);
+        assert_eq!(card.tags.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_kanban_start_card() {
+        let dir = temp_dir("start");
+        let board = KanbanBoard::new(&dir, 4);
+        let id = board.add_card("t", "d", Priority::High, "code", vec![], vec![]).await;
+        board.start_card(&id, "agent-1", dir.clone()).await.unwrap();
+        let card = board.get_card(&id).await.unwrap();
+        assert_eq!(card.status, CardStatus::InProgress);
+        assert!(card.started_at.is_some());
+        assert_eq!(card.assigned_agent_id, Some("agent-1".into()));
+    }
+
+    #[tokio::test]
+    async fn test_kanban_start_card_not_found() {
+        let dir = temp_dir("start_missing");
+        let board = KanbanBoard::new(&dir, 4);
+        let result = board.start_card("missing", "agent", dir.clone()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_kanban_complete_card() {
+        let dir = temp_dir("complete");
+        let board = KanbanBoard::new(&dir, 4);
+        let id = board.add_card("t", "d", Priority::High, "code", vec![], vec![]).await;
+        let result = CardResult {
+            summary: "all done".into(),
+            files_changed: vec!["a.rs".into()],
+            tokens_used: 100,
+            exit_code: 0,
+        };
+        board.complete_card(&id, result).await.unwrap();
+        let card = board.get_card(&id).await.unwrap();
+        assert_eq!(card.status, CardStatus::Done);
+        assert!(card.completed_at.is_some());
+        assert!(card.result.is_some());
+        assert_eq!(card.result.unwrap().tokens_used, 100);
+    }
+
+    #[tokio::test]
+    async fn test_kanban_complete_card_not_found() {
+        let dir = temp_dir("complete_missing");
+        let board = KanbanBoard::new(&dir, 4);
+        let result = CardResult {
+            summary: "x".into(),
+            files_changed: vec![],
+            tokens_used: 0,
+            exit_code: 0,
+        };
+        let r = board.complete_card("missing", result).await;
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_kanban_block_card() {
+        let dir = temp_dir("block");
+        let board = KanbanBoard::new(&dir, 4);
+        let id = board.add_card("t", "d", Priority::High, "code", vec![], vec![]).await;
+        board.block_card(&id).await.unwrap();
+        let card = board.get_card(&id).await.unwrap();
+        assert_eq!(card.status, CardStatus::Blocked);
+    }
+
+    #[tokio::test]
+    async fn test_kanban_block_card_not_found() {
+        let dir = temp_dir("block_missing");
+        let board = KanbanBoard::new(&dir, 4);
+        let r = board.block_card("missing").await;
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_kanban_fail_card() {
+        let dir = temp_dir("fail");
+        let board = KanbanBoard::new(&dir, 4);
+        let id = board.add_card("t", "d", Priority::High, "code", vec![], vec![]).await;
+        board.fail_card(&id, "out of memory").await.unwrap();
+        let card = board.get_card(&id).await.unwrap();
+        assert_eq!(card.status, CardStatus::Failed);
+        assert!(card.result.is_some());
+        let result = card.result.unwrap();
+        assert!(result.summary.contains("out of memory"));
+        assert_eq!(result.exit_code, 1);
+    }
+
+    #[tokio::test]
+    async fn test_kanban_fail_card_not_found() {
+        let dir = temp_dir("fail_missing");
+        let board = KanbanBoard::new(&dir, 4);
+        let r = board.fail_card("missing", "reason").await;
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_kanban_list_cards() {
+        let dir = temp_dir("list");
+        let board = KanbanBoard::new(&dir, 4);
+        let id1 = board.add_card("a", "a", Priority::High, "code", vec![], vec![]).await;
+        let id2 = board.add_card("b", "b", Priority::High, "code", vec![], vec![]).await;
+        let cards = board.list_cards().await;
+        assert_eq!(cards.len(), 2);
+        let ids: Vec<String> = cards.iter().map(|c| c.id.clone()).collect();
+        assert!(ids.contains(&id1));
+        assert!(ids.contains(&id2));
+    }
+
+    #[tokio::test]
+    async fn test_kanban_get_card() {
+        let dir = temp_dir("get");
+        let board = KanbanBoard::new(&dir, 4);
+        let id = board.add_card("t", "d", Priority::High, "code", vec![], vec![]).await;
+        let card = board.get_card(&id).await;
+        assert!(card.is_some());
+        let card = board.get_card("nonexistent").await;
+        assert!(card.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_kanban_summary() {
+        let dir = temp_dir("summary");
+        let board = KanbanBoard::new(&dir, 4);
+        let id1 = board.add_card("a", "a", Priority::High, "code", vec![], vec![]).await;
+        let _id2 = board.add_card("b", "b", Priority::High, "code", vec![], vec![]).await;
+        board.start_card(&id1, "agent", dir.clone()).await.unwrap();
+        let s = board.summary().await;
+        assert_eq!(s.total, 2);
+        assert_eq!(s.in_progress, 1);
+        assert_eq!(s.todo, 1);
+        assert_eq!(s.done, 0);
+    }
+
+    #[tokio::test]
+    async fn test_kanban_summary_total_tokens() {
+        let dir = temp_dir("tokens");
+        let board = KanbanBoard::new(&dir, 4);
+        let id = board.add_card("t", "d", Priority::High, "code", vec![], vec![]).await;
+        let result = CardResult {
+            summary: "x".into(),
+            files_changed: vec![],
+            tokens_used: 500,
+            exit_code: 0,
+        };
+        board.complete_card(&id, result).await.unwrap();
+        let s = board.summary().await;
+        assert_eq!(s.total_tokens, 500);
+    }
+
+    #[tokio::test]
+    async fn test_kanban_clear() {
+        let dir = temp_dir("clear");
+        let board = KanbanBoard::new(&dir, 4);
+        board.add_card("a", "a", Priority::High, "code", vec![], vec![]).await;
+        board.add_card("b", "b", Priority::High, "code", vec![], vec![]).await;
+        board.clear().await;
+        let s = board.summary().await;
+        assert_eq!(s.total, 0);
+    }
+
+    #[tokio::test]
+    async fn test_kanban_to_dot() {
+        let dir = temp_dir("dot");
+        let board = KanbanBoard::new(&dir, 4);
+        let id1 = board.add_card("a", "a", Priority::High, "code", vec![], vec![]).await;
+        let _id2 = board.add_card("b", "b", Priority::High, "code", vec![id1.clone()], vec![]).await;
+        let dot = board.to_dot().await;
+        assert!(dot.contains("digraph G"));
+        assert!(dot.contains(&id1));
+    }
+
+    #[tokio::test]
+    async fn test_kanban_render() {
+        let dir = temp_dir("render");
+        let board = KanbanBoard::new(&dir, 4);
+        let id = board.add_card("title", "desc", Priority::Critical, "code", vec![], vec![]).await;
+        board.start_card(&id, "agent", dir.clone()).await.unwrap();
+        let rendered = board.render().await;
+        assert!(rendered.contains("In Progress"));
+        assert!(rendered.contains("title"));
+    }
+
+    #[tokio::test]
+    async fn test_kanban_board_clone() {
+        let dir = temp_dir("clone");
+        let board = KanbanBoard::new(&dir, 4);
+        let cards = board.board_clone();
+        // Add via the clone
+        {
+            let mut c = cards.lock().await;
+            c.insert("x".to_string(), Card {
+                id: "x".into(),
+                title: "T".into(),
+                description: "D".into(),
+                status: CardStatus::Todo,
+                priority: Priority::Low,
+                agent_mode: "code".into(),
+                dependencies: vec![],
+                dependents: vec![],
+                created_at: chrono::Utc::now(),
+                started_at: None,
+                completed_at: None,
+                assigned_agent_id: None,
+                worktree: None,
+                result: None,
+                tags: vec![],
+                estimated_cost: None,
+            });
+        }
+        let s = board.summary().await;
+        assert_eq!(s.total, 1);
+    }
+
+    #[test]
+    fn test_priority_serde() {
+        let p = Priority::Critical;
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(json, "\"critical\"");
+        let p: Priority = serde_json::from_str("\"high\"").unwrap();
+        assert_eq!(p, Priority::High);
+    }
+
+    #[test]
+    fn test_card_status_eq() {
+        assert_eq!(CardStatus::Todo, CardStatus::Todo);
+        assert_ne!(CardStatus::Todo, CardStatus::Done);
+    }
+
+    #[test]
+    fn test_kanban_summary_default() {
+        let s = KanbanSummary::default();
+        assert_eq!(s.total, 0);
+        assert_eq!(s.total_tokens, 0);
+    }
+}

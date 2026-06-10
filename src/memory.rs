@@ -408,6 +408,7 @@ impl SqliteMemoryStore {
         let conn = pool.get()?;
         Self::build_schema(&conn)?;
         Self::migrate_add_container_tag(&conn);
+        Self::migrate_add_memory_layer(&conn);
         drop(conn);
         Ok(Self { pool })
     }
@@ -519,6 +520,39 @@ impl SqliteMemoryStore {
         // Index for fast per-container recall.
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_container_tag ON memories(container_tag)",
+            [],
+        );
+    }
+
+    /// Idempotent migration: ensure `memory_layer`, `archived`, `container_tag`
+    /// columns exist. Older databases were created before these columns and would
+    /// otherwise fail with `no such column: memory_layer` on every recall.
+    /// The `embedding` column was TEXT in v0.1; we leave it as TEXT and CAST at
+    /// read time rather than rebuilding the table (avoids data loss on huge dbs).
+    fn migrate_add_memory_layer(conn: &rusqlite::Connection) {
+        let has_col = |name: &str| -> bool {
+            conn.query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('memories') WHERE name = ?1",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap_or(false)
+        };
+        if !has_col("memory_layer") {
+            let _ = conn.execute(
+                "ALTER TABLE memories ADD COLUMN memory_layer TEXT NOT NULL DEFAULT 'trace'",
+                [],
+            );
+        }
+        if !has_col("archived") {
+            let _ = conn.execute(
+                "ALTER TABLE memories ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+                [],
+            );
+        }
+        // Defensive backfill in case the column was added with NULLs in some race.
+        let _ = conn.execute(
+            "UPDATE memories SET memory_layer = 'trace' WHERE memory_layer IS NULL OR memory_layer = ''",
             [],
         );
     }
@@ -673,13 +707,16 @@ impl SqliteMemoryStore {
         let lower = content.to_lowercase();
 
         // 2-gram and 3-gram hashing
+        // Iterate over char boundaries (not raw bytes) so multi-byte UTF-8 chars
+        // (em-dash, CJK, emoji, etc.) don't split the slice mid-codepoint.
+        let chars: Vec<char> = lower.chars().collect();
         for n in 2..=3 {
-            if lower.len() < n {
+            if chars.len() < n {
                 continue;
             }
-            for i in 0..=lower.len() - n {
-                let gram = &lower[i..i + n];
-                let hash = Self::hash_str(gram);
+            for i in 0..=chars.len() - n {
+                let gram: String = chars[i..i + n].iter().collect();
+                let hash = Self::hash_str(&gram);
                 let idx = (hash as usize) % Self::EMBED_DIM;
                 // TF weighting: log-scaled to avoid over-dominance
                 vec[idx] += 1.0 / (n as f32 - 1.0);

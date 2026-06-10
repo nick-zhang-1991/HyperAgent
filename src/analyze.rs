@@ -127,8 +127,13 @@ fn parse_cargo_line(line: &str) -> Option<AnalysisIssue> {
                 String::new()
             };
 
-            let severity = if line.contains("error[E]") {
-                Severity::Error
+            let severity = if line.contains("error[") {
+                // Check if it's a specific rustc error (E0xxx) or generic "error[E]"
+                if line.contains("error[E]") || line.contains("error[E0") {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                }
             } else {
                 Severity::Warning
             };
@@ -312,4 +317,295 @@ fn auto_fix(issues: &[AnalysisIssue], _root: &Path) -> Result<usize> {
     // For dead code: add #[allow(dead_code)] would be too aggressive
 
     Ok(fixed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Severity ────────────────────────────────────────────
+
+    #[test]
+    fn test_severity_equality() {
+        assert_eq!(Severity::Critical, Severity::Critical);
+        assert_ne!(Severity::Critical, Severity::Error);
+        assert_ne!(Severity::Warning, Severity::Info);
+        assert_ne!(Severity::Info, Severity::Dead);
+    }
+
+    #[test]
+    fn test_severity_clone() {
+        let s = Severity::Warning;
+        let cloned = s.clone();
+        assert_eq!(s, cloned);
+    }
+
+    #[test]
+    fn test_severity_debug() {
+        // Debug should not panic for any variant
+        let _ = format!("{:?}", Severity::Critical);
+        let _ = format!("{:?}", Severity::Error);
+        let _ = format!("{:?}", Severity::Warning);
+        let _ = format!("{:?}", Severity::Info);
+        let _ = format!("{:?}", Severity::Dead);
+    }
+
+    #[test]
+    fn test_severity_serialize() {
+        let json = serde_json::to_string(&Severity::Critical).unwrap();
+        // PascalCase is default for unit variants
+        assert_eq!(json, "\"Critical\"");
+        let json = serde_json::to_string(&Severity::Error).unwrap();
+        assert_eq!(json, "\"Error\"");
+    }
+
+    // ── AnalysisIssue ───────────────────────────────────────
+
+    #[test]
+    fn test_analysis_issue_construction() {
+        let issue = AnalysisIssue {
+            file: "src/foo.rs".into(),
+            line: Some(10),
+            col: Some(5),
+            severity: Severity::Error,
+            code: "E0123".into(),
+            message: "type mismatch".into(),
+            suggestion: Some("fix the type".into()),
+        };
+        assert_eq!(issue.file, "src/foo.rs");
+        assert_eq!(issue.line, Some(10));
+        assert_eq!(issue.col, Some(5));
+    }
+
+    #[test]
+    fn test_analysis_issue_serialize() {
+        let issue = AnalysisIssue {
+            file: "f.rs".into(),
+            line: Some(1),
+            col: None,
+            severity: Severity::Warning,
+            code: "W001".into(),
+            message: "msg".into(),
+            suggestion: None,
+        };
+        let json = serde_json::to_string(&issue).unwrap();
+        assert!(json.contains("\"file\":\"f.rs\""));
+        assert!(json.contains("\"line\":1"));
+        assert!(json.contains("\"severity\":\"Warning\""));
+    }
+
+    // ── severity_order ──────────────────────────────────────
+
+    #[test]
+    fn test_severity_order_critical_first() {
+        assert_eq!(severity_order(&Severity::Critical), 0);
+        assert_eq!(severity_order(&Severity::Error), 1);
+        assert_eq!(severity_order(&Severity::Warning), 2);
+        assert_eq!(severity_order(&Severity::Info), 3);
+        assert_eq!(severity_order(&Severity::Dead), 4);
+    }
+
+    #[test]
+    fn test_severity_order_is_total() {
+        // All distinct values
+        let mut orders = vec![
+            severity_order(&Severity::Critical),
+            severity_order(&Severity::Error),
+            severity_order(&Severity::Warning),
+            severity_order(&Severity::Info),
+            severity_order(&Severity::Dead),
+        ];
+        orders.sort();
+        orders.dedup();
+        assert_eq!(orders.len(), 5);
+    }
+
+    // ── parse_cargo_line ────────────────────────────────────
+
+    #[test]
+    fn test_parse_cargo_line_typical_error() {
+        let line = "src/main.rs:42:5: error[E0123]: types do not match";
+        let issue = parse_cargo_line(line).expect("should parse");
+        assert_eq!(issue.file, "src/main.rs");
+        assert_eq!(issue.line, Some(42));
+        assert_eq!(issue.col, Some(5));
+        assert_eq!(issue.code, "rustc::E0123");
+        assert_eq!(issue.severity, Severity::Error);
+    }
+
+    #[test]
+    fn test_parse_cargo_line_non_error_returns_none() {
+        assert!(parse_cargo_line("Compiling foo v0.1.0").is_none());
+        assert!(parse_cargo_line("Finished dev profile").is_none());
+        assert!(parse_cargo_line("").is_none());
+    }
+
+    #[test]
+    fn test_parse_cargo_line_warning_severity() {
+        // Non-error[E] but contains error[
+        let line = "src/lib.rs:10:1: error[other]: something";
+        let issue = parse_cargo_line(line).expect("should parse");
+        assert_eq!(issue.severity, Severity::Warning);
+    }
+
+    #[test]
+    fn test_parse_cargo_line_handles_no_file_colon() {
+        let line = "error[E0123]: some error";
+        let issue = parse_cargo_line(line);
+        // Without file:line:col prefix, the function still returns Some
+        // but with a weird "file" value (the error code itself)
+        assert!(issue.is_some());
+        let issue = issue.unwrap();
+        assert!(issue.message.contains("some error") || issue.message.contains("error"));
+    }
+
+    // ── parse_audit_json ────────────────────────────────────
+
+    #[test]
+    fn test_parse_audit_json_empty() {
+        let issues = parse_audit_json("{}");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn test_parse_audit_json_invalid_json() {
+        let issues = parse_audit_json("not json");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn test_parse_audit_json_no_vulnerabilities() {
+        let json = r#"{"vulnerabilities":{"list":[]}}"#;
+        let issues = parse_audit_json(json);
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn test_parse_audit_json_with_vulnerability() {
+        let json = r#"{
+  "vulnerabilities": {
+    "list": [
+      {
+        "advisory": {
+          "id": "RUSTSEC-2024-0001",
+          "title": "Critical vulnerability in foo"
+        },
+        "package": {
+          "name": "vulnerable-pkg"
+        }
+      }
+    ]
+  }
+}"#;
+        let issues = parse_audit_json(json);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "RUSTSEC-2024-0001");
+        assert_eq!(issues[0].file, "Cargo.toml");
+        assert_eq!(issues[0].severity, Severity::Critical);
+        assert!(issues[0].message.contains("vulnerable-pkg"));
+        assert!(issues[0].message.contains("Critical"));
+        assert!(issues[0].suggestion.is_some());
+        assert!(issues[0].suggestion.as_ref().unwrap().contains("cargo update"));
+    }
+
+    #[test]
+    fn test_parse_audit_json_multiple_vulnerabilities() {
+        let json = r#"{
+  "vulnerabilities": {
+    "list": [
+      {"advisory":{"id":"A1","title":"vuln 1"},"package":{"name":"pkg1"}},
+      {"advisory":{"id":"A2","title":"vuln 2"},"package":{"name":"pkg2"}},
+      {"advisory":{"id":"A3","title":"vuln 3"},"package":{"name":"pkg3"}}
+    ]
+  }
+}"#;
+        let issues = parse_audit_json(json);
+        assert_eq!(issues.len(), 3);
+        let codes: Vec<&str> = issues.iter().map(|i| i.code.as_str()).collect();
+        assert!(codes.contains(&"A1"));
+        assert!(codes.contains(&"A2"));
+        assert!(codes.contains(&"A3"));
+    }
+
+    #[test]
+    fn test_parse_audit_json_missing_fields() {
+        let json = r#"{
+  "vulnerabilities": {
+    "list": [
+      {"advisory": {}, "package": {}}
+    ]
+  }
+}"#;
+        let issues = parse_audit_json(json);
+        assert_eq!(issues.len(), 1);
+        // Missing fields get defaults
+        assert_eq!(issues[0].code, "unknown");
+        assert_eq!(issues[0].message, "[] no description");
+    }
+
+    // ── detect_dead_code (smoke test) ───────────────────────
+
+    #[test]
+    fn test_detect_dead_code_on_empty_dir() {
+        let dir = std::env::temp_dir().join(format!("hyperagent_analyze_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let issues = detect_dead_code(&dir);
+        // No Cargo.toml so cargo check fails silently, no issues
+        assert!(issues.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── detect_complexity (testable) ────────────────────────
+
+    #[test]
+    fn test_detect_complexity_large_file() {
+        let dir = std::env::temp_dir().join(format!("hyperagent_analyze2_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        // Create a 1001-line file
+        let mut content = String::new();
+        for i in 0..1001 {
+            content.push_str(&format!("// line {}\n", i));
+        }
+        std::fs::write(dir.join("src/big.rs"), &content).unwrap();
+        let issues = detect_complexity(&dir);
+        assert!(!issues.is_empty(), "Should detect large file");
+        let big_issue = issues.iter().find(|i| i.code == "complexity::large_file").expect("should have large file issue");
+        assert!(big_issue.message.contains("1001"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_detect_complexity_no_src_dir() {
+        let dir = std::env::temp_dir().join(format!("hyperagent_analyze3_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // No src/ subdirectory
+        let issues = detect_complexity(&dir);
+        // walkdir on missing dir returns no entries
+        assert!(issues.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_detect_complexity_small_file() {
+        let dir = std::env::temp_dir().join(format!("hyperagent_analyze4_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/small.rs"), "fn main() {}\n").unwrap();
+        let issues = detect_complexity(&dir);
+        assert!(issues.is_empty(), "small file should not trigger issues");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── run (integration smoke test) ────────────────────────
+
+    #[test]
+    fn test_run_on_nonexistent_dir() {
+        let result = run(std::path::Path::new("/nonexistent/path/that/does/not/exist"), false);
+        // Should not error out — just produce empty issues list
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
 }

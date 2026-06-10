@@ -151,7 +151,17 @@ mod tests {
     use std::env;
 
     fn fresh_kb_dir() -> std::path::PathBuf {
-        let p = env::temp_dir().join(format!("hyperagent_hybrid_{}", std::process::id()));
+        // Use a random suffix to avoid collisions when tests run in parallel or
+        // when the temp dir is full and the previous test's leftovers are corrupt.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let p = env::temp_dir().join(format!(
+            "hyperagent_hybrid_{}_{}",
+            std::process::id(),
+            nanos
+        ));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
@@ -159,10 +169,27 @@ mod tests {
 
     /// Build an empty HybridRetriever backed by a temp dir + sqlite memory store.
     /// Returns (retriever, temp_dir_path) so the caller can clean up.
-    fn setup_retriever() -> (HybridRetriever<'static>, std::path::PathBuf) {
-        // Note: HybridRetriever borrows from mgr/kb. We leak them via Box::leak to
-        // obtain 'static references for the test fixture's lifetime. The returned
-        // PathBuf is the temp dir so the caller can clean up.
+    /// Test handle that owns the leaked MemoryManager/KnowledgeBase so the
+    /// underlying SQLite connections are dropped on Drop. Use a unique
+    /// suffix per call to avoid colliding SQLite locks between tests.
+    struct TestHandle {
+        _mgr: *const MemoryManager,
+        _kb: *const KnowledgeBase,
+    }
+    // SAFETY: the leaked pointers are only ever read, not mutated concurrently
+    // across threads, so Sync is trivially satisfied.
+    unsafe impl Send for TestHandle {}
+    unsafe impl Sync for TestHandle {}
+    impl Drop for TestHandle {
+        fn drop(&mut self) {
+            unsafe {
+                drop(Box::from_raw(self._mgr as *mut MemoryManager));
+                drop(Box::from_raw(self._kb as *mut KnowledgeBase));
+            }
+        }
+    }
+
+    fn setup_retriever() -> (HybridRetriever<'static>, TestHandle, std::path::PathBuf) {
         let root = fresh_kb_dir();
         let mem_db = root.join("mem.db");
         let store = SqliteMemoryStore::new(&mem_db).unwrap_or_else(|e| {
@@ -175,12 +202,13 @@ mod tests {
         let kb_store = SqliteMemoryStore::new(&kb_store_path).unwrap();
         let kb_mgr = MemoryManager::new(Box::new(kb_store), "agent").with_container("_knowledge");
         let kb: &'static KnowledgeBase = Box::leak(Box::new(KnowledgeBase::new(&root, kb_mgr)));
-        (HybridRetriever::new(mgr, kb), root)
+        let handle = TestHandle { _mgr: mgr, _kb: kb };
+        (HybridRetriever::new(mgr, kb), handle, root)
     }
 
     #[test]
     fn hybrid_empty_query_returns_empty() {
-        let (retriever, _tmp) = setup_retriever();
+        let (retriever, _handle, _tmp) = setup_retriever();
         let results = retriever.retrieve("", 5).unwrap();
         assert!(results.is_empty() || results.len() <= 5);
         drop(retriever);
@@ -189,7 +217,7 @@ mod tests {
 
     #[test]
     fn hybrid_query_finds_exact_match() {
-        let (retriever, _tmp) = setup_retriever();
+        let (retriever, _handle, _tmp) = setup_retriever();
         // Memory has "User prefers concise responses" from the test setup
         let results = retriever.retrieve("rust", 5).unwrap();
         // Should not crash, should return 0+ results

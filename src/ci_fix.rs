@@ -140,3 +140,26 @@ async fn apply_fix(analysis: &str) -> Result<bool> {
 
     Ok(files_fixed > 0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn test_run_with_nonexistent_file_fails() {
+        let path = PathBuf::from("/nonexistent/ci_log_xyz.log");
+        let result = run(Some(&path), "fix-branch", false).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("Failed to read") || msg.contains("No such file"));
+    }
+
+    #[test]
+    fn test_module_compiles() {
+        // Verify module-level types and constants
+        // Just a smoke test for compilation
+        let _: Option<&Path> = None;
+    }
+}

@@ -1,13 +1,14 @@
-#![cfg(test)]
 /// Integration tests for i18n and skills
+/// These use `hyperagent::` (the library crate) instead of `crate::` (which
+/// refers to the integration test binary itself).
 
 /// Test Chinese locale detection
 #[test]
 fn test_locale_detect_zh_cn() {
     // HYPER_LANG=zh-CN should activate Chinese
     std::env::set_var("HYPER_LANG", "zh-CN");
-    let locale = crate::i18n::Locale::detect();
-    assert_eq!(locale, crate::i18n::Locale::ZhCN);
+    let locale = hyperagent::i18n::Locale::detect();
+    assert_eq!(locale, hyperagent::i18n::Locale::ZhCN);
     std::env::remove_var("HYPER_LANG");
 }
 
@@ -16,9 +17,9 @@ fn test_locale_detect_zh_cn() {
 fn test_locale_detect_default_en() {
     std::env::remove_var("HYPER_LANG");
     std::env::remove_var("LANG");
-    let locale = crate::i18n::Locale::detect();
+    let locale = hyperagent::i18n::Locale::detect();
     // Default should be English
-    assert!(matches!(locale, crate::i18n::Locale::En));
+    assert!(matches!(locale, hyperagent::i18n::Locale::En));
 }
 
 /// Test skill YAML parsing
@@ -35,7 +36,7 @@ tags: rust, test
 # System prompt
 Do this test thing.
 "#;
-    let skill = crate::skill_market::parse_skill_md(skill_md);
+    let skill = hyperagent::skill_market::parse_skill_md(skill_md);
     assert!(skill.is_some());
     let s = skill.unwrap();
     assert_eq!(s.name, "Test Skill");
@@ -53,14 +54,14 @@ author: test
 
 No name here.
 "#;
-    let skill = crate::skill_market::parse_skill_md(skill_md);
+    let skill = hyperagent::skill_market::parse_skill_md(skill_md);
     assert!(skill.is_none());
 }
 
 /// Test skill template generation
 #[test]
 fn test_skill_create_template() {
-    let template = crate::skill_market::create_template("rust-linter");
+    let template = hyperagent::skill_market::create_template("rust-linter");
     assert!(template.contains("name: rust-linter"));
     assert!(template.contains("version: 1.0.0"));
     assert!(template.contains("---"));
@@ -69,7 +70,7 @@ fn test_skill_create_template() {
 /// Test skill injection into prompt
 #[test]
 fn test_skill_inject_prompt() {
-    use crate::skill_market::Skill;
+    use hyperagent::skill_market::Skill;
     let skills = vec![
         Skill {
             name: "Test".into(),
@@ -82,7 +83,7 @@ fn test_skill_inject_prompt() {
             tools: None,
         }
     ];
-    let prompt = crate::skill_market::inject_skills_prompt(&skills);
+    let prompt = hyperagent::skill_market::inject_skills_prompt(&skills);
     assert!(prompt.contains("## Active Skills"));
     assert!(prompt.contains("Test"));
     assert!(prompt.contains("Be helpful"));
@@ -91,6 +92,6 @@ fn test_skill_inject_prompt() {
 /// Test empty skill list
 #[test]
 fn test_skill_inject_empty() {
-    let prompt = crate::skill_market::inject_skills_prompt(&[]);
+    let prompt = hyperagent::skill_market::inject_skills_prompt(&[]);
     assert!(prompt.is_empty());
 }

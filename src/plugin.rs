@@ -239,3 +239,357 @@ impl PluginManager {
         self.tools.iter().map(|t| t.name.clone()).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_project(suffix: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("hyperagent_plugin_{}_{}", std::process::id(), suffix));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    // ── PluginTool ──────────────────────────────────────────
+
+    #[test]
+    fn test_plugin_tool_construction() {
+        let tool = PluginTool {
+            name: "deploy".into(),
+            description: "Deploy the app".into(),
+            script_path: std::path::PathBuf::from("/tmp/deploy.sh"),
+            parameters: serde_json::json!({"type":"object"}),
+        };
+        assert_eq!(tool.name, "deploy");
+        assert_eq!(tool.description, "Deploy the app");
+        assert_eq!(tool.script_path.to_str(), Some("/tmp/deploy.sh"));
+    }
+
+    #[test]
+    fn test_plugin_tool_clone() {
+        let tool = PluginTool {
+            name: "x".into(),
+            description: "y".into(),
+            script_path: std::path::PathBuf::from("/a"),
+            parameters: serde_json::json!({}),
+        };
+        let cloned = tool.clone();
+        assert_eq!(cloned.name, tool.name);
+        assert_eq!(cloned.script_path, tool.script_path);
+    }
+
+    // ── PluginManager basic ─────────────────────────────────
+
+    #[test]
+    fn test_plugin_manager_new_no_dir() {
+        let project = temp_project("no_dir");
+        let pm = PluginManager::new(&project);
+        assert_eq!(pm.count(), 0);
+        assert!(pm.list_tools().is_empty());
+    }
+
+    #[test]
+    fn test_plugin_manager_new_empty_dir() {
+        let project = temp_project("empty");
+        std::fs::create_dir_all(project.join(".hyper/tools")).unwrap();
+        let pm = PluginManager::new(&project);
+        assert_eq!(pm.count(), 0);
+    }
+
+    #[test]
+    fn test_plugin_manager_scan_finds_scripts() {
+        let project = temp_project("scan");
+        let tools_dir = project.join(".hyper/tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        // Create a Python script with metadata
+        std::fs::write(
+            tools_dir.join("hello.py"),
+            "# Description: Says hello
+# Parameter: name (string, required) - Person to greet
+print('hello')
+",
+        ).unwrap();
+        let pm = PluginManager::new(&project);
+        assert_eq!(pm.count(), 1);
+        let tools = pm.list_tools();
+        assert!(tools.contains(&"hello".to_string()));
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn test_plugin_manager_ignores_non_script_files() {
+        let project = temp_project("ignore");
+        let tools_dir = project.join(".hyper/tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        std::fs::write(tools_dir.join("README.md"), "# Notes").unwrap();
+        std::fs::write(tools_dir.join("data.json"), "{}").unwrap();
+        let pm = PluginManager::new(&project);
+        assert_eq!(pm.count(), 0);
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn test_plugin_manager_supports_multiple_extensions() {
+        let project = temp_project("multi_ext");
+        let tools_dir = project.join(".hyper/tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        for ext in &["py", "sh", "js", "ts", "rb", "pl", "php"] {
+            std::fs::write(tools_dir.join(format!("tool_{}.{}", "alpha", ext)), "#!/bin/sh
+").unwrap();
+        }
+        // Make shell scripts executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for ext in &["sh"] {
+                let p = tools_dir.join(format!("tool_alpha.{}", ext));
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let pm = PluginManager::new(&project);
+        // Note: Python/JS/TS/RB/PL/PHP don't need exec bit per code, only .sh does
+        assert!(pm.count() >= 1);
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn test_plugin_manager_non_executable_sh_skipped() {
+        let project = temp_project("non_exec_sh");
+        let tools_dir = project.join(".hyper/tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        let sh_path = tools_dir.join("notexec.sh");
+        std::fs::write(&sh_path, "#!/bin/sh
+echo hi
+").unwrap();
+        // On Unix, the file is not executable by default
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&sh_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let pm = PluginManager::new(&project);
+        #[cfg(unix)]
+        assert_eq!(pm.count(), 0, "non-executable .sh should be skipped on unix");
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn test_plugin_manager_executable_sh_included() {
+        let project = temp_project("exec_sh");
+        let tools_dir = project.join(".hyper/tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        let sh_path = tools_dir.join("exec.sh");
+        std::fs::write(&sh_path, "#!/bin/sh
+echo hi
+").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&sh_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let pm = PluginManager::new(&project);
+        #[cfg(unix)]
+        assert!(pm.count() >= 1, "executable .sh should be included on unix");
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    // ── parse_header ────────────────────────────────────────
+
+    #[test]
+    fn test_parse_header_description_only() {
+        let content = "# Description: A simple tool
+import json
+";
+        let (desc, params) = PluginManager::parse_header(&content);
+        assert_eq!(desc, Some("A simple tool".to_string()));
+        assert!(params.is_none());
+    }
+
+    #[test]
+    fn test_parse_header_with_required_param() {
+        let content = r#"# Description: Tool with param
+# Parameter: env (string, required) - Target environment
+print("hi")
+"#;
+        let (desc, params) = PluginManager::parse_header(&content);
+        assert_eq!(desc.as_deref(), Some("Tool with param"));
+        let p = params.expect("should have params");
+        let props = &p["properties"];
+        assert!(props["env"]["type"] == "string");
+        let required = p["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "env"));
+    }
+
+    #[test]
+    fn test_parse_header_with_optional_param() {
+        let content = "# Parameter: version (string, optional) - Version
+";
+        let (desc, params) = PluginManager::parse_header(&content);
+        assert!(desc.is_none());
+        let p = params.expect("should have params");
+        let required = p["required"].as_array().unwrap();
+        assert!(!required.iter().any(|v| v == "version"));
+    }
+
+    #[test]
+    fn test_parse_header_param_types() {
+        let types = vec![
+            ("number", "number"),
+            ("integer", "number"),
+            ("boolean", "boolean"),
+            ("array", "array"),
+            ("object", "object"),
+            ("string", "string"),
+            ("unknown_type", "string"), // falls back to string
+        ];
+        for (input_type, expected_json_type) in types {
+            let content = format!("# Parameter: p ({}, required) - test
+", input_type);
+            let (_, params) = PluginManager::parse_header(&content);
+            let p = params.expect("should have params");
+            assert_eq!(p["properties"]["p"]["type"], expected_json_type,
+                "type {} should map to {}", input_type, expected_json_type);
+        }
+    }
+
+    #[test]
+    fn test_parse_header_empty_content() {
+        let (desc, params) = PluginManager::parse_header("");
+        assert!(desc.is_none());
+        assert!(params.is_none());
+    }
+
+    #[test]
+    fn test_parse_header_no_metadata() {
+        let content = "#!/bin/sh
+echo hi
+";
+        let (desc, params) = PluginManager::parse_header(&content);
+        assert!(desc.is_none());
+        assert!(params.is_none());
+    }
+
+    #[test]
+    fn test_parse_header_multiple_params() {
+        let content = r#"# Description: Multi-param
+# Parameter: a (string, required) - First
+# Parameter: b (integer, optional) - Second
+# Parameter: c (boolean, required) - Third
+"#;
+        let (_, params) = PluginManager::parse_header(&content);
+        let p = params.expect("params");
+        let props = &p["properties"];
+        assert!(props.get("a").is_some());
+        assert!(props.get("b").is_some());
+        assert!(props.get("c").is_some());
+        let required = p["required"].as_array().unwrap();
+        assert_eq!(required.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_header_malformed_param_ignored() {
+        // Missing closing paren
+        let content = "# Parameter: bad (string, required - no close
+";
+        let (_, params) = PluginManager::parse_header(&content);
+        assert!(params.is_none(), "malformed param should be ignored");
+    }
+
+    // ── count, list_tools, reload ───────────────────────────
+
+    #[test]
+    fn test_count_empty() {
+        let project = temp_project("count_empty");
+        let pm = PluginManager::new(&project);
+        assert_eq!(pm.count(), 0);
+    }
+
+    #[test]
+    fn test_list_tools_returns_names() {
+        let project = temp_project("list");
+        let tools_dir = project.join(".hyper/tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        std::fs::write(tools_dir.join("tool1.py"), "# Description: First
+").unwrap();
+        std::fs::write(tools_dir.join("tool2.py"), "# Description: Second
+").unwrap();
+        let pm = PluginManager::new(&project);
+        let tools = pm.list_tools();
+        assert_eq!(tools.len(), 2);
+        assert!(tools.contains(&"tool1".to_string()));
+        assert!(tools.contains(&"tool2".to_string()));
+    }
+
+    #[test]
+    fn test_reload_picks_up_new_tools() {
+        let project = temp_project("reload");
+        let tools_dir = project.join(".hyper/tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        let mut pm = PluginManager::new(&project);
+        assert_eq!(pm.count(), 0);
+        // Add a new tool after init
+        std::fs::write(tools_dir.join("added.py"), "# Description: Added
+").unwrap();
+        assert_eq!(pm.count(), 0, "before reload");
+        pm.reload();
+        assert_eq!(pm.count(), 1);
+    }
+
+    #[test]
+    fn test_reload_removes_deleted_tools() {
+        let project = temp_project("reload_del");
+        let tools_dir = project.join(".hyper/tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        std::fs::write(tools_dir.join("temp.py"), "# Description: Temp
+").unwrap();
+        let mut pm = PluginManager::new(&project);
+        assert_eq!(pm.count(), 1);
+        std::fs::remove_file(tools_dir.join("temp.py")).unwrap();
+        pm.reload();
+        assert_eq!(pm.count(), 0);
+    }
+
+    // ── to_tool_definitions ─────────────────────────────────
+
+    #[test]
+    fn test_to_tool_definitions_empty() {
+        let project = temp_project("tdef_empty");
+        let pm = PluginManager::new(&project);
+        let defs = pm.to_tool_definitions();
+        assert!(defs.is_empty());
+    }
+
+    #[test]
+    fn test_to_tool_definitions_includes_tools() {
+        let project = temp_project("tdef");
+        let tools_dir = project.join(".hyper/tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        std::fs::write(
+            tools_dir.join("greet.py"),
+            "# Description: Greet user
+# Parameter: name (string, required) - Name
+",
+        ).unwrap();
+        let pm = PluginManager::new(&project);
+        let defs = pm.to_tool_definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].function.name, "greet");
+        assert!(defs[0].function.description.contains("Greet"));
+        assert_eq!(defs[0].tool_type, "function");
+    }
+
+    // ── call_tool errors ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_call_tool_not_found() {
+        let project = temp_project("call_nf");
+        let pm = PluginManager::new(&project);
+        let result = pm.call_tool("nonexistent", serde_json::json!({})).await;
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("nonexistent"));
+        assert!(msg.contains("not found"));
+    }
+}

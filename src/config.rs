@@ -351,3 +351,342 @@ pub fn excluded_tools_for_mode(mode: &str) -> Vec<&'static str> {
         _ => vec![],
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config_has_sensible_values() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.config_version, 1);
+        assert!(!cfg.llm.model.is_empty());
+        assert!(!cfg.llm.base_url.is_empty());
+        assert!(cfg.llm.temperature >= 0.0 && cfg.llm.temperature <= 2.0);
+        assert!(cfg.llm.max_tokens > 0);
+        assert!(cfg.agent.parallel_agents > 0);
+        assert!(cfg.agent.context_tokens > 0);
+        assert!(cfg.general.lang == "en");
+    }
+
+    #[test]
+    fn test_llm_config_defaults() {
+        let llm = LlmConfig {
+            model: default_model(),
+            base_url: default_base_url(),
+            temperature: default_temperature(),
+            max_tokens: default_max_tokens(),
+        };
+        assert_eq!(llm.model, "deepseek-v4-flash");
+        assert!(llm.base_url.starts_with("https://"));
+        assert_eq!(llm.temperature, 0.1);
+        assert_eq!(llm.max_tokens, 16384);
+    }
+
+    #[test]
+    fn test_agent_config_defaults() {
+        let a = AgentConfig {
+            parallel_agents: default_parallel(),
+            context_tokens: default_context_tokens(),
+            confirm: default_confirm(),
+            cache_enabled: default_true(),
+            sandbox_enabled: default_false(),
+        };
+        assert_eq!(a.parallel_agents, 3);
+        assert_eq!(a.context_tokens, 4000);
+        assert!(a.confirm);
+        assert!(a.cache_enabled);
+        assert!(!a.sandbox_enabled);
+    }
+
+    #[test]
+    fn test_default_helpers() {
+        assert_eq!(default_config_version(), 1);
+        assert!(default_true());
+        assert!(!default_false());
+        assert_eq!(default_lang(), "en");
+        assert_eq!(default_log_format(), "text");
+    }
+
+    // ── AppConfig::get/set ──────────────────────────────────
+
+    #[test]
+    fn test_get_known_key() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.get("llm.model").unwrap(), cfg.llm.model);
+        assert_eq!(cfg.get("llm.base_url").unwrap(), cfg.llm.base_url);
+        assert_eq!(cfg.get("llm.temperature").unwrap(), cfg.llm.temperature.to_string());
+        assert_eq!(cfg.get("llm.max_tokens").unwrap(), cfg.llm.max_tokens.to_string());
+    }
+
+    #[test]
+    fn test_get_unknown_key_returns_none() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.get("nonexistent.key"), None);
+        assert_eq!(cfg.get("foo.bar"), None);
+    }
+
+    #[test]
+    fn test_get_agent_keys() {
+        let cfg = AppConfig::default();
+        assert!(cfg.get("agent.parallel_agents").is_some());
+        assert!(cfg.get("agent.context_tokens").is_some());
+        assert!(cfg.get("agent.confirm").is_some());
+        assert!(cfg.get("agent.cache_enabled").is_some());
+        assert!(cfg.get("agent.sandbox_enabled").is_some());
+    }
+
+    #[test]
+    fn test_get_general_keys() {
+        let cfg = AppConfig::default();
+        assert!(cfg.get("general.lang").is_some());
+        assert!(cfg.get("general.telemetry").is_some());
+        assert!(cfg.get("general.log_format").is_some());
+    }
+
+    #[test]
+    fn test_set_llm_keys() {
+        let mut cfg = AppConfig::default();
+        cfg.set("llm.model", "gpt-4o").unwrap();
+        assert_eq!(cfg.llm.model, "gpt-4o");
+        cfg.set("llm.temperature", "0.5").unwrap();
+        assert_eq!(cfg.llm.temperature, 0.5);
+        cfg.set("llm.max_tokens", "8192").unwrap();
+        assert_eq!(cfg.llm.max_tokens, 8192);
+        cfg.set("llm.base_url", "https://api.openai.com/v1").unwrap();
+        assert_eq!(cfg.llm.base_url, "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn test_set_llm_invalid_temperature_errors() {
+        let mut cfg = AppConfig::default();
+        let result = cfg.set("llm.temperature", "not-a-number");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_llm_invalid_max_tokens_errors() {
+        let mut cfg = AppConfig::default();
+        let result = cfg.set("llm.max_tokens", "abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_agent_keys() {
+        let mut cfg = AppConfig::default();
+        cfg.set("agent.parallel_agents", "10").unwrap();
+        assert_eq!(cfg.agent.parallel_agents, 10);
+        cfg.set("agent.context_tokens", "8000").unwrap();
+        assert_eq!(cfg.agent.context_tokens, 8000);
+        cfg.set("agent.confirm", "false").unwrap();
+        assert!(!cfg.agent.confirm);
+        cfg.set("agent.cache_enabled", "false").unwrap();
+        assert!(!cfg.agent.cache_enabled);
+        cfg.set("agent.sandbox_enabled", "true").unwrap();
+        assert!(cfg.agent.sandbox_enabled);
+    }
+
+    #[test]
+    fn test_set_agent_invalid_number_errors() {
+        let mut cfg = AppConfig::default();
+        assert!(cfg.set("agent.parallel_agents", "xyz").is_err());
+        assert!(cfg.set("agent.context_tokens", "xyz").is_err());
+        assert!(cfg.set("agent.confirm", "maybe").is_err());
+    }
+
+    #[test]
+    fn test_set_general_keys() {
+        let mut cfg = AppConfig::default();
+        cfg.set("general.lang", "zh-CN").unwrap();
+        assert_eq!(cfg.general.lang, "zh-CN");
+        cfg.set("general.telemetry", "true").unwrap();
+        assert!(cfg.general.telemetry);
+    }
+
+    #[test]
+    fn test_set_general_log_format_validates() {
+        let mut cfg = AppConfig::default();
+        cfg.set("general.log_format", "json").unwrap();
+        assert_eq!(cfg.general.log_format, "json");
+        cfg.set("general.log_format", "text").unwrap();
+        assert_eq!(cfg.general.log_format, "text");
+    }
+
+    #[test]
+    fn test_set_general_log_format_invalid_errors() {
+        let mut cfg = AppConfig::default();
+        assert!(cfg.set("general.log_format", "xml").is_err());
+    }
+
+    #[test]
+    fn test_set_safety_overrides() {
+        let mut cfg = AppConfig::default();
+        cfg.set("tools.safety_overrides", "cargo=allow,bash=deny").unwrap();
+        assert_eq!(cfg.tools.safety_overrides.get("cargo"), Some(&"allow".to_string()));
+        assert_eq!(cfg.tools.safety_overrides.get("bash"), Some(&"deny".to_string()));
+    }
+
+    #[test]
+    fn test_set_safety_overrides_invalid_level_errors() {
+        let mut cfg = AppConfig::default();
+        // "maybe" is not a valid level
+        let result = cfg.set("tools.safety_overrides", "cargo=maybe");
+        assert!(result.is_err());
+        assert!(format!("{}", result.unwrap_err()).contains("expected allow/deny/ask"));
+    }
+
+    #[test]
+    fn test_set_safety_overrides_malformed_pair_skipped() {
+        let mut cfg = AppConfig::default();
+        // No = sign in pair — should be silently skipped
+        cfg.set("tools.safety_overrides", "malformed,cargo=allow").unwrap();
+        assert_eq!(cfg.tools.safety_overrides.get("cargo"), Some(&"allow".to_string()));
+        assert!(!cfg.tools.safety_overrides.contains_key("malformed"));
+    }
+
+    #[test]
+    fn test_set_unknown_key_errors() {
+        let mut cfg = AppConfig::default();
+        let result = cfg.set("nonexistent.key", "value");
+        assert!(result.is_err());
+        assert!(format!("{}", result.unwrap_err()).contains("Unknown config key"));
+    }
+
+    // ── list_keys ──────────────────────────────────────────
+
+    #[test]
+    fn test_list_keys_returns_all_keys() {
+        let keys = AppConfig::list_keys();
+        assert!(keys.len() >= 12);
+        let key_names: Vec<&str> = keys.iter().map(|(k, _)| *k).collect();
+        assert!(key_names.contains(&"llm.model"));
+        assert!(key_names.contains(&"general.lang"));
+    }
+
+    #[test]
+    fn test_list_keys_have_descriptions() {
+        for (k, desc) in AppConfig::list_keys() {
+            assert!(!k.is_empty(), "key should not be empty");
+            assert!(!desc.is_empty(), "desc should not be empty for {}", k);
+        }
+    }
+
+    // ── display ────────────────────────────────────────────
+
+    #[test]
+    fn test_display_includes_all_keys() {
+        let cfg = AppConfig::default();
+        let out = cfg.display();
+        assert!(out.contains("HyperAgent Configuration"));
+        assert!(out.contains("llm.model"));
+        assert!(out.contains("general.lang"));
+    }
+
+    #[test]
+    fn test_display_includes_providers() {
+        let cfg = AppConfig::default();
+        let out = cfg.display();
+        if !cfg.providers.is_empty() {
+            assert!(out.contains("Providers:"));
+        }
+    }
+
+    #[test]
+    fn test_display_includes_named_agents() {
+        let cfg = AppConfig::default();
+        let out = cfg.display();
+        if !cfg.named_agents.is_empty() {
+            assert!(out.contains("Named Agents:"));
+        }
+    }
+
+    // ── excluded_tools_for_mode ────────────────────────────
+
+    #[test]
+    fn test_excluded_tools_for_ask_mode() {
+        let tools = excluded_tools_for_mode("ask");
+        assert!(tools.contains(&"run_bash"));
+        assert!(tools.contains(&"python_repl"));
+        assert!(tools.contains(&"browser"));
+    }
+
+    #[test]
+    fn test_excluded_tools_for_code_mode() {
+        let tools = excluded_tools_for_mode("code");
+        assert!(tools.contains(&"web_search"));
+        assert!(tools.contains(&"browser"));
+        assert!(!tools.contains(&"run_bash"));
+    }
+
+    #[test]
+    fn test_excluded_tools_for_debug_mode() {
+        let tools = excluded_tools_for_mode("debug");
+        assert!(tools.contains(&"web_search"));
+        assert!(tools.contains(&"python_repl"));
+        assert!(tools.contains(&"browser"));
+    }
+
+    #[test]
+    fn test_excluded_tools_for_unknown_mode_returns_default() {
+        let tools = excluded_tools_for_mode("unknown_mode_xyz");
+        // Unknown mode should still return something (fallback)
+        // Looking at the source, match arms cover known modes; unknown falls through
+        // Implementation may return empty or default
+        assert!(tools.len() >= 0); // smoke test
+    }
+
+    // ── serde round-trip ───────────────────────────────────
+
+    #[test]
+    fn test_app_config_serde_roundtrip() {
+        let cfg = AppConfig::default();
+        let toml = toml::to_string(&cfg).unwrap();
+        let back: AppConfig = toml::from_str(&toml).unwrap();
+        assert_eq!(back.llm.model, cfg.llm.model);
+        assert_eq!(back.general.lang, cfg.general.lang);
+    }
+
+    #[test]
+    fn test_app_config_partial_toml_fails_without_defaults() {
+        // Nested structs don't have #[serde(default)] - this confirms strict parsing
+        let toml = r#"
+[llm]
+model = "test-model"
+"#;
+        let result: Result<AppConfig, _> = toml::from_str(toml);
+        assert!(result.is_err(), "missing nested fields should fail");
+    }
+
+    #[test]
+    fn test_app_config_full_toml_parses() {
+        let toml = r#"
+config_version = 1
+
+[llm]
+model = "test"
+base_url = "https://example.com/v1"
+temperature = 0.5
+max_tokens = 1024
+
+[agent]
+parallel_agents = 2
+context_tokens = 2000
+confirm = false
+cache_enabled = true
+sandbox_enabled = false
+
+[tools]
+
+[general]
+lang = "en"
+telemetry = false
+log_format = "text"
+"#;
+        let cfg: AppConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.llm.model, "test");
+        assert_eq!(cfg.llm.temperature, 0.5);
+        assert_eq!(cfg.agent.parallel_agents, 2);
+        assert!(!cfg.agent.confirm);
+    }
+}

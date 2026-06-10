@@ -412,4 +412,161 @@ mod tests {
         };
         report.print(); // Just ensure it doesn't panic
     }
+
+    #[test]
+    fn test_sync_config_default_values() {
+        let cfg = SyncConfig {
+            endpoint: DEFAULT_SYNC_ENDPOINT.to_string(),
+            api_key: Some("test-key".into()),
+            last_push: None,
+            last_pull: None,
+            auto_sync: false,
+            sync_memories: true,
+            sync_skills: true,
+            sync_config: true,
+            sync_rules: true,
+        };
+        assert_eq!(cfg.endpoint, DEFAULT_SYNC_ENDPOINT);
+        assert!(cfg.is_configured());
+        assert!(cfg.sync_memories);
+    }
+
+    #[test]
+    fn test_sync_config_not_configured_without_key() {
+        let cfg = SyncConfig {
+            endpoint: DEFAULT_SYNC_ENDPOINT.to_string(),
+            api_key: None,
+            last_push: None,
+            last_pull: None,
+            auto_sync: false,
+            sync_memories: true,
+            sync_skills: true,
+            sync_config: true,
+            sync_rules: true,
+        };
+        assert!(!cfg.is_configured());
+    }
+
+    #[test]
+    fn test_sync_config_serde_roundtrip() {
+        let cfg = SyncConfig {
+            endpoint: "https://example.com/api".into(),
+            api_key: Some("secret123".into()),
+            last_push: Some(1234567890),
+            last_pull: Some(1234567891),
+            auto_sync: true,
+            sync_memories: false,
+            sync_skills: true,
+            sync_config: false,
+            sync_rules: true,
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: SyncConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.endpoint, cfg.endpoint);
+        assert_eq!(back.api_key, cfg.api_key);
+        assert_eq!(back.last_push, cfg.last_push);
+        assert_eq!(back.last_pull, cfg.last_pull);
+        assert_eq!(back.auto_sync, cfg.auto_sync);
+    }
+
+    #[test]
+    fn test_sync_config_save_and_load() {
+        let cfg = SyncConfig {
+            endpoint: "https://test-sync.example.com/api".into(),
+            api_key: Some("k".into()),
+            last_push: None,
+            last_pull: None,
+            auto_sync: false,
+            sync_memories: true,
+            sync_skills: true,
+            sync_config: true,
+            sync_rules: true,
+        };
+        cfg.save().expect("save should succeed");
+        let path = sync_config_path();
+        assert!(path.exists());
+        let loaded = SyncConfig::load().expect("load should succeed");
+        assert_eq!(loaded.endpoint, cfg.endpoint);
+        assert_eq!(loaded.api_key, cfg.api_key);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_sync_report_default() {
+        let report = SyncReport::default();
+        assert_eq!(report.memories_pushed, 0);
+        assert_eq!(report.memories_pulled, 0);
+        assert_eq!(report.skills_pushed, 0);
+        assert_eq!(report.skills_pulled, 0);
+        assert!(!report.config_pushed);
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn test_sync_report_clone() {
+        let mut report = SyncReport::default();
+        report.memories_pushed = 5;
+        report.errors.push("err".into());
+        let cloned = report.clone();
+        assert_eq!(cloned.memories_pushed, 5);
+        assert_eq!(cloned.errors.len(), 1);
+    }
+
+    #[test]
+    fn test_default_endpoint_is_set() {
+        assert!(!DEFAULT_SYNC_ENDPOINT.is_empty());
+        assert!(DEFAULT_SYNC_ENDPOINT.starts_with("https://"));
+    }
+
+    #[test]
+    fn test_sync_config_path_format() {
+        let path = sync_config_path();
+        let s = path.to_string_lossy();
+        assert!(s.ends_with("sync.json"), "path should end with sync.json: {}", s);
+    }
+
+    #[test]
+    fn test_sync_config_handles_missing_file() {
+        let path = sync_config_path();
+        let _ = std::fs::remove_file(&path);
+        let cfg = SyncConfig::load().expect("should not error");
+        assert_eq!(cfg.endpoint, DEFAULT_SYNC_ENDPOINT);
+        if std::env::var("HYPER_SYNC_KEY").is_err() {
+            assert!(cfg.api_key.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_push_unconfigured_fails() {
+        let cfg = SyncConfig {
+            endpoint: DEFAULT_SYNC_ENDPOINT.to_string(),
+            api_key: None,
+            last_push: None,
+            last_pull: None,
+            auto_sync: false,
+            sync_memories: true,
+            sync_skills: true,
+            sync_config: true,
+            sync_rules: true,
+        };
+        let result = push(&cfg).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_pull_unconfigured_fails() {
+        let cfg = SyncConfig {
+            endpoint: DEFAULT_SYNC_ENDPOINT.to_string(),
+            api_key: None,
+            last_push: None,
+            last_pull: None,
+            auto_sync: false,
+            sync_memories: true,
+            sync_skills: true,
+            sync_config: true,
+            sync_rules: true,
+        };
+        let result = pull(&cfg).await;
+        assert!(result.is_err());
+    }
 }

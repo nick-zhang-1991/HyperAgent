@@ -227,7 +227,287 @@ pub fn inject_skills_prompt(skills: &[Skill]) -> String {
             "### {} (v{} by {})\n{}\n",
             skill.name, skill.version, skill.author, skill.description
         ));
+        if !skill.system_prompt.is_empty() {
+            prompt.push_str(&format!("\n{}\n", skill.system_prompt));
+        }
     }
 
     prompt
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_skill_md ────────────────────────────────────────
+
+    #[test]
+    fn test_parse_skill_md_full() {
+        let md = r#"---
+name: rust-linter
+version: 2.0.0
+author: alice
+description: Lints Rust code
+tags: rust, lint, code
+---
+
+You are a Rust linting expert.
+"#;
+        let s = parse_skill_md(md).expect("should parse");
+        assert_eq!(s.name, "rust-linter");
+        assert_eq!(s.version, "2.0.0");
+        assert_eq!(s.author, "alice");
+        assert_eq!(s.description, "Lints Rust code");
+        assert_eq!(s.tags, vec!["rust", "lint", "code"]);
+        assert!(s.system_prompt.contains("Rust linting expert"));
+    }
+
+    #[test]
+    fn test_parse_skill_md_missing_name_returns_none() {
+        let md = "---
+version: 1.0
+---
+body";
+        assert!(parse_skill_md(md).is_none());
+    }
+
+    #[test]
+    fn test_parse_skill_md_no_frontmatter_returns_none() {
+        assert!(parse_skill_md("just plain text").is_none());
+        assert!(parse_skill_md("name: foo
+---
+body").is_none());
+    }
+
+    #[test]
+    fn test_parse_skill_md_unclosed_frontmatter() {
+        let md = "---
+name: foo
+body without closing";
+        assert!(parse_skill_md(md).is_none());
+    }
+
+    #[test]
+    fn test_parse_skill_md_defaults() {
+        let md = "---
+name: minimal
+---
+body";
+        let s = parse_skill_md(md).unwrap();
+        assert_eq!(s.version, "1.0.0");   // default
+        assert_eq!(s.author, "unknown");   // default
+        assert_eq!(s.description, "");
+        assert!(s.tags.is_empty());
+    }
+
+    #[test]
+    fn test_parse_skill_md_with_empty_frontmatter() {
+        // no --- close but starts with ---
+        let md = "---
+---body";
+        // should fail because find finds the second --- and yaml is empty
+        // but name will be empty so it returns None
+        let result = parse_skill_md(md);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_skill_md_extra_yaml_keys_ignored() {
+        let md = r#"---
+name: with-extras
+version: 3.1.4
+author: bob
+description: test
+tags: a, b
+unknown-key: some-value
+another: 42
+---
+body here
+"#;
+        let s = parse_skill_md(md).unwrap();
+        assert_eq!(s.name, "with-extras");
+        assert_eq!(s.tags.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_skill_md_tags_with_spaces() {
+        let md = "---
+name: t
+tags: a, b , c
+---
+body";
+        let s = parse_skill_md(md).unwrap();
+        assert_eq!(s.tags, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_parse_skill_md_system_prompt_is_body() {
+        let md = "---
+name: t
+---
+
+The quick brown fox.
+
+Second paragraph.";
+        let s = parse_skill_md(md).unwrap();
+        assert!(s.system_prompt.contains("quick brown fox"));
+        assert!(s.system_prompt.contains("Second paragraph"));
+    }
+
+    // ── create_template ───────────────────────────────────────
+
+    #[test]
+    fn test_create_template_basic() {
+        let t = create_template("my-skill");
+        assert!(t.contains("name: my-skill"));
+        assert!(t.contains("# my-skill"));
+        assert!(t.contains("---"));
+        assert!(t.contains("version: 1.0.0"));
+    }
+
+    #[test]
+    fn test_create_template_different_names() {
+        let t1 = create_template("foo");
+        let t2 = create_template("bar");
+        assert!(t1.contains("foo"));
+        assert!(!t1.contains("bar"));
+        assert!(t2.contains("bar"));
+        assert!(!t2.contains("foo"));
+    }
+
+    #[test]
+    fn test_create_template_parses_back() {
+        let t = create_template("roundtrip");
+        let parsed = parse_skill_md(&t).expect("template should parse");
+        assert_eq!(parsed.name, "roundtrip");
+    }
+
+    // ── inject_skills_prompt ──────────────────────────────────
+
+    #[test]
+    fn test_inject_skills_empty() {
+        let prompt = inject_skills_prompt(&[]);
+        assert!(prompt.is_empty());
+    }
+
+    #[test]
+    fn test_inject_skills_single() {
+        let skill = Skill {
+            name: "lint".into(),
+            version: "1.0".into(),
+            author: "me".into(),
+            description: "Lints code".into(),
+            tags: vec!["rust".into()],
+            system_prompt: "Be strict.".into(),
+            install_steps: None,
+            tools: None,
+        };
+        let prompt = inject_skills_prompt(&[skill]);
+        assert!(prompt.contains("## Active Skills"));
+        assert!(prompt.contains("lint"));
+        assert!(prompt.contains("Lints code"));
+        assert!(prompt.contains("Be strict."));
+    }
+
+    #[test]
+    fn test_inject_skills_multiple() {
+        let skills = vec![
+            Skill {
+                name: "alpha".into(), version: "1".into(), author: "a".into(),
+                description: "First".into(), tags: vec![],
+                system_prompt: "A prompt".into(),
+                install_steps: None, tools: None,
+            },
+            Skill {
+                name: "beta".into(), version: "2".into(), author: "b".into(),
+                description: "Second".into(), tags: vec![],
+                system_prompt: "B prompt".into(),
+                install_steps: None, tools: None,
+            },
+        ];
+        let prompt = inject_skills_prompt(&skills);
+        assert!(prompt.contains("alpha"));
+        assert!(prompt.contains("beta"));
+        assert!(prompt.contains("First"));
+        assert!(prompt.contains("Second"));
+        assert!(prompt.contains("A prompt"));
+        assert!(prompt.contains("B prompt"));
+    }
+
+    #[test]
+    fn test_inject_skills_empty_system_prompt_omitted() {
+        let skill = Skill {
+            name: "no-prompt".into(), version: "1".into(), author: "a".into(),
+            description: "d".into(), tags: vec![],
+            system_prompt: "".into(),
+            install_steps: None, tools: None,
+        };
+        let prompt = inject_skills_prompt(&[skill]);
+        // Should still contain name and description but not an empty system prompt section
+        assert!(prompt.contains("no-prompt"));
+        assert!(prompt.contains("d"));
+    }
+
+    // ── Skill struct serialization ────────────────────────────
+
+    #[test]
+    fn test_skill_serde_rename_system_prompt() {
+        let s = Skill {
+            name: "x".into(), version: "1".into(), author: "y".into(),
+            description: "z".into(), tags: vec![],
+            system_prompt: "w".into(),
+            install_steps: None, tools: None,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        // The serde rename should produce "system-prompt"
+        assert!(json.contains("system-prompt"));
+        assert!(!json.contains("system_prompt"));
+    }
+
+    #[test]
+    fn test_skill_serde_optional_fields_skipped() {
+        let s = Skill {
+            name: "x".into(), version: "1".into(), author: "y".into(),
+            description: "z".into(), tags: vec![],
+            system_prompt: "w".into(),
+            install_steps: None, tools: None,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("install_steps"));
+        assert!(!json.contains("tools"));
+    }
+
+    #[test]
+    fn test_skill_serde_optional_fields_included() {
+        let s = Skill {
+            name: "x".into(), version: "1".into(), author: "y".into(),
+            description: "z".into(), tags: vec![],
+            system_prompt: "w".into(),
+            install_steps: Some("cargo install foo".into()),
+            tools: Some(vec!["cargo".into(), "rustc".into()]),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("install_steps"));
+        assert!(json.contains("cargo install foo"));
+        assert!(json.contains("\"tools\""));
+    }
+
+    #[test]
+    fn test_skill_deserialize_from_yaml_format() {
+        // The parse_skill_md path doesn't use serde directly, but
+        // installation stores via JSON, so test JSON round-trip
+        let original = r#"{"name":"x","version":"1","author":"y","description":"z","tags":[],"system-prompt":"w"}"#;
+        let s: Skill = serde_json::from_str(original).unwrap();
+        assert_eq!(s.system_prompt, "w");
+    }
+
+    // ── list_installed (filesystem) ───────────────────────────
+
+    #[test]
+    fn test_list_installed_empty_when_no_dir() {
+        // The skills_dir is platform-specific; if it doesn't exist, returns empty vec
+        // We can't easily mock dirs_next, so this is a smoke test
+        let _ = list_installed(); // should not panic
+    }
 }

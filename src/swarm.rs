@@ -133,20 +133,25 @@ async fn decompose_task(prompt: &str, num_agents: usize) -> Result<Vec<SubTask>>
     .context("Failed to decompose task")?;
 
     // Parse JSON response
-    let json_str = if let Some(start) = response.find('[') {
-        if let Some(end) = response.rfind(']') {
-            &response[start..=end]
-        } else {
-            &response
-        }
-    } else {
-        &response
-    };
+    let json_str = extract_json_array(&response);
 
     let sub_tasks: Vec<SubTask> = serde_json::from_str(json_str)
         .context(format!("Failed to parse decomposition. Raw: {}", &json_str[..200.min(json_str.len())]))?;
 
     Ok(sub_tasks)
+}
+
+/// Extract the JSON array substring from a model response.
+/// Handles cases where the model wraps JSON in markdown code fences or adds prose.
+/// Returns the input unchanged if no `[...]` is found.
+pub(crate) fn extract_json_array(response: &str) -> &str {
+    if let Some(start) = response.find('[') {
+        if let Some(end) = response.rfind(']') {
+            return &response[start..=end];
+        }
+        return &response[start..];
+    }
+    response
 }
 
 /// Run a single agent for a sub-task
@@ -176,4 +181,104 @@ async fn run_agent(prompt: &str, dir: &PathBuf, agent_idx: usize) -> Result<()> 
 struct SubTask {
     title: String,
     prompt: String,
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_json_array_pure_json() {
+        let r = r#"[{"title": "A", "prompt": "do A"}]"#;
+        assert_eq!(extract_json_array(r), r);
+    }
+
+    #[test]
+    fn test_extract_json_array_with_prose() {
+        let r = "Here is the result:\n[\n  {\"title\": \"A\"}\n]\nDone."; 
+        assert_eq!(extract_json_array(r), "[\n  {\"title\": \"A\"}\n]");
+    }
+
+    #[test]
+    fn test_extract_json_array_with_markdown_fence() {
+        let r = "```json\n[{\"title\":\"X\"}]\n```";
+        assert_eq!(extract_json_array(r), "[{\"title\":\"X\"}]");
+    }
+
+    #[test]
+    fn test_extract_json_array_no_brackets_returns_input() {
+        let r = "no json here at all";
+        assert_eq!(extract_json_array(r), r);
+    }
+
+    #[test]
+    fn test_extract_json_array_only_open_bracket() {
+        // Malformed: just an opening bracket, no close
+        let r = "before [middle";
+        assert_eq!(extract_json_array(r), "[middle");
+    }
+
+    #[test]
+    fn test_extract_json_array_empty_array() {
+        assert_eq!(extract_json_array("[]"), "[]");
+    }
+
+    #[test]
+    fn test_extract_json_array_nested_brackets() {
+        let r = r#"[{"x": [1, 2, 3]}]"#;
+        assert_eq!(extract_json_array(r), r);
+    }
+
+    #[test]
+    fn test_extract_json_array_unclosed_with_close_in_prose() {
+        // rfind should still find the rightmost ]
+        let r = "garbage [missing close }]";
+        assert_eq!(extract_json_array(r), "[missing close }]");
+    }
+
+    #[test]
+    fn test_subtask_deserialization_minimal() {
+        let json = r#"[{"title":"T1","prompt":"P1"}]"#;
+        let tasks: Vec<SubTask> = serde_json::from_str(json).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "T1");
+        assert_eq!(tasks[0].prompt, "P1");
+    }
+
+    #[test]
+    fn test_subtask_deserialization_multiple() {
+        let json = r#"[
+            {"title":"Task A","prompt":"Do A"},
+            {"title":"Task B","prompt":"Do B"}
+        ]"#;
+        let tasks: Vec<SubTask> = serde_json::from_str(json).unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].title, "Task A");
+        assert_eq!(tasks[1].prompt, "Do B");
+    }
+
+    #[test]
+    fn test_subtask_deserialization_empty() {
+        let json = "[]";
+        let tasks: Vec<SubTask> = serde_json::from_str(json).unwrap();
+        assert_eq!(tasks.len(), 0);
+    }
+
+    #[test]
+    fn test_subtask_deserialization_missing_field_fails() {
+        // SubTask requires both title and prompt
+        let json = r#"[{"title":"only title"}]"#;
+        let result: Result<Vec<SubTask>, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_subtask_clone() {
+        let json = r#"{"title":"T","prompt":"P"}"#;
+        let t: SubTask = serde_json::from_str(json).unwrap();
+        let cloned = t.clone();
+        assert_eq!(cloned.title, t.title);
+        assert_eq!(cloned.prompt, t.prompt);
+    }
 }

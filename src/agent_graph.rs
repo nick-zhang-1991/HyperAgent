@@ -474,3 +474,373 @@ fn copy_dir(src: &Path, dst: &Path) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db_path(suffix: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("hyperagent_ag_{}_{}.db", std::process::id(), suffix));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    fn make_node(id: &str, name: &str, status: EdgeStatus) -> AgentNode {
+        AgentNode {
+            id: id.into(),
+            name: name.into(),
+            mode: "code".into(),
+            prompt: format!("prompt for {}", name),
+            worktree: None,
+            created_at: chrono::Utc::now(),
+            closed_at: None,
+            status,
+            summary: None,
+            files_changed: vec![],
+            token_usage: 0,
+        }
+    }
+
+    // ── EdgeStatus ────────────────────────────────────────
+
+    #[test]
+    fn test_edge_status_equality() {
+        assert_eq!(EdgeStatus::Open, EdgeStatus::Open);
+        assert_eq!(EdgeStatus::Closed, EdgeStatus::Closed);
+        assert_ne!(EdgeStatus::Open, EdgeStatus::Closed);
+    }
+
+    #[test]
+    fn test_edge_status_serde() {
+        let open_json = serde_json::to_string(&EdgeStatus::Open).unwrap();
+        assert_eq!(open_json, "\"open\"");
+        let closed_json = serde_json::to_string(&EdgeStatus::Closed).unwrap();
+        assert_eq!(closed_json, "\"closed\"");
+        assert_eq!(serde_json::from_str::<EdgeStatus>(&open_json).unwrap(), EdgeStatus::Open);
+        assert_eq!(serde_json::from_str::<EdgeStatus>(&closed_json).unwrap(), EdgeStatus::Closed);
+    }
+
+    // ── SqliteAgentGraph basic CRUD ────────────────────────
+
+    #[test]
+    fn test_graph_new_creates_db() {
+        let path = temp_db_path("new");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        // Adding a node should succeed
+        g.add_node(&make_node("a", "alpha", EdgeStatus::Open)).unwrap();
+        assert!(path.exists());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_graph_new_existing_db() {
+        let path = temp_db_path("existing");
+        let g1 = SqliteAgentGraph::new(&path).unwrap();
+        g1.add_node(&make_node("a", "alpha", EdgeStatus::Open)).unwrap();
+        drop(g1);
+        // Reopen should work
+        let g2 = SqliteAgentGraph::new(&path).unwrap();
+        let all = g2.get_all_nodes().unwrap();
+        assert_eq!(all.len(), 1);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_add_and_get_node() {
+        let path = temp_db_path("add_get");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        let node = make_node("a1", "alpha", EdgeStatus::Open);
+        g.add_node(&node).unwrap();
+        let all = g.get_all_nodes().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, "a1");
+        assert_eq!(all[0].name, "alpha");
+        assert_eq!(all[0].status, EdgeStatus::Open);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_add_node_with_all_fields() {
+        let path = temp_db_path("all_fields");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        let mut node = make_node("a2", "beta", EdgeStatus::Open);
+        node.mode = "architect".into();
+        node.worktree = Some(std::path::PathBuf::from("/tmp/wt"));
+        node.summary = Some("summary".into());
+        node.files_changed = vec!["a.rs".into(), "b.rs".into()];
+        node.token_usage = 1234;
+        g.add_node(&node).unwrap();
+
+        let all = g.get_all_nodes().unwrap();
+        assert_eq!(all[0].mode, "architect");
+        assert_eq!(all[0].worktree, Some(std::path::PathBuf::from("/tmp/wt")));
+        assert_eq!(all[0].summary.as_deref(), Some("summary"));
+        assert_eq!(all[0].files_changed, vec!["a.rs", "b.rs"]);
+        assert_eq!(all[0].token_usage, 1234);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ── edges ──────────────────────────────────────────────
+
+    #[test]
+    fn test_upsert_edge_orphan_fails() {
+        // FK constraint: edge requires both nodes to exist
+        let path = temp_db_path("upsert_edge");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        let result = g.upsert_edge(&"parent".to_string(), &"child".to_string(), EdgeStatus::Open);
+        assert!(result.is_err(), "FK constraint should reject orphan edge");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_upsert_edge_updates_existing() {
+        let path = temp_db_path("upsert_update");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("p", "parent", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("c", "child", EdgeStatus::Open)).unwrap();
+        g.upsert_edge(&"p".to_string(), &"c".to_string(), EdgeStatus::Open).unwrap();
+        g.upsert_edge(&"p".to_string(), &"c".to_string(), EdgeStatus::Closed).unwrap(); // update
+        // The query filters by both edge AND node status
+        g.update_node_status(&"c".to_string(), EdgeStatus::Closed).unwrap();
+        let children = g.get_children(&"p".to_string(), Some(EdgeStatus::Open)).unwrap();
+        assert_eq!(children.len(), 0); // edge is now closed
+        let all_children = g.get_children(&"p".to_string(), Some(EdgeStatus::Closed)).unwrap();
+        assert_eq!(all_children.len(), 1);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_get_children_filtered_by_status() {
+        let path = temp_db_path("children_filt");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("p", "parent", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("c1", "child1", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("c2", "child2", EdgeStatus::Closed)).unwrap();
+        g.upsert_edge(&"p".to_string(), &"c1".to_string(), EdgeStatus::Open).unwrap();
+        g.upsert_edge(&"p".to_string(), &"c2".to_string(), EdgeStatus::Open).unwrap();
+
+        let open_only = g.get_children(&"p".to_string(), Some(EdgeStatus::Open)).unwrap();
+        assert_eq!(open_only.len(), 1);
+        assert_eq!(open_only[0].id, "c1");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_get_children_unfiltered() {
+        let path = temp_db_path("children_all");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("p", "parent", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("c1", "child1", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("c2", "child2", EdgeStatus::Open)).unwrap();
+        g.upsert_edge(&"p".to_string(), &"c1".to_string(), EdgeStatus::Open).unwrap();
+        g.upsert_edge(&"p".to_string(), &"c2".to_string(), EdgeStatus::Open).unwrap();
+
+        let all = g.get_children(&"p".to_string(), None).unwrap();
+        assert_eq!(all.len(), 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_get_parent() {
+        let path = temp_db_path("get_parent");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("p", "parent", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("c", "child", EdgeStatus::Open)).unwrap();
+        g.upsert_edge(&"p".to_string(), &"c".to_string(), EdgeStatus::Open).unwrap();
+
+        let parent = g.get_parent(&"c".to_string()).unwrap();
+        assert!(parent.is_some());
+        assert_eq!(parent.unwrap().id, "p");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_get_parent_none_when_orphan() {
+        let path = temp_db_path("orphan");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("orphan", "alone", EdgeStatus::Open)).unwrap();
+        let parent = g.get_parent(&"orphan".to_string()).unwrap();
+        assert!(parent.is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_get_descendants_excludes_closed() {
+        let path = temp_db_path("desc_excl");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("root", "root", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("a", "a", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("b", "b", EdgeStatus::Closed)).unwrap();
+        g.upsert_edge(&"root".to_string(), &"a".to_string(), EdgeStatus::Open).unwrap();
+        g.upsert_edge(&"root".to_string(), &"b".to_string(), EdgeStatus::Open).unwrap();
+
+        // exclude closed
+        let d = g.get_descendants(&"root".to_string(), false).unwrap();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].id, "a");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_get_descendants_includes_closed() {
+        let path = temp_db_path("desc_incl");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("root", "root", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("a", "a", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("b", "b", EdgeStatus::Closed)).unwrap();
+        g.upsert_edge(&"root".to_string(), &"a".to_string(), EdgeStatus::Open).unwrap();
+        g.upsert_edge(&"root".to_string(), &"b".to_string(), EdgeStatus::Open).unwrap();
+
+        let d = g.get_descendants(&"root".to_string(), true).unwrap();
+        assert_eq!(d.len(), 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_get_descendants_dfs() {
+        let path = temp_db_path("dfs");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        // root -> a -> b -> c
+        g.add_node(&make_node("root", "root", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("a", "a", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("b", "b", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("c", "c", EdgeStatus::Open)).unwrap();
+        g.upsert_edge(&"root".to_string(), &"a".to_string(), EdgeStatus::Open).unwrap();
+        g.upsert_edge(&"a".to_string(), &"b".to_string(), EdgeStatus::Open).unwrap();
+        g.upsert_edge(&"b".to_string(), &"c".to_string(), EdgeStatus::Open).unwrap();
+
+        let d = g.get_descendants(&"root".to_string(), true).unwrap();
+        assert_eq!(d.len(), 3);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ── close_node / update_node_status ────────────────────
+
+    #[test]
+    fn test_update_node_status() {
+        let path = temp_db_path("upd_status");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("a", "alpha", EdgeStatus::Open)).unwrap();
+        g.update_node_status(&"a".to_string(), EdgeStatus::Closed).unwrap();
+        let all = g.get_all_nodes().unwrap();
+        assert_eq!(all[0].status, EdgeStatus::Closed);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_close_node_records_summary() {
+        let path = temp_db_path("close_node");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("a", "alpha", EdgeStatus::Open)).unwrap();
+        g.close_node(&"a".to_string(), "all done", &["f1.rs".to_string(), "f2.rs".to_string()], 999).unwrap();
+        let all = g.get_all_nodes().unwrap();
+        assert_eq!(all[0].status, EdgeStatus::Closed);
+        assert_eq!(all[0].summary.as_deref(), Some("all done"));
+        assert_eq!(all[0].files_changed, vec!["f1.rs", "f2.rs"]);
+        assert_eq!(all[0].token_usage, 999);
+        assert!(all[0].closed_at.is_some());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_close_node_also_closes_edges() {
+        let path = temp_db_path("close_edge");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("p", "parent", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("c", "child", EdgeStatus::Open)).unwrap();
+        g.upsert_edge(&"p".to_string(), &"c".to_string(), EdgeStatus::Open).unwrap();
+        g.close_node(&"c".to_string(), &"done".to_string(), &[], 0).unwrap();
+
+        // The edge should now be closed
+        let open_children = g.get_children(&"p".to_string(), Some(EdgeStatus::Open)).unwrap();
+        assert_eq!(open_children.len(), 0);
+        let closed_children = g.get_children(&"p".to_string(), Some(EdgeStatus::Closed)).unwrap();
+        assert_eq!(closed_children.len(), 1);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_open_count() {
+        let path = temp_db_path("open_count");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        assert_eq!(g.open_count().unwrap(), 0);
+        g.add_node(&make_node("a", "alpha", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("b", "beta", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("c", "gamma", EdgeStatus::Closed)).unwrap();
+        assert_eq!(g.open_count().unwrap(), 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ── delete / clear ─────────────────────────────────────
+
+    #[test]
+    fn test_delete_node() {
+        let path = temp_db_path("delete");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("a", "alpha", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("b", "beta", EdgeStatus::Open)).unwrap();
+        g.upsert_edge(&"a".to_string(), &"b".to_string(), EdgeStatus::Open).unwrap();
+
+        g.delete_node(&"a".to_string()).unwrap();
+        let all = g.get_all_nodes().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, "b");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_clear() {
+        let path = temp_db_path("clear");
+        let g = SqliteAgentGraph::new(&path).unwrap();
+        g.add_node(&make_node("a", "alpha", EdgeStatus::Open)).unwrap();
+        g.add_node(&make_node("b", "beta", EdgeStatus::Open)).unwrap();
+        g.upsert_edge(&"a".to_string(), &"b".to_string(), EdgeStatus::Open).unwrap();
+        g.clear().unwrap();
+        assert_eq!(g.get_all_nodes().unwrap().len(), 0);
+        assert_eq!(g.open_count().unwrap(), 0);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ── AgentNode serde ────────────────────────────────────
+
+    #[test]
+    fn test_agent_node_serde() {
+        let mut node = make_node("a", "alpha", EdgeStatus::Open);
+        node.summary = Some("sum".into());
+        node.token_usage = 100;
+        let json = serde_json::to_string(&node).unwrap();
+        let back: AgentNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "a");
+        assert_eq!(back.status, EdgeStatus::Open);
+        assert_eq!(back.summary.as_deref(), Some("sum"));
+        assert_eq!(back.token_usage, 100);
+    }
+
+    #[test]
+    fn test_agent_node_with_closed_status() {
+        let node = make_node("x", "x", EdgeStatus::Closed);
+        assert_eq!(node.status, EdgeStatus::Closed);
+        let json = serde_json::to_string(&node).unwrap();
+        let back: AgentNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.status, EdgeStatus::Closed);
+    }
+
+    // ── SpawnEdge serde ────────────────────────────────────
+
+    #[test]
+    fn test_spawn_edge_serde() {
+        let edge = SpawnEdge {
+            parent_id: "p".into(),
+            child_id: "c".into(),
+            status: EdgeStatus::Open,
+            created_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&edge).unwrap();
+        let back: SpawnEdge = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.parent_id, "p");
+        assert_eq!(back.child_id, "c");
+        assert_eq!(back.status, EdgeStatus::Open);
+    }
+}

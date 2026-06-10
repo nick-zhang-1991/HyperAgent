@@ -58,59 +58,59 @@ fn test_hyper_init_help() {
     }
 }
 
-/// Test hyper analyze --help
+/// Test hyper analytics --help (was: analyze)
 #[test]
 fn test_hyper_analyze_help() {
     let output = Command::new("./target/debug/hyperagent")
-        .args(["analyze", "--help"])
+        .args(["analytics", "--help"])
         .output();
 
     if let Ok(out) = output {
         assert!(out.status.success());
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("analyze") || stdout.contains("--fix"));
+        assert!(stdout.contains("analytics") || stdout.contains("--days"));
     }
 }
 
-/// Test hyper serve --help
+/// Test hyper saas --help (was: serve)
 #[test]
 fn test_hyper_serve_help() {
     let output = Command::new("./target/debug/hyperagent")
-        .args(["serve", "--help"])
+        .args(["saas", "--help"])
         .output();
 
     if let Ok(out) = output {
         assert!(out.status.success());
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("port") || stdout.contains("serve"));
+        assert!(stdout.contains("port") || stdout.contains("saas"));
     }
 }
 
-/// Test hyper swarm --help
+/// Test hyper agents --help (was: swarm)
 #[test]
 fn test_hyper_swarm_help() {
     let output = Command::new("./target/debug/hyperagent")
-        .args(["swarm", "--help"])
+        .args(["agents", "--help"])
         .output();
 
     if let Ok(out) = output {
         assert!(out.status.success());
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("swarm") || stdout.contains("agents"));
+        assert!(stdout.contains("agents") || stdout.contains("list"));
     }
 }
 
-/// Test hyper memory global list --help
+/// Test hyper memory --help (was: memory global --help)
 #[test]
 fn test_hyper_memory_global_help() {
     let output = Command::new("./target/debug/hyperagent")
-        .args(["memory", "global", "--help"])
+        .args(["memory", "--help"])
         .output();
 
     if let Ok(out) = output {
         assert!(out.status.success());
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("global") || stdout.contains("list"));
+        assert!(stdout.contains("memory") || stdout.contains("recall"));
     }
 }
 

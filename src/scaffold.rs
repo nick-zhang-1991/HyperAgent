@@ -139,3 +139,153 @@ fn scaffold_typescript(name: &str, dir: &Path) -> Result<()> {
     std::fs::write(dir.join(".gitignore"), "node_modules/\ndist/\n")?;
     Ok(())
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_dir(suffix: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("hyperagent_scaffold_{}_{}", std::process::id(), suffix));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn test_project_type_parsing() {
+        // The enum is private but we can test via scaffold() entrypoint
+        // Just exercise all valid type names
+        for name in &["rust", "rs", "RUST", "Rust"] {
+            let dir = temp_dir(&format!("rust_{}", name));
+            scaffold("proj", name, &dir).unwrap();
+            assert!(dir.join("proj").join("Cargo.toml").exists());
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn test_project_type_python_aliases() {
+        for name in &["python", "py", "Python"] {
+            let dir = temp_dir(&format!("py_{}", name));
+            scaffold("proj", name, &dir).unwrap();
+            assert!(dir.join("proj").join("main.py").exists());
+            assert!(dir.join("proj").join("requirements.txt").exists());
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn test_project_type_typescript_aliases() {
+        for name in &["typescript", "ts", "node", "TypeScript"] {
+            let dir = temp_dir(&format!("ts_{}", name));
+            scaffold("proj", name, &dir).unwrap();
+            assert!(dir.join("proj").join("package.json").exists());
+            assert!(dir.join("proj").join("tsconfig.json").exists());
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn test_unknown_project_type_errors() {
+        let dir = temp_dir("unknown");
+        let result = scaffold("proj", "java", &dir);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("Unknown project type"));
+        assert!(msg.contains("java"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_existing_directory_errors() {
+        let dir = temp_dir("exists");
+        std::fs::create_dir_all(dir.join("proj")).unwrap();
+        let result = scaffold("proj", "rust", &dir);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("already exists"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_rust_scaffold_creates_files() {
+        let dir = temp_dir("rust_files");
+        scaffold("myapp", "rust", &dir).unwrap();
+        let proj = dir.join("myapp");
+        assert!(proj.join("Cargo.toml").exists());
+        assert!(proj.join("src").join("main.rs").exists());
+        assert!(proj.join(".gitignore").exists());
+
+        // Validate Cargo.toml content
+        let cargo = std::fs::read_to_string(proj.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains(r#"name = "myapp""#));
+        assert!(cargo.contains("anyhow"));
+
+        // Validate gitignore
+        let gitignore = std::fs::read_to_string(proj.join(".gitignore")).unwrap();
+        assert!(gitignore.contains("target/"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_python_scaffold_creates_files() {
+        let dir = temp_dir("py_files");
+        scaffold("script", "python", &dir).unwrap();
+        let proj = dir.join("script");
+        assert!(proj.join("README.md").exists());
+        assert!(proj.join("requirements.txt").exists());
+        assert!(proj.join("main.py").exists());
+        assert!(proj.join(".gitignore").exists());
+
+        let reqs = std::fs::read_to_string(proj.join("requirements.txt")).unwrap();
+        assert!(reqs.contains("requests"));
+
+        let gitignore = std::fs::read_to_string(proj.join(".gitignore")).unwrap();
+        assert!(gitignore.contains("__pycache__"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_typescript_scaffold_creates_files() {
+        let dir = temp_dir("ts_files");
+        scaffold("webapp", "ts", &dir).unwrap();
+        let proj = dir.join("webapp");
+        assert!(proj.join("package.json").exists());
+        assert!(proj.join("tsconfig.json").exists());
+        assert!(proj.join("src").join("index.ts").exists());
+        assert!(proj.join(".gitignore").exists());
+
+        let pkg = std::fs::read_to_string(proj.join("package.json")).unwrap();
+        assert!(pkg.contains(r#""name": "webapp""#));
+        assert!(pkg.contains("typescript"));
+
+        let tsconfig = std::fs::read_to_string(proj.join("tsconfig.json")).unwrap();
+        assert!(tsconfig.contains("strict"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_rust_main_rs_compiles() {
+        // Verify the generated main.rs is syntactically valid Rust
+        let dir = temp_dir("rust_compile");
+        scaffold("app", "rust", &dir).unwrap();
+        let main_rs = std::fs::read_to_string(dir.join("app/src/main.rs")).unwrap();
+        assert!(main_rs.contains("fn main()"));
+        assert!(main_rs.contains("anyhow::Result"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_empty_string_project_type_errors() {
+        let dir = temp_dir("empty_type");
+        let result = scaffold("proj", "", &dir);
+        assert!(result.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

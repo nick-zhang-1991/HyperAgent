@@ -436,3 +436,149 @@ pub fn print_json_report() -> Result<()> {
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_analytics_event_construction() {
+        let event = AnalyticsEvent {
+            timestamp: 1234567890,
+            event_type: "run".into(),
+            command: Some("test_cmd".into()),
+            mode: Some("code".into()),
+            project_dir: Some("/tmp/proj".into()),
+            tokens_input: Some(100),
+            tokens_output: Some(200),
+            cost_usd: Some(0.01),
+            duration_ms: Some(1000),
+            success: Some(true),
+            files_modified: Some(3),
+            error_message: None,
+            locale: Some("en".into()),
+            version: Some("0.1.0".into()),
+            os: Some("macos".into()),
+        };
+        assert_eq!(event.timestamp, 1234567890);
+        assert_eq!(event.event_type, "run");
+        assert_eq!(event.command, Some("test_cmd".into()));
+        assert_eq!(event.tokens_input, Some(100));
+        assert_eq!(event.success, Some(true));
+    }
+
+    #[test]
+    fn test_analytics_event_minimal() {
+        let event = AnalyticsEvent {
+            timestamp: 0,
+            event_type: "test".into(),
+            command: None,
+            mode: None,
+            project_dir: None,
+            tokens_input: None,
+            tokens_output: None,
+            cost_usd: None,
+            duration_ms: None,
+            success: None,
+            files_modified: None,
+            error_message: None,
+            locale: None,
+            version: None,
+            os: None,
+        };
+        assert_eq!(event.timestamp, 0);
+        assert!(event.command.is_none());
+    }
+
+    #[test]
+    fn test_analytics_summary_construction() {
+        let s = AnalyticsSummary {
+            total_runs: 10,
+            total_tokens_input: 1000,
+            total_tokens_output: 2000,
+            total_cost_usd: 0.5,
+            success_rate: 0.9,
+            daily_runs: vec![("2024-01-01".into(), 5), ("2024-01-02".into(), 5)],
+            top_commands: vec![("cmd1".into(), 3)],
+            top_modes: vec![("code".into(), 10)],
+        };
+        assert_eq!(s.total_runs, 10);
+        assert_eq!(s.total_tokens_input, 1000);
+        assert_eq!(s.total_cost_usd, 0.5);
+        assert!((s.success_rate - 0.9).abs() < 0.001);
+        assert_eq!(s.daily_runs.len(), 2);
+        assert_eq!(s.top_commands.len(), 1);
+    }
+
+    #[test]
+    fn test_analytics_summary_empty() {
+        let s = AnalyticsSummary {
+            total_runs: 0,
+            total_tokens_input: 0,
+            total_tokens_output: 0,
+            total_cost_usd: 0.0,
+            success_rate: 0.0,
+            daily_runs: vec![],
+            top_commands: vec![],
+            top_modes: vec![],
+        };
+        assert_eq!(s.total_runs, 0);
+    }
+
+    #[test]
+    fn test_analytics_event_serialize() {
+        let event = AnalyticsEvent {
+            timestamp: 100,
+            event_type: "run".into(),
+            command: None,
+            mode: None,
+            project_dir: None,
+            tokens_input: None,
+            tokens_output: None,
+            cost_usd: None,
+            duration_ms: None,
+            success: None,
+            files_modified: None,
+            error_message: None,
+            locale: None,
+            version: None,
+            os: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"timestamp\":100"));
+        assert!(json.contains("\"event_type\":\"run\""));
+    }
+
+    #[test]
+    fn test_analytics_summary_serialize() {
+        let s = AnalyticsSummary {
+            total_runs: 5,
+            total_tokens_input: 100,
+            total_tokens_output: 200,
+            total_cost_usd: 0.05,
+            success_rate: 1.0,
+            daily_runs: vec![],
+            top_commands: vec![],
+            top_modes: vec![],
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"total_runs\":5"));
+        assert!(json.contains("\"success_rate\":1.0"));
+    }
+
+    #[test]
+    fn test_analytics_html_returns_html() {
+        let html = analytics_html();
+        assert!(html.contains("<!DOCTYPE"));
+        assert!(html.contains("<html"));
+        assert!(html.contains("</html>"));
+        assert!(html.contains("Analytics"));
+    }
+
+    #[test]
+    fn test_analytics_html_includes_chart() {
+        let html = analytics_html();
+        // Should include chart script and elements
+        assert!(html.contains("chart") || html.contains("Chart"));
+    }
+}

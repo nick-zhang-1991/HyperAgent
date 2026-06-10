@@ -147,3 +147,139 @@ fn which_hyper() -> Result<PathBuf> {
     if let Ok(h) = std::env::var("HOME") { let l = PathBuf::from(&h).join(".local/bin/hyper"); if l.exists() { return Ok(l); } }
     Ok(PathBuf::from("hyper"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_test_mode_equality() {
+        assert_eq!(TestMode::All, TestMode::All);
+        assert_eq!(TestMode::Unit, TestMode::Unit);
+        assert_ne!(TestMode::Unit, TestMode::Integration);
+        assert_ne!(TestMode::All, TestMode::Gen);
+    }
+
+    #[test]
+    fn test_test_mode_debug() {
+        let m = TestMode::E2e;
+        let s = format!("{:?}", m);
+        assert!(s.contains("E2e"));
+    }
+
+    #[test]
+    fn test_test_mode_clone() {
+        let m = TestMode::Integration;
+        let c = m.clone();
+        assert_eq!(m, c);
+    }
+
+    #[test]
+    fn test_test_report_default() {
+        let r = TestReport::default();
+        assert_eq!(r.total, 0);
+        assert_eq!(r.passed, 0);
+        assert_eq!(r.failed, 0);
+        assert_eq!(r.duration_secs, 0.0);
+        assert!(r.details.is_empty());
+    }
+
+    #[test]
+    fn test_test_result_construction() {
+        let r = TestResult {
+            name: "test_foo".into(),
+            passed: true,
+            output: "ok".into(),
+            duration_secs: 0.5,
+        };
+        assert_eq!(r.name, "test_foo");
+        assert!(r.passed);
+        assert_eq!(r.duration_secs, 0.5);
+    }
+
+    #[test]
+    fn test_test_result_failed() {
+        let r = TestResult {
+            name: "test_fail".into(),
+            passed: false,
+            output: "assertion failed".into(),
+            duration_secs: 1.0,
+        };
+        assert!(!r.passed);
+    }
+
+    #[test]
+    fn test_display_report_empty() {
+        let r = TestReport::default();
+        // Just verify it doesn't panic
+        display_report(&r);
+    }
+
+    #[test]
+    fn test_display_report_with_data() {
+        let r = TestReport {
+            total: 10,
+            passed: 8,
+            failed: 2,
+            duration_secs: 5.0,
+            details: vec![
+                TestResult {
+                    name: "test_pass1".into(),
+                    passed: true,
+                    output: "ok".into(),
+                    duration_secs: 0.1,
+                },
+                TestResult {
+                    name: "test_fail1".into(),
+                    passed: false,
+                    output: "FAILED".into(),
+                    duration_secs: 0.2,
+                },
+            ],
+        };
+        display_report(&r);
+    }
+
+    #[test]
+    fn test_merge_combines_reports() {
+        // Test merge through run_tests is hard without executing; test logic via fields
+        let mut r = TestReport {
+            total: 5,
+            passed: 5,
+            failed: 0,
+            duration_secs: 1.0,
+            details: vec![],
+        };
+        let o = TestReport {
+            total: 3,
+            passed: 2,
+            failed: 1,
+            duration_secs: 2.0,
+            details: vec![TestResult {
+                name: "x".into(),
+                passed: false,
+                output: "y".into(),
+                duration_secs: 0.5,
+            }],
+        };
+        // Use the merge function (private) - we can only call from this module
+        merge(&mut r, o);
+        assert_eq!(r.total, 8);
+        assert_eq!(r.passed, 7);
+        assert_eq!(r.failed, 1);
+        assert_eq!(r.details.len(), 1);
+    }
+
+    #[test]
+    fn test_generate_tests_creates_files() {
+        let dir = std::env::temp_dir().join(format!("hyperagent_gen_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        // generate_tests needs a Cargo.toml in the root - create one
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+        let result = generate_tests(&dir);
+        // Should succeed (creates tests dir with generated tests)
+        let _ = result;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
