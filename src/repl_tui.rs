@@ -340,6 +340,12 @@ impl AppState {
 
 fn render(frame: &mut Frame, app: &mut AppState) {
     let area = frame.area();
+
+    // Full dark background
+    let bg = Paragraph::new("")
+        .style(Style::default().bg(Color::Rgb(10, 10, 20)));
+    frame.render_widget(bg, area);
+
     let input_h = app.input_frame_height(area.width);
 
     // Layout: status bar (1) + history (rest) + input frame (variable)
@@ -359,8 +365,8 @@ fn render(frame: &mut Frame, app: &mut AppState) {
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
     let model = &app.provider.model;
-    let model_short = if model.len() > 30 {
-        format!("{}…", &model[..28])
+    let model_short = if model.len() > 25 {
+        format!("{}…", &model[..23])
     } else {
         model.clone()
     };
@@ -371,12 +377,12 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
         Span::styled(&app.mode, Style::default().fg(Color::Green)),
         Span::raw(" · "),
         Span::styled(&model_short, Style::default().fg(Color::Yellow)),
-        Span::raw(" · "),
+        Span::raw("  "),
         Span::styled("/help", Style::default().fg(Color::DarkGray)),
     ]);
 
     let paragraph = Paragraph::new(text)
-        .style(Style::default().bg(Color::Rgb(20, 20, 30)).fg(Color::White));
+        .style(Style::default().bg(Color::Rgb(15, 15, 30)).fg(Color::White));
     frame.render_widget(paragraph, area);
 }
 
@@ -386,10 +392,40 @@ fn render_history(frame: &mut Frame, area: Rect, app: &mut AppState) {
 
     // Add a small hint if empty
     if app.history.is_empty() && !app.is_processing {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  欢迎使用 HyperAgent", Style::default().fg(Color::Cyan).bold()),
+        ]));
+        lines.push(Line::from(""));
         lines.push(Line::from(
             Span::styled(
-                "  Type a prompt to start. /help for commands. Shift+Enter for newline.",
-                Style::default().fg(Color::DarkGray).italic()
+                "  可以做什么？直接输入问题，或使用以下命令：",
+                Style::default().fg(Color::Rgb(140, 140, 160))
+            )
+        ));
+        lines.push(Line::from(
+            Span::styled(
+                "    /mode <general|ask|code|debug|architect>  切换模式",
+                Style::default().fg(Color::Rgb(100, 100, 130))
+            )
+        ));
+        lines.push(Line::from(
+            Span::styled(
+                "    /code <prompt>  强制走编码管道（带项目索引）",
+                Style::default().fg(Color::Rgb(100, 100, 130))
+            )
+        ));
+        lines.push(Line::from(
+            Span::styled(
+                "    /help           查看所有命令",
+                Style::default().fg(Color::Rgb(100, 100, 130))
+            )
+        ));
+        lines.push(Line::from(""));
+        lines.push(Line::from(
+            Span::styled(
+                "  Shift+Enter 换行 · PgUp/PgDn 滚动历史 · ↑↓ 输入历史 · Ctrl+C 退出",
+                Style::default().fg(Color::Rgb(80, 80, 110))
             )
         ));
         lines.push(Line::from(""));
@@ -450,50 +486,65 @@ fn render_history(frame: &mut Frame, area: Rect, app: &mut AppState) {
 }
 
 fn render_input_frame(frame: &mut Frame, area: Rect, app: &AppState) {
-    // Build the input display text
     let prefix = "❯ ";
-    let display_text = if app.input.is_empty() {
-        Text::from(Line::from(
-            Span::styled(prefix, Style::default().fg(Color::Cyan))
-        ))
-    } else {
-        let mut spans = vec![
+
+    // Build the input display text — placeholder when empty
+    let display_text = if app.input.is_empty() && !app.is_processing {
+        Text::from(Line::from(vec![
             Span::styled(prefix, Style::default().fg(Color::Cyan)),
-            Span::raw(&app.input),
-        ];
-        Text::from(Line::from(spans))
+            Span::styled(
+                "可以做什么？输入 /help 查看命令",
+                Style::default().fg(Color::Rgb(80, 80, 100)).italic()
+            ),
+        ]))
+    } else if app.input.is_empty() && app.is_processing {
+        Text::from(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+            Span::styled("请稍候...", Style::default().fg(Color::Rgb(60, 60, 80)).italic()),
+        ]))
+    } else {
+        let all_text = app.input.clone();
+        let text = Text::from(Line::from(
+            vec![
+                Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                Span::raw(all_text),
+            ]
+        ));
+        return render_input_box(frame, area, app, text);
     };
 
-    // Style the block based on processing state
-    let (_fg, border_style) = if app.is_processing {
-        (Color::DarkGray, Style::default().fg(Color::Rgb(60, 60, 70)))
+    render_input_box(frame, area, app, display_text);
+}
+
+fn render_input_box(frame: &mut Frame, area: Rect, app: &AppState, text: Text) {
+    let (border_style) = if app.is_processing {
+        Style::default().fg(Color::Rgb(60, 60, 70))
     } else {
-        (Color::White, Style::default().fg(Color::Rgb(100, 140, 255)))
+        Style::default().fg(Color::Rgb(80, 120, 220))
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .style(Style::default().bg(Color::Rgb(12, 12, 20)));
+        .style(Style::default().bg(Color::Rgb(12, 12, 22)));
 
-    // Inner area with padding for text
     let inner = block.inner(area);
-    let paragraph = Paragraph::new(display_text)
+    let paragraph = Paragraph::new(text)
         .block(block)
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 
-    // Cursor positioning: show in the text area
-    if let Some(cursor_visual) = compute_cursor_pos(&app.input, app.cursor, inner.width) {
-        let cursor_y = inner.y + cursor_visual.row as u16;
-        let cursor_x = inner.x + cursor_visual.col as u16;
-        frame.set_cursor(cursor_x, cursor_y);
-    } else {
-        // Default: show cursor after the prompt
-        let prompt_prefix = 2; // "❯ " = 2 chars
-        let x = inner.x + prompt_prefix as u16 + app.cursor.min(inner.width as usize - 2) as u16;
-        let y = inner.y;
-        frame.set_cursor(x.min(inner.right().saturating_sub(1)), y);
+    // Cursor: show only when not empty and not processing
+    if !app.input.is_empty() && !app.is_processing {
+        if let Some(cursor_visual) = compute_cursor_pos(&app.input, app.cursor, inner.width) {
+            let cursor_y = inner.y + cursor_visual.row as u16;
+            let cursor_x = inner.x + cursor_visual.col as u16;
+            frame.set_cursor(cursor_x.min(inner.right().saturating_sub(1)), cursor_y);
+        } else {
+            let x = inner.x + 2 + (app.cursor as u16).min(inner.width.saturating_sub(3));
+            let y = inner.y;
+            frame.set_cursor(x.min(inner.right().saturating_sub(1)), y);
+        }
     }
 }
 
