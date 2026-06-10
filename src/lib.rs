@@ -33,6 +33,8 @@ pub mod onboarding;
 pub mod plugin;
 pub mod refactor;
 pub mod repl;
+#[cfg(feature = "tui")]
+pub mod repl_tui;
 pub mod retrieval;
 pub mod router;
 pub mod ci_fix;

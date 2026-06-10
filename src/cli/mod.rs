@@ -1553,8 +1553,13 @@ impl Cli {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             )).await,
 
-            // No subcommand → interactive REPL
-            None => crate::repl::run_repl().await,
+            // No subcommand → interactive REPL (TUI if available)
+            None => {
+                #[cfg(feature = "tui")]
+                { crate::repl_tui::run_repl_tui().await }
+                #[cfg(not(feature = "tui"))]
+                { crate::repl::run_repl().await }
+            }
         }
     }
 

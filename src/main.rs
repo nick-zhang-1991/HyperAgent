@@ -38,6 +38,8 @@ mod onboarding;
 mod plugin;
 mod refactor;
 mod repl;
+#[cfg(feature = "tui")]
+mod repl_tui;
 mod retrieval;
 mod router;
 mod ci_fix;

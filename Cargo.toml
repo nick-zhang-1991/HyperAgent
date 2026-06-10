@@ -69,7 +69,7 @@ ratatui = { version = "0.28", optional = true }
 crossterm = { version = "0.28", optional = true }
 
 [features]
-default = []
+default = ["tui"]
 tui = ["ratatui", "crossterm"]
 
 [dev-dependencies]

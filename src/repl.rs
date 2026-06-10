@@ -568,7 +568,7 @@ fn looks_like_question(lower: &str) -> bool {
 ///
 /// If it's ambiguous, treat it as Q&A — the user can prefix with
 /// `/code` to force the code path, or `/reindex` to pre-warm the cache.
-fn looks_like_coding_task(prompt: &str) -> bool {
+pub(crate) fn looks_like_coding_task(prompt: &str) -> bool {
     let p = prompt.trim();
     if p.is_empty() {
         return false;
