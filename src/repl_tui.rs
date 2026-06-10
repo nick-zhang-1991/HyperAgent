@@ -51,7 +51,6 @@ struct AppState {
 
     // Input
     input: String,
-    cursor: usize,                     // char index in input
     input_history: Vec<String>,        // previously submitted prompts
     input_history_idx: Option<usize>,  // position in history (None = new)
 
@@ -74,7 +73,6 @@ impl AppState {
             scroll_offset: 0,
             history_count: 0,
             input: String::new(),
-            cursor: 0,
             input_history: Vec::new(),
             input_history_idx: None,
             is_processing: false,
@@ -92,7 +90,6 @@ impl AppState {
 
     fn set_input(&mut self, s: &str) {
         self.input = s.to_string();
-        self.cursor = self.input.chars().count();
     }
 
     fn submit_input(&mut self) -> String {
@@ -101,78 +98,21 @@ impl AppState {
             self.input_history.push(trimmed.clone());
         }
         self.input.clear();
-        self.cursor = 0;
+
         self.input_history_idx = None;
         trimmed
     }
 
     fn insert_char(&mut self, ch: char) {
-        let idx = self.byte_at_cursor();
-        self.input.insert(idx, ch);
-        self.cursor += 1;
+        self.input.push(ch);
     }
 
     fn insert_str(&mut self, s: &str) {
-        let idx = self.byte_at_cursor();
-        self.input.insert_str(idx, s);
-        self.cursor += s.chars().count();
+        self.input.push_str(s);
     }
 
     fn backspace(&mut self) {
-        if self.cursor > 0 {
-            let byte_idx = self.byte_at_cursor_prev();
-            self.input.drain(byte_idx..byte_idx + self.input[byte_idx..].chars().next().unwrap().len_utf8());
-            self.cursor -= 1;
-        }
-    }
-
-    fn delete_at_cursor(&mut self) {
-        let char_count = self.input.chars().count();
-        if self.cursor < char_count {
-            let byte_idx = self.byte_at_cursor();
-            let len = self.input[byte_idx..].chars().next().unwrap().len_utf8();
-            self.input.drain(byte_idx..byte_idx + len);
-        }
-    }
-
-    fn cursor_left(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-        }
-    }
-
-    fn cursor_right(&mut self) {
-        let n = self.input.chars().count();
-        if self.cursor < n {
-            self.cursor += 1;
-        }
-    }
-
-    fn cursor_home(&mut self) {
-        // Go to start of current visual line
-        let max_col = self.input_frame_inner_width().saturating_sub(1) as usize;
-        let visual_col = self.cursor % max_col.max(1);
-        self.cursor = self.cursor.saturating_sub(visual_col);
-    }
-
-    fn cursor_end(&mut self) {
-        let n = self.input.chars().count();
-        let max_col = self.input_frame_inner_width().saturating_sub(1) as usize;
-        if max_col > 0 {
-            let visual_col = n % max_col;
-            self.cursor = n.saturating_sub((max_col - 1).min(visual_col));
-        } else {
-            self.cursor = n;
-        }
-    }
-
-    fn byte_at_cursor(&self) -> usize {
-        self.input.chars().take(self.cursor).map(|c| c.len_utf8()).sum()
-    }
-
-    fn byte_at_cursor_prev(&self) -> usize {
-        if self.cursor == 0 { return 0; }
-        self.input.chars().take(self.cursor - 1).map(|c| c.len_utf8()).sum()
+        self.input.pop();
     }
 
     fn insert_newline(&mut self) {
@@ -202,7 +142,6 @@ impl AppState {
                         self.input_history_idx = Some(i + 1);
                     } else {
                         self.input.clear();
-                        self.cursor = 0;
                         self.input_history_idx = None;
                     }
                 }
@@ -255,11 +194,6 @@ impl AppState {
         let base: u16 = 3; // top border + bottom border + 1 padding
         let wrap_lines = self.input_wrapped_lines(width) as u16;
         (base + wrap_lines).min(MAX_INPUT_LINES + 3)
-    }
-
-    fn input_frame_inner_width(&self) -> u16 {
-        // To be called with the actual width; for now just return a reasonable default
-        80u16.saturating_sub(4)
     }
 
     // ── Mode helpers ─────────────────────────────────────────────
@@ -525,64 +459,12 @@ fn render_input_box(frame: &mut Frame, area: Rect, app: &AppState, text: Text) {
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 
-    // Cursor: show only when not empty and not processing
+    // Place cursor AFTER the text (at the end of input)
     if !app.input.is_empty() && !app.is_processing {
-        if let Some(cursor_visual) = compute_cursor_pos(&app.input, app.cursor, inner.width) {
-            let cursor_y = inner.y + cursor_visual.row as u16;
-            let cursor_x = inner.x + cursor_visual.col as u16;
-            frame.set_cursor(cursor_x.min(inner.right().saturating_sub(1)), cursor_y);
-        } else {
-            let x = inner.x + 2 + (app.cursor as u16).min(inner.width.saturating_sub(3));
-            let y = inner.y;
-            frame.set_cursor(x.min(inner.right().saturating_sub(1)), y);
-        }
+        let text_x = (2 + (app.input.chars().count() as u16).min(inner.width.saturating_sub(3)))
+            .min(inner.width.saturating_sub(1));
+        frame.set_cursor(inner.x + text_x, inner.y);
     }
-}
-
-/// Compute pixel-level cursor position within the wrapped text.
-struct CursorPos {
-    row: u16,
-    col: u16,
-}
-
-fn compute_cursor_pos(input: &str, cursor: usize, inner_width: u16) -> Option<CursorPos> {
-    if cursor == 0 {
-        return Some(CursorPos { row: 0, col: 0 });
-    }
-    let inner = inner_width.saturating_sub(1) as usize; // leave 1 char margin
-    if inner == 0 {
-        return None;
-    }
-    let prefix = 2; // "❯ "
-    let mut remaining = cursor;
-    for (line_idx, line) in input.lines().enumerate() {
-        let line_len = line.chars().count();
-        let wrapped_lines = if line_len == 0 { 1 } else { (line_len + inner - 1) / inner };
-        let line_take = line_len.min(remaining);
-        // Which wrapped row within this logical line?
-        if line_take > 0 {
-            let row_within = (line_take - 1) / inner;
-            let col_within = (line_take - 1) % inner;
-            if remaining <= line_len {
-                return Some(CursorPos {
-                    row: line_idx as u16 + row_within as u16,
-                    col: (if row_within == 0 { prefix as u16 } else { 0 }) + col_within as u16,
-                });
-            }
-            remaining -= line_len;
-        } else {
-            // Empty line
-            if remaining == 0 {
-                return Some(CursorPos { row: line_idx as u16, col: 0 });
-            }
-        }
-        // Account for line break
-        if remaining > 0 {
-            remaining = remaining.saturating_sub(1); // \n
-        }
-    }
-    // Fallback: end of input
-    Some(CursorPos { row: 0, col: 0 })
 }
 
 // ── Key handling ─────────────────────────────────────────────────────
@@ -633,11 +515,6 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) -> bool {
 
         // Input editing
         KeyCode::Backspace => app.backspace(),
-        KeyCode::Delete => app.delete_at_cursor(),
-        KeyCode::Left => app.cursor_left(),
-        KeyCode::Right => app.cursor_right(),
-        KeyCode::Home => app.cursor_home(),
-        KeyCode::End => app.cursor_end(),
 
         // Input history
         KeyCode::Up => app.navigate_input_history(1),
@@ -650,7 +527,6 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) -> bool {
         // Clear input
         KeyCode::Char('u') | KeyCode::Char('U') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.input.clear();
-            app.cursor = 0;
         }
 
         // Tab completion for /commands
@@ -669,7 +545,6 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) -> bool {
         // Esc to clear
         KeyCode::Esc => {
             app.input.clear();
-            app.cursor = 0;
         }
 
         // Printable characters
@@ -883,11 +758,9 @@ pub async fn run_repl_tui() -> Result<()> {
                             if prompt.starts_with('/') {
                                 handle_command(&mut app, &prompt);
                                 app.input.clear();
-                                app.cursor = 0;
                             } else {
                                 app.input_history.push(prompt.clone());
                                 app.input.clear();
-                                app.cursor = 0;
                                 app.is_processing = true;
                                 app.submit_prompt(prompt, llm_tx.clone());
                             }
