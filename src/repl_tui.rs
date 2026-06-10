@@ -341,11 +341,6 @@ impl AppState {
 fn render(frame: &mut Frame, app: &mut AppState) {
     let area = frame.area();
 
-    // Full dark background
-    let bg = Paragraph::new("")
-        .style(Style::default().bg(Color::Rgb(10, 10, 20)));
-    frame.render_widget(bg, area);
-
     let input_h = app.input_frame_height(area.width);
 
     // Layout: status bar (1) + history (rest) + input frame (variable)
@@ -372,17 +367,14 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
     };
 
     let text = Line::from(vec![
-        Span::styled(" HyperAgent ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw(" · "),
+        Span::styled(" HyperAgent ", Style::default().fg(Color::Cyan)),
+        Span::raw("· "),
         Span::styled(&app.mode, Style::default().fg(Color::Green)),
         Span::raw(" · "),
         Span::styled(&model_short, Style::default().fg(Color::Yellow)),
-        Span::raw("  "),
-        Span::styled("/help", Style::default().fg(Color::DarkGray)),
     ]);
 
-    let paragraph = Paragraph::new(text)
-        .style(Style::default().bg(Color::Rgb(15, 15, 30)).fg(Color::White));
+    let paragraph = Paragraph::new(text);
     frame.render_widget(paragraph, area);
 }
 
@@ -394,38 +386,38 @@ fn render_history(frame: &mut Frame, area: Rect, app: &mut AppState) {
     if app.history.is_empty() && !app.is_processing {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("  欢迎使用 HyperAgent", Style::default().fg(Color::Cyan).bold()),
+            Span::styled("  欢迎使用 HyperAgent", Style::default().fg(Color::Blue).bold()),
         ]));
         lines.push(Line::from(""));
         lines.push(Line::from(
             Span::styled(
                 "  可以做什么？直接输入问题，或使用以下命令：",
-                Style::default().fg(Color::Rgb(140, 140, 160))
+                Style::default().fg(Color::DarkGray)
             )
         ));
         lines.push(Line::from(
             Span::styled(
                 "    /mode <general|ask|code|debug|architect>  切换模式",
-                Style::default().fg(Color::Rgb(100, 100, 130))
+                Style::default().fg(Color::Gray)
             )
         ));
         lines.push(Line::from(
             Span::styled(
                 "    /code <prompt>  强制走编码管道（带项目索引）",
-                Style::default().fg(Color::Rgb(100, 100, 130))
+                Style::default().fg(Color::Gray)
             )
         ));
         lines.push(Line::from(
             Span::styled(
                 "    /help           查看所有命令",
-                Style::default().fg(Color::Rgb(100, 100, 130))
+                Style::default().fg(Color::Gray)
             )
         ));
         lines.push(Line::from(""));
         lines.push(Line::from(
             Span::styled(
-                "  Shift+Enter 换行 · PgUp/PgDn 滚动历史 · ↑↓ 输入历史 · Ctrl+C 退出",
-                Style::default().fg(Color::Rgb(80, 80, 110))
+                "  Shift+Enter 换行 · PgUp/PgDn 滚动 · ↑↓ 历史 · Ctrl+C 退出",
+                Style::default().fg(Color::Gray)
             )
         ));
         lines.push(Line::from(""));
@@ -491,22 +483,22 @@ fn render_input_frame(frame: &mut Frame, area: Rect, app: &AppState) {
     // Build the input display text — placeholder when empty
     let display_text = if app.input.is_empty() && !app.is_processing {
         Text::from(Line::from(vec![
-            Span::styled(prefix, Style::default().fg(Color::Cyan)),
+            Span::styled(prefix, Style::default().fg(Color::Blue)),
             Span::styled(
                 "可以做什么？输入 /help 查看命令",
-                Style::default().fg(Color::Rgb(80, 80, 100)).italic()
+                Style::default().fg(Color::DarkGray).italic()
             ),
         ]))
     } else if app.input.is_empty() && app.is_processing {
         Text::from(Line::from(vec![
             Span::styled(prefix, Style::default().fg(Color::DarkGray)),
-            Span::styled("请稍候...", Style::default().fg(Color::Rgb(60, 60, 80)).italic()),
+            Span::styled("请稍候...", Style::default().fg(Color::Gray).italic()),
         ]))
     } else {
         let all_text = app.input.clone();
         let text = Text::from(Line::from(
             vec![
-                Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                Span::styled(prefix, Style::default().fg(Color::Blue)),
                 Span::raw(all_text),
             ]
         ));
@@ -517,16 +509,15 @@ fn render_input_frame(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 fn render_input_box(frame: &mut Frame, area: Rect, app: &AppState, text: Text) {
-    let (border_style) = if app.is_processing {
-        Style::default().fg(Color::Rgb(60, 60, 70))
+    let border_style = if app.is_processing {
+        Style::default().fg(Color::Gray)
     } else {
-        Style::default().fg(Color::Rgb(80, 120, 220))
+        Style::default().fg(Color::Blue)
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(border_style)
-        .style(Style::default().bg(Color::Rgb(12, 12, 22)));
+        .border_style(border_style);
 
     let inner = block.inner(area);
     let paragraph = Paragraph::new(text)
