@@ -136,6 +136,23 @@ impl Db {
     async fn org_exists(&self, id: &str) -> bool {
         self.conn.lock().await.query_row("SELECT 1 FROM orgs WHERE id=?1", rusqlite::params![id], |_| Ok(())).is_ok()
     }
+    async fn org_owner(&self, id: &str) -> Option<String> {
+        self.conn.lock().await.query_row("SELECT owner_id FROM orgs WHERE id=?1", rusqlite::params![id], |r| r.get(0)).ok()
+    }
+    async fn org_delete(&self, id: &str) -> Result<(), rusqlite::Error> {
+        let c = self.conn.lock().await;
+        // Delete cascading: tasks → agents → org
+        c.execute("DELETE FROM tasks WHERE org_id=?1", rusqlite::params![id])?;
+        c.execute("DELETE FROM agents WHERE org_id=?1", rusqlite::params![id])?;
+        c.execute("DELETE FROM orgs WHERE id=?1", rusqlite::params![id])?;
+        Ok(())
+    }
+    async fn agent_delete(&self, id: &str) -> Result<(), rusqlite::Error> {
+        let c = self.conn.lock().await;
+        c.execute("DELETE FROM tasks WHERE agent_id=?1", rusqlite::params![id])?;
+        c.execute("DELETE FROM agents WHERE id=?1", rusqlite::params![id])?;
+        Ok(())
+    }
 
     async fn agents_by_org(&self, org_id: &str) -> Vec<Agent> {
         let c = self.conn.lock().await;
@@ -267,6 +284,15 @@ async fn list_orgs(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Result
     Ok(Json(s.db.orgs_by_owner(&uid).await))
 }
 
+async fn delete_org(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(oid): Path<String>) -> Result<StatusCode, StatusCode> {
+    let uid = extract_user(&headers, &s).ok_or(StatusCode::UNAUTHORIZED)?.id;
+    let owner = s.db.org_owner(&oid).await.ok_or(StatusCode::NOT_FOUND)?;
+    if owner != uid { return Err(StatusCode::FORBIDDEN); }
+    s.db.org_delete(&oid).await.map_err(|e| { eprintln!("org_delete failed: {e}"); StatusCode::INTERNAL_SERVER_ERROR })?;
+    let _ = s.tx.send(format!("org:{} deleted", oid));
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn create_agent(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(oid): Path<String>, Json(b): Json<CreateAgent>) -> Result<Json<Agent>, StatusCode> {
     let uid = extract_user(&headers, &s).ok_or(StatusCode::UNAUTHORIZED)?.id;
     let a = Agent { id: Uuid::new_v4().to_string(), org_id: oid, name: b.name, role: b.role, description: b.description, status: "idle".into(), current_task: None, total_tasks: 0, completed_tasks: 0, created_at: chrono::Utc::now().to_rfc3339() };
@@ -277,6 +303,12 @@ async fn create_agent(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(o
 
 async fn list_agents(State(s): State<Arc<AppState>>, Path(oid): Path<String>) -> Result<Json<Vec<Agent>>, StatusCode> {
     Ok(Json(s.db.agents_by_org(&oid).await))
+}
+
+async fn delete_agent(State(s): State<Arc<AppState>>, Path((_oid, aid)): Path<(String, String)>) -> Result<StatusCode, StatusCode> {
+    s.db.agent_delete(&aid).await.map_err(|e| { eprintln!("agent_delete failed: {e}"); StatusCode::INTERNAL_SERVER_ERROR })?;
+    let _ = s.tx.send(format!("agent:{} deleted", aid));
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn create_task(State(s): State<Arc<AppState>>, headers: HeaderMap, Path((oid, aid)): Path<(String, String)>, Json(b): Json<CreateTask>) -> Result<Json<Task>, StatusCode> {
@@ -405,8 +437,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/model", post(update_model))
         // Orgs
         .route("/api/orgs", get(list_orgs).post(create_org))
+        .route("/api/orgs/:oid", get(list_orgs).delete(delete_org))
         // Agents
         .route("/api/orgs/:oid/agents", get(list_agents).post(create_agent))
+        .route("/api/orgs/:oid/agents/:aid", get(list_agents).delete(delete_agent))
         // Tasks
         .route("/api/orgs/:oid/agents/:aid/tasks", get(list_tasks).post(create_task))
         // Webhook
