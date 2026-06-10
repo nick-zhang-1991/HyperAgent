@@ -129,8 +129,10 @@ pub async fn run_repl() -> anyhow::Result<()> {
     // Get provider from config
     let provider = get_provider_from_config();
 
-    // Current mode
-    let mut current_mode = "ask".to_string();
+    // Current mode — default to "general" so the agent behaves as a
+    // universal AI assistant (coding AND non-coding tasks) out of the box.
+    // The user can switch to a specific tone via /mode if they want.
+    let mut current_mode = "general".to_string();
 
     // Orchestrator state across turns (for /image attachment)
     let mut orchestrator: Option<crate::agent::orchestrator::Orchestrator> = None;
@@ -146,9 +148,10 @@ pub async fn run_repl() -> anyhow::Result<()> {
     // Welcome banner
     println!();
     println!("╔══════════════════════════════════════════════╗");
-    println!("║        HyperAgent Interactive Shell         ║");
-    println!("║    Type prompts directly, like chatting     ║");
-    println!("║    ↑↓ arrow keys to browse history          ║");
+    println!("║     HyperAgent — Universal AI Agent          ║");
+    println!("║   Code, chat, research, write, automate      ║");
+    println!("║   Type prompts directly, like chatting       ║");
+    println!("║   ↑↓ arrow keys to browse history            ║");
     println!("╚══════════════════════════════════════════════╝");
     println!();
     println!("  Directory: {}", dir.display());
@@ -157,8 +160,8 @@ pub async fn run_repl() -> anyhow::Result<()> {
     if let Some(cnt) = memory_count {
         println!("  Memory:    {} past learnings", cnt);
     }
-    println!("  Index:     auto (loaded only when prompt looks like a coding task)");
-    println!("  Commands:  /exit  /mode <ask|code|debug|architect|general>  /image <path>  /help  /clear  /reindex");
+    println!("  Routing:   auto — questions → direct chat, code tasks → pipeline");
+    println!("  Commands:  /exit  /mode <general|code|debug|architect|ask>  /image <path>  /help  /clear  /reindex");
     println!();
 
     // REPL loop
@@ -201,10 +204,15 @@ pub async fn run_repl() -> anyhow::Result<()> {
                 }
                 "/help" | "/h" => {
                     println!();
-                    println!("  Commands:");
+                    println!("  HyperAgent — Universal AI Agent (CLI)");
                     println!("  ───────────────────────────────────────");
                     println!("  /exit, /quit       Exit the REPL");
-                    println!("  /mode <mode>       Switch LLM tone (ask/code/debug/architect/general)");
+                    println!("  /mode <mode>       Switch LLM tone");
+                    println!("                     general    universal agent (default)");
+                    println!("                     ask        concise Q&A");
+                    println!("                     code       technical with project context");
+                    println!("                     debug      root-cause focused");
+                    println!("                     architect  design without implementation");
                     println!("  /mode              Show current mode");
                     println!("  /clear, /cls       Clear screen");
                     println!("  /help              Show this help");
@@ -459,6 +467,83 @@ pub async fn run_repl() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Heuristic question detector — does this prompt look like a question
+/// the LLM can answer from general knowledge (no project context needed)?
+///
+/// Returns `true` for prompts that are clearly questions, not commands:
+///   * Ended with a question mark (? / ? / ?)
+///   * Started with a question word (what/how/why/where/can/.../什么是/怎么/...)
+///
+/// Why this matters: a prompt like "What is JSON?" should be answered
+/// instantly from general knowledge, not trigger a 30s project tree
+/// walk just because the substring ".json" appears. Likewise "What is
+/// a function?" should not match the `function` dev keyword. The question
+/// detector is a coarse filter applied to *weak* signals only — strong
+/// signals (fenced code blocks, imperative verbs) still override it.
+fn looks_like_question(lower: &str) -> bool {
+    // Ends with a question mark (ASCII, full-width, CJK)
+    if let Some(last) = lower.chars().last() {
+        if last == '?' || last == '？' || last == '？' {
+            return true;
+        }
+    }
+    // Starts with a question word (English or Chinese)
+    let starters: &[&str] = &[
+        // English — what / how / why / when / where / which / who / whose
+        "what ", "what's", "whats ", "what is", "what are", "what does", "what do",
+        "what can", "what should", "what would", "what will",
+        "how ", "how's", "hows ", "how is", "how are", "how does", "how do",
+        "how can", "how should", "how would", "how to", "how come",
+        "why ", "why's", "whys ", "why is", "why are", "why does", "why do",
+        "when ", "when is", "when does", "when did", "when will",
+        "where ", "where is", "where are", "where does", "where do",
+        "which ", "which is", "which are",
+        "who ", "who is", "who are", "who was",
+        "whose ", "whose is",
+        // English — modal / copular
+        "can ", "can i", "can you", "can we",
+        "could ", "could i", "could you",
+        "would ", "would you", "would it",
+        "should ", "should i", "should we",
+        "will ", "will i", "will you",
+        "is ", "is it", "is there", "is this", "is the",
+        "are ", "are there", "are you", "are these",
+        "was ", "was it", "was the",
+        "were ", "were there",
+        "do ", "do i", "do you", "do we",
+        "does ", "does it", "does the",
+        "did ", "did i", "did you", "did the",
+        // English — request for explanation
+        "tell me ", "tell me about",
+        "explain ", "describe ", "introduce ", "summarize ",
+        "define ", "what's the difference", "what is the difference",
+        "meaning of ", "how come ",
+        // Chinese
+        "什么是", "什么是 ", "怎么", "怎么 ", "为什么",
+        "如何", "如何 ", "介绍", "解释", "讲讲", "说明",
+        "总结", "描述", "定义", "区别",
+        "能否", "可以", "可不可以",
+    ];
+    for s in starters {
+        if lower.starts_with(s) {
+            return true;
+        }
+    }
+    // Common Chinese question patterns that don't have to be at the start:
+    // "X 是什么" / "X 怎么样" / "X 怎么办" / "X 区别" etc.
+    let anywhere: &[&str] = &[
+        "是什么", "是什么?", "是什么？",  // X 是什么
+        "怎么样", "怎么办", "如何做",
+        "有什麼", "啥是", "啥意思",
+    ];
+    for s in anywhere {
+        if lower.contains(s) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Heuristic classifier: does this prompt need the project index, or can
 /// the LLM answer it directly from its own knowledge?
 ///
@@ -471,9 +556,18 @@ pub async fn run_repl() -> anyhow::Result<()> {
 /// "refactor the UserService to use async/await" should still trigger
 /// the full index + Orchestrator pipeline.
 ///
-/// This is intentionally simple and conservative. If it's ambiguous,
-/// treat it as Q&A — the user can prefix with `/code` to force the
-/// code path, or `/reindex` to pre-warm the cache.
+/// Signal strength is explicit:
+///   * STRONG signals always trigger coding — even in questions:
+///     fenced code blocks, backticked code symbols, imperative verbs
+///     (implement, refactor, fix, add, "实现", "修复", etc.). These mean
+///     the user wants the agent to DO something.
+///   * WEAK signals only trigger when the prompt is NOT a question:
+///     file extensions, dev commands, dev keywords (fn/struct/class).
+///     "What is JSON?" / "What is a function?" should not match these
+///     even though the substrings ".json" / " function " are present.
+///
+/// If it's ambiguous, treat it as Q&A — the user can prefix with
+/// `/code` to force the code path, or `/reindex` to pre-warm the cache.
 fn looks_like_coding_task(prompt: &str) -> bool {
     let p = prompt.trim();
     if p.is_empty() {
@@ -481,16 +575,66 @@ fn looks_like_coding_task(prompt: &str) -> bool {
     }
     let lower = p.to_lowercase();
 
-    // Strong signal 1: code blocks (fenced ``` or inline backticks with
-    // a function call / path / namespace inside).
+    // ── STRONG signals: always indicate coding task ──
+    // These override the question filter below because they mean the
+    // user wants the agent to DO something, not just talk about code.
+
+    // 1. Fenced code blocks (```rust ... ```).
     if p.contains("```") {
         return true;
     }
+    // 2. Inline backticks with code-like content (function call / path / namespace).
     if p.contains('`') && (p.contains('(') || p.contains("::") || p.contains('/')) {
         return true;
     }
 
-    // Strong signal 2: explicit file path references to source files.
+    // 3. Imperative verbs targeting code — word-boundary matched to avoid
+    //    false positives like "fixed" (past tense) or "prefix" (substring).
+    let coding_verbs: &[&str] = &[
+        // Chinese
+        "实现", "写一个", "写个", "写一段", "加上", "添加", "新增",
+        "修改", "改成", "改为", "删除", "移除", "去掉", "删掉",
+        "重构", "重写", "优化", "调整", "改造", "改写",
+        "修复", "修一下", "修这个", "修好", "解决", "排查",
+        "创建", "新建", "建一个", "建个",
+        "导入", "引用", "引入", "封装", "抽象", "提取",
+        "补全", "补上", "写完",
+        "把 ", "将 ", "把代码", "把函数", "把这段",
+        // English
+        "implement", "refactor", "rewrite", "optimize", "fix",
+        "add a", "add the", "add this", "add an",
+        "remove the", "remove this", "remove a", "remove an",
+        "create a", "create the", "create an",
+        "update the", "update this", "update a",
+        "patch the", "patch this",
+        "make it", "make the", "turn it", "turn the",
+        "rename", "extract", "inline", "wrap",
+        "migrate", "port", "convert to", "upgrade",
+        "write a", "write the", "write this", "write an",
+        "edit the", "edit this", "edit a",
+        "modify the", "modify this",
+    ];
+    for verb in coding_verbs {
+        if let Some(idx) = lower.find(verb) {
+            let before_ok = idx == 0
+                || !lower.as_bytes()[idx - 1].is_ascii_alphanumeric();
+            let after_ok = idx + verb.len() >= lower.len()
+                || !lower.as_bytes()[idx + verb.len()].is_ascii_alphanumeric()
+                || lower.as_bytes()[idx + verb.len()] == b' ';
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+    }
+
+    // ── WEAK signals: skip if the prompt is a question ──
+    // "What is JSON?" / "What is a function?" / "How does cargo build work?"
+    // are general-knowledge Q&A, not project work. Project scan is wasted time.
+    if looks_like_question(&lower) {
+        return false;
+    }
+
+    // 4. Source file extensions.
     const CODE_EXTS: &[&str] = &[
         ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
         ".go", ".java", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
@@ -509,59 +653,16 @@ fn looks_like_coding_task(prompt: &str) -> bool {
         return true;
     }
 
-    // Strong signal 3: imperative verbs that mean "do something to the code".
-    // Match as a word-starting prefix to avoid false positives like
-    // "fixed" appearing in normal text.
-    let coding_verbs: &[&str] = &[
-        // Chinese
-        "实现", "写一个", "写个", "写一段", "加上", "添加", "新增",
-        "修改", "改成", "改为", "改为", "改成", "改成", "改成",
-        "删除", "移除", "去掉", "删掉",
-        "重构", "重写", "优化", "调整", "改造", "改成", "改写",
-        "修复", "修一下", "修这个", "修好", "解决", "排查",
-        "创建", "新建", "建一个", "建个",
-        "导入", "引用", "引入", "封装", "抽象", "提取",
-        "补全", "补上", "加上", "写完",
-        "把 ", "将 ", "把代码", "把函数", "把这段",
-        // English
-        "implement", "refactor", "rewrite", "optimize", "fix",
-        "add a", "add the", "add this", "add an",
-        "remove the", "remove this", "remove a", "remove an",
-        "create a", "create the", "create an",
-        "update the", "update this", "update a",
-        "patch the", "patch this",
-        "make it", "make the", "turn it", "turn the",
-        "rename", "extract", "inline", "wrap",
-        "migrate", "port", "convert to", "upgrade",
-        "write a", "write the", "write this", "write an",
-        "edit the", "edit this", "edit a",
-        "modify the", "modify this",
-    ];
-    // For each verb, check if it appears as a word-starting token
-    // (preceded by start-of-string, whitespace, or punctuation).
-    for verb in coding_verbs {
-        if let Some(idx) = lower.find(verb) {
-            let before_ok = idx == 0
-                || !lower.as_bytes()[idx - 1].is_ascii_alphanumeric();
-            let after_ok = idx + verb.len() >= lower.len()
-                || !lower.as_bytes()[idx + verb.len()].is_ascii_alphanumeric()
-                || lower.as_bytes()[idx + verb.len()] == b' ';
-            if before_ok && after_ok {
-                return true;
-            }
-        }
-    }
-
-    // Strong signal 4: dev commands / build tools mentioned as actions.
+    // 5. Dev commands (only when not asking about them).
     let dev_cmds: &[&str] = &[
         "cargo build", "cargo test", "cargo run", "cargo check",
         "cargo install", "cargo add", "cargo fmt", "cargo clippy",
-        "npm install", "npm run", "npm test", "npm i ", "pnpm install", "pnpm add",
+        "npm install", "npm run", "npm test", "pnpm install", "pnpm add",
         "yarn add", "yarn install", "yarn run",
         "go build", "go test", "go run", "go mod",
-        "make ", "cmake ", "docker ", "kubectl ",
+        "cmake ", "docker ", "kubectl ",
         "git commit", "git push", "git merge", "git rebase", "git checkout",
-        "pytest", "jest ", "mocha", "rspec", "xcodebuild",
+        "pytest", "rspec", "xcodebuild",
         "pip install", "pip3 install",
     ];
     for cmd in dev_cmds {
@@ -570,12 +671,12 @@ fn looks_like_coding_task(prompt: &str) -> bool {
         }
     }
 
-    // Strong signal 5: "in <file>" / "在 <file> 中" patterns.
+    // 6. "in <file>" / "在 <file> 中" patterns.
     let in_file_patterns: &[&str] = &[
         " in src/", " in tests/", " in lib/", " in app/",
         " in the file", " in the code", " in the repo", " in this file",
         " in this repo", " in the project",
-        "在 src", "在 .", "在文件", "在代码", "在项目",
+        "在 src", "在文件", "在代码", "在项目",
         "在 main.", "在 lib.", "在 index.", "在 app.",
     ];
     for pat in in_file_patterns {
@@ -584,13 +685,13 @@ fn looks_like_coding_task(prompt: &str) -> bool {
         }
     }
 
-    // Strong signal 6: code-construction keywords (function/class names in
-    // dev context). Heavier weight than plain mentions.
+    // 7. Code-construction keywords (dev context) — heavier weight than
+    //    plain mentions. Drop "let"/"var" to avoid false positives in
+    //    natural language ("let me think", "let it be").
     let dev_keywords: &[&str] = &[
-        " fn ", " struct ", " enum ", " trait ", " impl ",
+        " fn ", " struct ", " enum ", " trait ", " impl ", " pub fn",
         " class ", " def ", " function ", " method ",
-        " const ", " let ", " var ", " pub fn",
-        " interface ", " type ", " module ",
+        " interface ",
     ];
     for kw in dev_keywords {
         if lower.contains(kw) {
@@ -743,11 +844,14 @@ async fn run_prompt(
     }
 }
 
-/// Direct LLM chat for ask / general — no project scan, no orchestrator.
+/// Direct LLM chat for non-coding prompts (ask / general) — no project
+/// scan, no orchestrator. This is the fast path: instant answer from
+/// the LLM's general knowledge + conversation history.
 ///
-/// We keep the system prompt intentionally short and mode-aware. The LLM
-/// is told it's answering from general knowledge (and the running
-/// conversation) — NOT from any code index.
+/// The system prompt is **mode-aware but always universal-agent framed**:
+/// HyperAgent is a versatile assistant capable of ANY task, not just
+/// coding. The mode only adjusts tone (ask = concise Q&A,
+/// general = full versatility, etc.).
 async fn run_passthrough_chat(
     prompt: &str,
     _dir: &Path,
@@ -757,27 +861,52 @@ async fn run_passthrough_chat(
     start: Instant,
 ) -> Option<String> {
     let system_prompt = match mode {
-        "ask" => "You are HyperAgent's ask mode — a helpful assistant.\n\
-                  Answer the user's question concisely and accurately.\n\
+        "ask" => "You are HyperAgent — a universal AI assistant (capable of \
+                  any task, not just coding). The user has a question — \
+                  answer it concisely and accurately.\n\
+                  You handle: general knowledge, programming concepts, \
+                  explanations, brainstorming, math, language, science, \
+                  history, advice, planning, translation.\n\
                   Use the conversation history for context.\n\
                   Format code with ```language```.\n\
                   Answer in the same language as the question.\n\
                   Rules:\n\
                   - Be concise but complete\n\
-                  - Reference prior turns when relevant\n\
-                  - Don't propose file edits — this is a read-only chat",
-        "general" => "You are HyperAgent in general mode — a versatile AI assistant.\n\
-                      Handle any task: coding, writing, analysis, translation,\n\
-                      brainstorming, research, math, general knowledge.\n\
+                  - Don't claim to have read project files — this is chat-only\n\
+                  - For tasks that need project context, suggest /code <prompt>",
+        "general" => "You are HyperAgent — a versatile AI agent capable of ANY task.\n\
+                      You handle: coding, research, writing, data analysis, \
+                      translation, brainstorming, web search, API testing, \
+                      file operations, math, science, history, language, \
+                      planning, and more.\n\
                       Use the conversation history for context.\n\
                       Format code with ```language```.\n\
                       Answer in the same language as the question.\n\
                       Rules:\n\
                       - Be helpful, concise, and accurate\n\
                       - For code questions, give runnable examples\n\
-                      - If the user asks for file edits, suggest commands but\n\
-                        do not claim to have modified anything",
-        _ => "You are HyperAgent. Answer concisely in the same language as the question.",
+                      - Don't claim to have read project files — this is chat-only\n\
+                      - For tasks that need project context, suggest /code <prompt>\n\
+                      - For tasks that need tools (web search, file ops), suggest\n\
+                        /mode general + a fresh prompt, or use the orchestrator pipeline",
+        "code" => "You are HyperAgent in code mode — focused on code Q&A.\n\
+                   Answer the user's coding question concisely. Use ```language``` for code.\n\
+                   Don't claim to have read project files — for project-aware answers, the\n\
+                   user should use /code <prompt> to force the full pipeline.\n\
+                   Answer in the same language as the question.",
+        "debug" => "You are HyperAgent in debug mode — root-cause focused.\n\
+                    For 'why is X failing?' questions, ask for the exact error and\n\
+                    minimal reproduction before guessing. Suggest using /code <prompt>\n\
+                    to load the project index for evidence-based debugging.\n\
+                    Format code with ```language```. Answer in the user's language.",
+        "architect" => "You are HyperAgent in architect mode — design-focused.\n\
+                        Discuss trade-offs, alternatives, and patterns. Do NOT write\n\
+                        implementation code unless explicitly asked. For project-aware\n\
+                        recommendations, suggest /code <prompt>.\n\
+                        Answer in the user's language.",
+        _ => "You are HyperAgent — a universal AI agent (any task, not just coding).\n\
+              Answer concisely in the same language as the question. Format code\n\
+              with ```language```. For project-aware tasks, suggest /code <prompt>.",
     }
     .to_string();
 
@@ -955,6 +1084,139 @@ mod tests {
     fn test_looks_like_coding_task_cargo_toml_mention() {
         assert!(looks_like_coding_task("update Cargo.toml"));
         assert!(looks_like_coding_task("edit pyproject.toml"));
+    }
+
+    // ── looks_like_question ────────────────────────────────
+
+    #[test]
+    fn test_looks_like_question_question_mark() {
+        assert!(looks_like_question("what is rust?"));
+        assert!(looks_like_question("how does it work?"));
+        assert!(looks_like_question("can you explain?"));
+        assert!(looks_like_question("真的吗？"));
+        assert!(looks_like_question("rust是什么?"));
+    }
+
+    #[test]
+    fn test_looks_like_question_english_starters() {
+        assert!(looks_like_question("what is rust"));
+        assert!(looks_like_question("how does it work"));
+        assert!(looks_like_question("why is the sky blue"));
+        assert!(looks_like_question("when did it happen"));
+        assert!(looks_like_question("where is the file"));
+        assert!(looks_like_question("which is better"));
+        assert!(looks_like_question("who wrote this"));
+        assert!(looks_like_question("can you help"));
+        assert!(looks_like_question("could you explain"));
+        assert!(looks_like_question("would you mind"));
+        assert!(looks_like_question("should we use it"));
+        assert!(looks_like_question("is it true"));
+        assert!(looks_like_question("are you sure"));
+        assert!(looks_like_question("do you know"));
+        assert!(looks_like_question("does it work"));
+        assert!(looks_like_question("tell me about rust"));
+        assert!(looks_like_question("explain the borrow checker"));
+        assert!(looks_like_question("describe the architecture"));
+        assert!(looks_like_question("summarize the document"));
+        assert!(looks_like_question("define a closure"));
+    }
+
+    #[test]
+    fn test_looks_like_question_chinese_starters() {
+        assert!(looks_like_question("什么是 rust"));
+        assert!(looks_like_question("怎么写代码"));
+        assert!(looks_like_question("为什么 rust 这么快"));
+        assert!(looks_like_question("如何实现闭包"));
+        assert!(looks_like_question("介绍 rust 语言"));
+        assert!(looks_like_question("解释一下什么是函数"));
+        assert!(looks_like_question("讲讲 rust 的所有权"));
+        assert!(looks_like_question("总结一下这个项目"));
+        assert!(looks_like_question("json 是什么"));
+    }
+
+    #[test]
+    fn test_looks_like_question_not_a_question() {
+        assert!(!looks_like_question("hello"));
+        assert!(!looks_like_question("update Cargo.toml"));
+        assert!(!looks_like_question("implement a function"));
+        assert!(!looks_like_question("fix the bug"));
+        assert!(!looks_like_question("rewrite the parser"));
+        assert!(!looks_like_question("add a new feature"));
+        assert!(!looks_like_question("remove the old method"));
+        assert!(!looks_like_question("create a new file"));
+    }
+
+    // ── looks_like_coding_task: question filter (regression tests) ────
+    // These are the cases that previously caused the REPL to scan the
+    // project instead of answering a plain question.
+
+    #[test]
+    fn test_looks_like_coding_task_question_with_extension() {
+        // Asking about a file extension is Q&A, not a project task.
+        assert!(!looks_like_coding_task("what is .json?"));
+        assert!(!looks_like_coding_task("what is .vue?"));
+        assert!(!looks_like_coding_task("explain CSS to me"));
+        assert!(!looks_like_coding_task("what is the .toml format?"));
+        assert!(!looks_like_coding_task("tell me about HTML"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_question_with_dev_keyword() {
+        // "function", "class", "method" are general concepts, not project work.
+        assert!(!looks_like_coding_task("what is a function?"));
+        assert!(!looks_like_coding_task("what is a class?"));
+        assert!(!looks_like_coding_task("what is a method?"));
+        assert!(!looks_like_coding_task("explain what struct means"));
+        assert!(!looks_like_coding_task("what is an enum?"));
+        assert!(!looks_like_coding_task("how do traits work?"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_question_with_dev_command() {
+        // Asking about a dev tool is Q&A, not "go run it".
+        assert!(!looks_like_coding_task("what does cargo build do?"));
+        assert!(!looks_like_coding_task("how do I run npm install?"));
+        assert!(!looks_like_coding_task("explain cargo test"));
+        assert!(!looks_like_coding_task("what is git commit?"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_chinese_questions() {
+        // Chinese questions with file/keyword mentions should NOT trigger scan.
+        assert!(!looks_like_coding_task("什么是 JSON"));
+        assert!(!looks_like_coding_task("解释一下什么是闭包"));
+        assert!(!looks_like_coding_task("rust 是什么语言"));
+        assert!(!looks_like_coding_task("什么是 cargo build"));
+        assert!(!looks_like_coding_task("介绍 .vue 文件"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_imperative_in_question_still_triggers() {
+        // Strong signals (imperative verbs) override the question filter —
+        // "how do I refactor X?" still means "refactor X", not "explain refactoring".
+        assert!(looks_like_coding_task("how do I implement this?"));
+        assert!(looks_like_coding_task("can you refactor the code?"));
+        assert!(looks_like_coding_task("could you fix the bug?"));
+        assert!(looks_like_coding_task("how do I refactor UserService?"));
+        assert!(looks_like_coding_task("怎么实现一个函数?"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_non_question_with_weak_signals() {
+        // Non-questions still trigger via weak signals.
+        assert!(looks_like_coding_task("update Cargo.toml"));
+        assert!(looks_like_coding_task("use .vue components"));
+        assert!(looks_like_coding_task("run cargo build"));
+        assert!(looks_like_coding_task("npm install is failing"));
+        assert!(looks_like_coding_task("I need a function to do X"));
+        assert!(looks_like_coding_task("create struct User"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_code_fence_still_triggers_in_question() {
+        // Even if phrased as a question, a fenced code block is unambiguous.
+        assert!(looks_like_coding_task("what's wrong with this? ```rust\nfn x(){}\n```"));
+        assert!(looks_like_coding_task("why does this fail? ```python\nprint(1)\n```"));
     }
 
     // ── get_memory_count ──────────────────────────────────────
