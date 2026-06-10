@@ -182,6 +182,7 @@ impl MemoryLayer {
             MemoryType::Decision => MemoryLayer::Policy,
             MemoryType::BugFix => MemoryLayer::Policy,
             MemoryType::Learned => MemoryLayer::Trace,
+            MemoryType::Correction => MemoryLayer::Policy,
         }
     }
 }
@@ -240,6 +241,7 @@ impl std::fmt::Display for MemoryType {
             MemoryType::Decision => write!(f, "decision"),
             MemoryType::BugFix => write!(f, "bug_fix"),
             MemoryType::Learned => write!(f, "learned"),
+            MemoryType::Correction => write!(f, "correction"),
             MemoryType::Ephemeral => write!(f, "ephemeral"),
         }
     }
@@ -1689,6 +1691,18 @@ impl QueryCache {
 // ═══════════════════════════════════════════════
 
 /// Scrub an LLM response to remove any leaked memory context artifacts.
+/// Resolves the default location for the agent's SQLite memory database.
+///
+/// Uses `~/.hyperagent/memory.db` (creating the directory if necessary).
+pub fn default_db_path() -> std::path::PathBuf {
+    let base = dirs_next::data_dir()
+        .or_else(dirs_next::home_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let dir = base.join(".hyperagent");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("memory.db")
+}
+
 /// Prevents the model from accidentally echoing `<memory-context>` blocks,
 /// system notes, or memory entry lines back to the user.
 ///
@@ -1910,7 +1924,7 @@ impl MemoryManager {
             _ => (content.to_string(), 0.0),
         };
 
-        let entry = MemoryEntry {
+        let mut entry = MemoryEntry {
             id: Uuid::new_v4().to_string(),
             agent_id: self.agent_id.clone(),
             session_id: self.session_id.clone(),
@@ -1929,7 +1943,7 @@ impl MemoryManager {
         };
 
         let id = entry.id.clone();
-        self.store.insert(entry)?;
+        self.store.insert(entry.clone())?;
 
         // Auto-prune: when configured, check count after insert
         // and run forget_below if the threshold is crossed. Uses the
@@ -1953,7 +1967,7 @@ impl MemoryManager {
             && self.container_tag != "_global"
         {
             let mut global_entry = entry.clone();
-            global_entry.container_tag = Some("_global".to_string());
+            global_entry.container_tag = "_global".to_string();
             // Prefix content with source container for traceability
             global_entry.content = format!(
                 "[from:{}] {}",
@@ -2078,8 +2092,31 @@ impl MemoryManager {
     }
 
     /// Access the underlying memory store (for low-level operations).
-    pub fn store_ref(&self) -> &dyn MemoryStore {
-        self.store.as_ref()
+    /// Search global (cross-project) memories.
+        /// Returns memories from all agents/projects, useful for shared knowledge.
+        pub fn global_search(
+            &self,
+            query: &str,
+            limit: usize,
+        ) -> anyhow::Result<Vec<crate::memory::MemoryEntry>> {
+            // Global search ignores the current container filter
+            self.store.query(&crate::memory::MemoryQuery {
+                text: query.to_string(),
+                limit,
+                ..Default::default()
+            })
+        }
+
+    /// Enable auto-promotion of frequently-accessed memories to "global" status.
+    /// `threshold` is the importance score (0.0-1.0) above which memories get promoted.
+    pub fn with_global_promote(mut self, threshold: f64) -> Self {
+        self.global_promote_threshold = threshold.clamp(0.0, 1.0) as f32;
+        self
+    }
+
+    /// Get the global promotion threshold.
+    pub fn global_promote_threshold(&self) -> f32 {
+        self.global_promote_threshold
     }
 
     /// End a session: fires SessionEnd event. Call when the agent switches
@@ -2262,17 +2299,30 @@ impl MemoryManager {
             .delete_older_than(&self.container_tag, days, min_importance)
     }
 
-    /// Backwards-compatible alias of prune() — for old callers / docs.
-    #[deprecated(since = "0.2.0", note = "use forget_below or prune instead")]
-    pub fn forget_old(&self) -> anyhow::Result<()> {
-        // intentionally a no-op
-        Ok(())
-    }
-
-    /// Forget everything that scores below the threshold (auto-decay)
-
+    /// Access the underlying memory store (for low-level operations).
     pub fn store(&self) -> &dyn MemoryStore {
         &*self.store
+    }
+
+    /// Access the underlying memory store (for low-level operations).
+    /// Alias for `store()` — preserves API symmetry with delete()/query() methods.
+    pub fn store_ref(&self) -> &dyn MemoryStore {
+        &*self.store
+    }
+
+    /// Search global (cross-project) memories.
+    /// Returns memories from all agents/projects, useful for shared knowledge.
+    pub fn global_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<crate::memory::MemoryEntry>> {
+        // Global search ignores the current container filter
+        self.store.query(&crate::memory::MemoryQuery {
+            text: query.to_string(),
+            limit,
+            ..Default::default()
+        })
     }
 
     /// Dreaming — offline memory consolidation.

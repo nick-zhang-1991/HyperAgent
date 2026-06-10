@@ -87,7 +87,7 @@ pub async fn run(prompt: &str, agents: usize, dir: &PathBuf) -> Result<()> {
 
 /// Decompose a complex task into sub-tasks using the LLM
 async fn decompose_task(prompt: &str, num_agents: usize) -> Result<Vec<SubTask>> {
-    let config = crate::config::Config::load()
+    let config = crate::config::AppConfig::load()
         .context("Failed to load config")?;
 
     let provider = crate::llm::LlmProvider::new(

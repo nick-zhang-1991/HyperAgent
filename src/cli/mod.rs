@@ -10,12 +10,13 @@
 //!   hyper agents           - List/run agents
 
 use anyhow::Result;
-use clap::{Parser, Subcommand, CommandFactory};
+use clap::{Parser, Subcommand, CommandFactory, Args, ValueEnum};
 use clap_complete::Shell;
 use std::path::{Path, PathBuf};
 
 use crate::agent::orchestrator::Orchestrator;
 use crate::hooks::HookRegistry;
+use crate::i18n;
 use crate::index::HyperIndex;
 use crate::llm::LlmProvider;
 use crate::memory::{MemoryManager, SqliteMemoryStore};
@@ -164,6 +165,18 @@ pub enum Commands {
 
     /// Run system diagnostics
     Doctor,
+
+    /// Manage skill marketplace
+    #[clap(subcommand)]
+    Skill(SkillAction),
+
+    /// Agent feedback for self-improvement
+    #[clap(subcommand)]
+    Feedback(FeedbackAction),
+
+    /// Manage global cross-project memory
+    #[clap(subcommand)]
+    Global(GlobalAction),
 
     /// Run a memory+retrieval benchmark
     #[clap(subcommand)]
@@ -600,6 +613,16 @@ pub enum SessionAction {
         #[arg(short)]
         output: Option<PathBuf>,
     },
+    /// Share a session via a one-time token
+    Share {
+        /// Session ID (or "last")
+        id: String,
+    },
+    /// Join (load) a session from a shared token
+    Join {
+        /// Share token
+        token: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -688,10 +711,8 @@ pub enum McpAction {
     },
 }
 
-#[derive(Subcommand, Debug)]
 #[derive(Subcommand, Debug, Clone)]
 /// Skill marketplace actions
-#[derive(Subcommand, Debug, Clone)]
 pub enum SkillAction {
     /// Install a skill from a URL (GitHub Gist, raw URL)
     Install {
@@ -730,6 +751,7 @@ pub enum FeedbackAction {
 }
 
 /// Global memory actions
+#[derive(Subcommand, Debug, Clone)]
 pub enum GlobalAction {
     /// List all global memories (cross-project knowledge)
     List {
@@ -865,19 +887,35 @@ impl Cli {
 
             Some(Commands::Doctor) => self.run_doctor().await,
 
-            Some(Commands::Skill { action }) => {
+            Some(Commands::Skill(action)) => {
                 self.handle_skill(action).await?;
                 Ok(())
             }
-            Some(Commands::Feedback { action }) => {
+            Some(Commands::Feedback(action)) => {
                 self.handle_feedback(action).await?;
                 Ok(())
             }
-            Some(Commands::Eval { json }) => {
-                let report = crate::eval::run_all(&self.project_dir(), *json)?;
-                if *json {
-                    println!("{}", serde_json::to_string_pretty(&report)?);
+            Some(Commands::Eval { task, list }) => {
+                if *list {
+                    let tasks = crate::eval::builtin_tasks();
+                    crate::eval::list_tasks(&tasks);
+                    Ok(())
+                } else if let Some(t) = task {
+                    // Run specific task by name filter
+                    let tasks = crate::eval::builtin_tasks()
+                        .into_iter()
+                        .filter(|task| task.id == t || task.name.contains(t))
+                        .collect::<Vec<_>>();
+                    crate::eval::run_all_benchmarks(&tasks, &self.project_dir())?;
+                    Ok(())
+                } else {
+                    let tasks = crate::eval::builtin_tasks();
+                    crate::eval::run_all_benchmarks(&tasks, &self.project_dir())?;
+                    Ok(())
                 }
+            }
+            Some(Commands::Global(action)) => {
+                self.handle_global(action).await?;
                 Ok(())
             }
             Some(Commands::Bench(action)) => return self.handle_bench(action).await,
@@ -1743,19 +1781,18 @@ network = "Deny"
             .map_or(false, |o| o.status.success());
         println!("  {} Docker: {}",
             if docker_ok { "✅" } else { "ℹ️ " },
-            if docker_ok { "Available for sandboxed execution".into() }
-            else { "Not found — sandbox mode disabled (optional)".into() }
+            if docker_ok { "Available for sandboxed execution" }
+            else { "Not found — sandbox mode disabled (optional)" }
         );
 
         // Check config
-        let config_ok = crate::config::Config::load().is_ok();
-        let provider_configured = crate::config::Config::load().ok()
-            .map(|c| !c.llm.providers.is_empty())
-            .unwrap_or(false);
+        let config = crate::config::AppConfig::load();
+        let config_ok = config.config_version > 0; // any non-default = loaded
+        let provider_configured = !config.providers.is_empty();
         println!("  {} Configuration: {}",
             if provider_configured { "✅" } else { "⚠️" },
-            if provider_configured { "LLM provider configured".into() }
-            else { "No LLM provider configured — run `hyper config` to set up".into() }
+            if provider_configured { "LLM provider configured" }
+            else { "No LLM provider configured — run `hyper config` to set up" }
         );
 
         // Check current directory is a project
@@ -1769,9 +1806,9 @@ network = "Deny"
 
         println!();
         println!("  📖  Quick start:");
-        println!("     hyper run "explain this project"   — Ask about code");
-        println!("     hyper run "add a test for X"       — Generate code");
-        println!("     hyper run --mode ask "how does X"  — Ask-only mode");
+        println!("     hyper run \"explain this project\"   — Ask about code");
+        println!("     hyper run \"add a test for X\"       — Generate code");
+        println!("     hyper run --mode ask \"how does X\"  — Ask-only mode");
         println!("     hyper doctor                       — Detailed diagnostics");
         println!("     hyper session save                 — Save session for later");
         println!();

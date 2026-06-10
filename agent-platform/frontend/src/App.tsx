@@ -2,10 +2,13 @@ import './index.css';
 import AuthPage from './AuthPage';
 import { useState, useEffect, useCallback } from 'react';
 
-// Auto-detect: use CN2 if accessing from remote, localhost if local
-const isRemote = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
-const API = isRemote ? `http://${window.location.hostname}:4000` : 'http://127.0.0.1:4000';
-const WS = 'ws://127.0.0.1:4000/api/ws';
+// Auto-detect API: relative for same-origin (domain deploy), absolute for local dev
+const API = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') 
+    ? 'http://127.0.0.1:4000' 
+    : '';  // same-origin: nginx proxies /api/ → backend
+const WS = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? 'ws://127.0.0.1:4000/api/ws'
+    : `wss://${window.location.hostname}/api/ws`;
 
 type T = Record<string,any>;
 

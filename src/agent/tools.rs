@@ -303,7 +303,7 @@ pub fn builtin_tool_definitions(mode: &str, with_memory: bool) -> Vec<ToolDefini
             function: ToolFunction {
                 name: "write_file".into(),
                 description: "Write content to a file in the project directory. Creates parent directories automatically. Use for saving reports, configs, scripts, or any generated content.".into(),
-                parameters: json!({
+                parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "Relative path within project root"},
@@ -317,7 +317,7 @@ pub fn builtin_tool_definitions(mode: &str, with_memory: bool) -> Vec<ToolDefini
             function: ToolFunction {
                 name: "http_request".into(),
                 description: "Send an HTTP request and get the response. Use to call APIs, check website status, download data, or test endpoints. Supports GET and POST.".into(),
-                parameters: json!({
+                parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "description": "Full URL to request"},

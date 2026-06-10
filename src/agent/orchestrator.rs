@@ -22,6 +22,7 @@ use crate::index::{FileContext, HyperIndex};
 use crate::llm::{ContentPart, LlmProvider, Message, ProviderPool};
 use crate::llm::provider::{ToolDefinition, ToolFunction};
 use crate::memory::{MemoryManager, MemoryType};
+use crate::i18n;
 
 use super::apply_agent::ApplyAgent;
 use super::review_agent::ReviewAgent;
@@ -372,7 +373,8 @@ impl Orchestrator {
 
         println!("\n🚀 {} {}", i18n::t("welcome_banner"), prompt);
         if !mem_context.is_empty() {
-            println!("   🧠 {}", i18n::t_with("cli_memories_saved", &[&total_memories.to_string()]));
+            println!("   🧠 {} ({})",
+                i18n::t_with("cli_memories_saved", &[&total_memories.to_string()]),
                 mem_context.matches('\n').count());
         }
         println!("   🎭 {}", i18n::t_with("cli_mode", &[&self.mode]));
@@ -756,7 +758,6 @@ impl Orchestrator {
                     }
                 }
             }
-        }
 
         // Record applied changes to memory
         self.record_memory(
@@ -1911,13 +1912,13 @@ impl Orchestrator {
         let system_prompt = format!(
             "You are HyperAgent — a versatile AI assistant capable of handling any task.\n\n\
             You have access to built-in tools:\n\
-            "- **web_search(query)**: Search the web for current information\n\
+            - **web_search(query)**: Search the web for current information\n\
             - **read_file(path)**: Read a file from the project directory\n\
             - **write_file(path, content)**: Save content to a file (reports, data, code)\n\
             - **run_bash(command)**: Execute a bash command\n\
             - **http_request(url)**: Call HTTP APIs, check status, fetch data\n\
             - **memory_search(query)**: Search persistent memory\n\
-            - **memory_add(content)**: Save a fact to memory
+            - **memory_add(content)**: Save a fact to memory\n\
             General guidelines:\n\
             - Use tools proactively when you need more information\n\
             - Be concise but thorough in your answers\n\
@@ -2256,7 +2257,7 @@ impl Orchestrator {
             let system_prompt = format!(
                 "You are HyperAgent — a versatile AI assistant completing a multi-step task.\n\n\
                 You have access to tools:\n\
-                "- **web_search(query)**: Search the web for current information\n\
+                - **web_search(query)**: Search the web for current information\n\
                 - **read_file(path)**: Read a file from the project directory\n\
                 - **write_file(path, content)**: Save content to a file (reports, data, code)\n\
                 - **run_bash(command)**: Execute a bash command\n\
@@ -2440,21 +2441,22 @@ impl Orchestrator {
                 if !global.is_empty() {
                     ctx.push_str("\n## Cross-Project Knowledge (applicable to any project)\n");
                     for g in &global {
-                        ctx.push_str(&format!("- {}\n", g.entry.content));
+                        ctx.push_str(&format!("- {}\n", g.content));
                     }
                 }
             }
             // Inject user feedback and corrections
             if let Ok(corrections) = mem.global_search("CORRECTION FEEDBACK", 5) {
+                let cutoff = chrono::Utc::now() - chrono::Duration::days(30);
                 let recent: Vec<_> = corrections.into_iter()
-                    .filter(|c| c.seconds_since_creation() < 86400 * 30) // last 30 days
+                    .filter(|c| c.created_at >= cutoff)
                     .take(3)
                     .collect();
                 if !recent.is_empty() {
                     ctx.push_str("\n## User Feedback (do NOT ignore)\n");
                     ctx.push_str("The user has previously corrected the agent. Follow these rules:\n");
                     for c in &recent {
-                        ctx.push_str(&format!("- {}\n", c.entry.content));
+                        ctx.push_str(&format!("- {}\n", c.content));
                     }
                 }
             }

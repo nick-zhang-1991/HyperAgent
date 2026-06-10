@@ -645,7 +645,7 @@ async fn run_prompt(
     // ── Fast path: question / chat / general knowledge ─────────
     if !is_coding {
         return run_passthrough_chat(
-            prompt, dir, mode, provider, conversation_history, start,
+            prompt, dir, mode, &provider, conversation_history, start,
         ).await;
     }
 
@@ -738,7 +738,7 @@ async fn run_prompt(
         // the passthrough chat so the user still gets an answer.
         eprintln!("  ℹ️  Falling back to direct LLM chat (no code index)");
         run_passthrough_chat(
-            prompt, dir, mode, provider, conversation_history, start,
+            prompt, dir, mode, &provider, conversation_history, start,
         ).await
     }
 }

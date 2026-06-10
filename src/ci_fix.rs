@@ -33,7 +33,7 @@ pub async fn run(log_path: Option<&Path>, branch: &str, push: bool) -> Result<()
         }
     };
 
-    println!("{}", i18n::t_with("ci_fix_read", &[("bytes", &ci_log.len().to_string())]));
+    println!("{}", i18n::t_with("ci_fix_read", &[&ci_log.len().to_string()]));
 
     // 2. Analyze with LLM
     let analysis = analyze_ci_failure(&ci_log).await?;
@@ -63,7 +63,7 @@ pub async fn run(log_path: Option<&Path>, branch: &str, push: bool) -> Result<()
                 .args(["push", "origin", branch])
                 .output().ok();
             if push_out.map_or(false, |o| o.status.success()) {
-                println!("{}", i18n::t_with("ci_fix_applied", &[("branch", branch)]));
+                println!("{}", i18n::t_with("ci_fix_applied", &[branch]));
                 println!("   Create a PR: gh pr create --fill");
             } else {
                 println!("⚠️  Commit created but push failed");
@@ -76,8 +76,8 @@ pub async fn run(log_path: Option<&Path>, branch: &str, push: bool) -> Result<()
 
 /// Use LLM to analyze CI log and identify the root cause
 async fn analyze_ci_failure(log: &str) -> Result<String> {
-    let config = crate::config::Config::load()?;
-    let pool = crate::llm::ProviderPool::new(&config.llm.providers)?;
+    let config = crate::config::AppConfig::load();
+    let pool = crate::llm::ProviderPool::new(&config.providers)?;
 
     let prompt = format!(
         "You are a CI failure analyzer. Given the following CI build log, identify:\n\
@@ -99,8 +99,8 @@ async fn analyze_ci_failure(log: &str) -> Result<String> {
 
 /// Apply the fix using HyperAgent's code generation
 async fn apply_fix(analysis: &str) -> Result<bool> {
-    let config = crate::config::Config::load()?;
-    let pool = crate::llm::ProviderPool::new(&config.llm.providers)?;
+    let config = crate::config::AppConfig::load();
+    let pool = crate::llm::ProviderPool::new(&config.providers)?;
 
     let fix_prompt = format!(
         "Based on this CI failure analysis, generate the exact code changes needed:\n\n{}\n\n\

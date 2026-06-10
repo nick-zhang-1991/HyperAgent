@@ -11,6 +11,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
@@ -19,7 +20,7 @@ use crate::{i18n, llm::Message};
 
 /// Shared application state
 struct AppState {
-    configs: Vec<crate::llm::pool::ProviderConfig>,
+    configs: Vec<crate::router::ProviderConfig>,
     sessions: Arc<Mutex<std::collections::HashMap<String, Vec<Message>>>>,
 }
 
@@ -79,7 +80,7 @@ async fn chat_handler(
 
     // Create provider for this request
     let provider = match crate::llm::LlmProvider::new(
-        config.model.as_deref().unwrap_or("gpt-4o"),
+        config.default_model.as_str(),
         &config.base_url,
         &config.api_key,
     ) {
@@ -249,10 +250,9 @@ async fn global_memory_handler(
                 Ok(items) => Json(serde_json::json!({
                     "ok": true,
                     "count": items.len(),
-                    "memories": items.iter().map(|sm| serde_json::json!({
-                        "content": sm.entry.content,
-                        "importance": sm.entry.importance,
-                        "score": sm.total_score,
+                    "memories": items.iter().map(|m| serde_json::json!({
+                        "content": m.content,
+                        "importance": m.importance,
                     })).collect::<Vec<_>>(),
                 })),
                 Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
@@ -295,11 +295,10 @@ async fn feedback_handler(
 }
 
 pub async fn start_server(port: u16, host: &str) -> anyhow::Result<()> {
-    let config = crate::config::Config::load()
-        .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+    let config = crate::config::AppConfig::load();
 
     let state = Arc::new(AppState {
-        configs: config.llm.providers,
+        configs: config.providers,
         sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
     });
 

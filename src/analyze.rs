@@ -72,13 +72,13 @@ pub fn run(root: &Path, fix: bool) -> Result<Vec<AnalysisIssue>> {
     // 3. Dead code detection (Tree-sitter)
     println!("   {}", i18n::t("analyze_dead_code"));
     let dead = detect_dead_code(root);
-    issues.extend(dead);
+    issues.extend(dead.clone());
     println!("      {} dead items found", dead.len());
 
     // 4. Complexity analysis
     println!("   {}", i18n::t("analyze_complexity"));
     let complex = detect_complexity(root);
-    issues.extend(complex);
+    issues.extend(complex.clone());
     println!("      {} complex functions found", complex.len());
 
     // Sort: Critical > Error > Warning > Info > Dead
@@ -91,7 +91,7 @@ pub fn run(root: &Path, fix: bool) -> Result<Vec<AnalysisIssue>> {
     if fix && !issues.is_empty() {
         println!("\n   {}", i18n::t("analyze_fixing"));
         let fixed = auto_fix(&issues, root)?;
-        println!("   {}", i18n::t_with("analyze_fixed", &[("count", &fixed.to_string())]));
+        println!("   {}", i18n::t_with("analyze_fixed", &[&fixed.to_string()]));
     }
 
     Ok(issues)
@@ -206,12 +206,12 @@ fn detect_dead_code(root: &Path) -> Vec<AnalysisIssue> {
 fn detect_complexity(root: &Path) -> Vec<AnalysisIssue> {
     let mut issues = Vec::new();
     // Check for large files (>1000 lines)
-    if let Ok(entries) = walkdir::WalkDir::new(root.join("src"))
+    let entries: Vec<_> = walkdir::WalkDir::new(root.join("src"))
         .max_depth(5)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
-        .collect::<Vec<_>>()
+        .collect();
     {
         for entry in entries {
             if let Ok(content) = std::fs::read_to_string(entry.path()) {

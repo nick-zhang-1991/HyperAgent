@@ -1,9 +1,10 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { useState } from 'react';
 import { tt, sl, al, gl } from './i18n';
-// Auto-detect: use CN2 if accessing from remote, localhost if local
-const isRemote = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
-const API = isRemote ? `http://${window.location.hostname}:4000` : 'http://127.0.0.1:4000';
+// Auto-detect API: relative for same-origin (domain deploy), absolute for local dev
+const API = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? 'http://127.0.0.1:4000'
+    : ''; // same-origin: nginx proxies /api/ → backend
 export default function AuthPage({ onAuth }) {
     const [mode, setMode] = useState('login');
     const [email, setEmail] = useState('');

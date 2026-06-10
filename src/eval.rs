@@ -13,12 +13,12 @@ use std::process::Command;
 use std::time::Instant;
 
 /// A benchmark task
-struct EvalTask {
-    id: &'static str,
-    name: &'static str,
-    category: &'static str,
-    prompt: &'static str,
-    check: fn(&PathBuf) -> Result<bool>,
+pub struct EvalTask {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub category: &'static str,
+    pub prompt: &'static str,
+    pub check: fn(&PathBuf) -> Result<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -170,7 +170,12 @@ fn print_report(report: &EvalReport) {
 }
 
 fn all_tasks() -> Vec<EvalTask> {
-        vec![
+    builtin_tasks()
+}
+
+/// Public: return the list of built-in benchmark tasks
+pub fn builtin_tasks() -> Vec<EvalTask> {
+    vec![
         // ── Code Generation ──
         EvalTask { id: "fib", name: "Fibonacci", category: "code-gen", prompt: "Write a Rust function fn fib(n: u64) -> u64 that returns the nth Fibonacci number iteratively. Include tests.", check: |dir| { let src = dir.join("src/lib.rs"); Ok(std::fs::read_to_string(&src).unwrap_or_default().contains("fn fib")) }, },
         EvalTask { id: "struct-new", name: "Struct with new()", category: "code-gen", prompt: "Create a struct Config with fields host:String, port:u16, debug:bool and implement Config::new() with defaults.", check: |dir| { let src = dir.join("src/lib.rs"); Ok(std::fs::read_to_string(&src).unwrap_or_default().contains("impl Config")) }, },
@@ -182,7 +187,6 @@ fn all_tasks() -> Vec<EvalTask> {
         EvalTask { id: "iterator", name: "Iterator methods", category: "performance", prompt: "Write a function that sums all even numbers in a Vec<i32> using iterator combinators (filter+sum) instead of a loop.", check: |dir| { Ok(std::fs::read_to_string(&dir.join("src/lib.rs")).unwrap_or_default().contains(".filter(")) }, },
         // ── Testing ──
         EvalTask { id: "test-mod", name: "Test module", category: "testing", prompt: "Create a module with a function add(a:i32,b:i32)->i32 and include a #[test] that verifies it works.", check: |dir| { Ok(std::fs::read_to_string(&dir.join("src/lib.rs")).unwrap_or_default().contains("#[test]")) }, },
-    ];
         EvalTask {
             id: "fibonacci",
             name: "Fibonacci function",
@@ -230,4 +234,93 @@ fn all_tasks() -> Vec<EvalTask> {
             },
         },
     ]
+}
+
+/// List available eval tasks to stdout (used by `hyper eval --list`)
+pub fn list_tasks(tasks: &[EvalTask]) {
+    println!("Available eval tasks ({}):\n", tasks.len());
+    let mut by_cat: std::collections::BTreeMap<&str, Vec<&EvalTask>> = std::collections::BTreeMap::new();
+    for t in tasks {
+        by_cat.entry(t.category).or_default().push(t);
+    }
+    for (cat, ts) in &by_cat {
+        println!("  [{}]", cat);
+        for t in ts {
+            println!("    - {} ({})", t.name, t.id);
+        }
+    }
+}
+
+/// Run a slice of eval tasks using the given binary (used by `hyper eval [task]`)
+pub fn run_all_benchmarks(tasks: &[EvalTask], binary: &std::path::Path) -> anyhow::Result<()> {
+    use std::process::Command;
+    use std::time::Instant;
+
+    let mut results = Vec::new();
+    println!("🧪 HyperAgent Eval — {} task(s)\n", tasks.len());
+
+    for (i, task) in tasks.iter().enumerate() {
+        print!("   [{}/{}] {} ... ", i + 1, tasks.len(), task.name);
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+
+        let tmp = std::env::temp_dir().join(format!("hyper-eval-{}", task.id));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp)?;
+        let start = Instant::now();
+        let output = Command::new(binary)
+            .args(["run", "--mode", "code", task.prompt])
+            .current_dir(&tmp)
+            .env("HYPER_NO_TELEMETRY", "1")
+            .output();
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+
+        let result = match output {
+            Ok(out) if out.status.success() => {
+                let passed = (task.check)(&tmp).unwrap_or(false);
+                EvalResult {
+                    task_id: task.id.to_string(),
+                    name: task.name.to_string(),
+                    category: task.category.to_string(),
+                    passed,
+                    duration_ms: elapsed_ms,
+                    error: None,
+                }
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                EvalResult {
+                    task_id: task.id.to_string(),
+                    name: task.name.to_string(),
+                    category: task.category.to_string(),
+                    passed: false,
+                    duration_ms: elapsed_ms,
+                    error: Some(stderr.lines().last().unwrap_or("unknown").to_string()),
+                }
+            }
+            Err(e) => EvalResult {
+                task_id: task.id.to_string(),
+                name: task.name.to_string(),
+                category: task.category.to_string(),
+                passed: false,
+                duration_ms: elapsed_ms,
+                error: Some(format!("Failed to run agent: {e}")),
+            },
+        };
+
+        if result.passed {
+            println!("✅ ({}ms)", elapsed_ms);
+        } else {
+            println!("❌ ({}ms){}", elapsed_ms, result.error.as_deref().map(|e| format!(" — {e}")).unwrap_or_default());
+        }
+        results.push(result);
+    }
+
+    let total = results.len();
+    let passed = results.iter().filter(|r| r.passed).count();
+    println!("\n   Total: {}/{} passed ({:.1}%)",
+        passed, total,
+        if total > 0 { passed as f64 / total as f64 * 100.0 } else { 0.0 });
+
+    Ok(())
 }

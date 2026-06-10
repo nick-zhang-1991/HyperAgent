@@ -1,4 +1,5 @@
 use crate::cli::*;
+use crate::i18n;
 
 impl Cli {
     pub(crate) async fn run_agent(
@@ -925,7 +926,7 @@ impl Cli {
                     }
                 }
             }
-            SessionAction::Export {SessionAction::Export { output } => {
+            SessionAction::Export { output } => {
                 let sessions = sm.list()?;
                 let json = serde_json::to_string_pretty(&sessions)?;
                 match output {
@@ -1398,6 +1399,153 @@ impl Cli {
                 } else {
                     crate::bench::print_report(&report);
                 }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn project_dir(&self) -> std::path::PathBuf {
+        match &self.command {
+            Some(crate::cli::Commands::Run { dir, .. }) => dir.clone(),
+            Some(crate::cli::Commands::Init { dir, .. }) => dir.clone(),
+            Some(crate::cli::Commands::Stats { dir }) => dir.clone(),
+            Some(crate::cli::Commands::Review { dir, .. }) => dir.clone(),
+            Some(crate::cli::Commands::Eval { .. }) => std::path::PathBuf::from("."),
+            Some(crate::cli::Commands::Commit { dir, .. }) => dir.clone(),
+            _ => std::path::PathBuf::from("."),
+        }
+    }
+
+    pub(crate) async fn handle_skill(&self, action: &SkillAction) -> Result<()> {
+        match action {
+            SkillAction::Install { url } => {
+                println!("📦 Installing skill from: {}", url);
+                println!("   Use `hyper skill install <path>` with a local file or URL");
+            }
+            SkillAction::List => {
+                println!("📚 Installed skills:");
+                if let Some(home) = dirs_next::home_dir() {
+                    let skills_dir = home.join(".hermes").join("skills");
+                    if skills_dir.exists() {
+                        if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+                            for entry in entries.flatten() {
+                                if entry.path().is_dir() {
+                                    println!("  • {}", entry.file_name().to_string_lossy());
+                                }
+                            }
+                        }
+                    } else {
+                        println!("  (none — skills directory not yet created)");
+                    }
+                }
+            }
+            SkillAction::Search { term } => {
+                println!("🔍 Searching community skill index for: {}", term);
+                println!("   (community index not yet wired — coming soon)");
+            }
+            SkillAction::Create { name } => {
+                let skill_name = name.clone().unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
+                        .unwrap_or_else(|| "my-skill".to_string())
+                });
+                let dir = dirs_next::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".hermes")
+                    .join("skills")
+                    .join(&skill_name);
+                std::fs::create_dir_all(&dir)?;
+                let template = format!(
+                    "# {} — description\n\n## When to use\nDescribe trigger conditions.\n\n## Steps\n1. First step.\n",
+                    skill_name
+                );
+                std::fs::write(dir.join("SKILL.md"), template)?;
+                println!("✨ Created skill template at {:?}", dir);
+                println!("   Edit SKILL.md and add steps.");
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn handle_feedback(&self, action: &FeedbackAction) -> Result<()> {
+        match action {
+            FeedbackAction::Good { reason } => {
+                println!("👍 Positive feedback recorded");
+                if !reason.is_empty() {
+                    println!("   Reasons: {}", reason.join(", "));
+                }
+                // Persist as a UserPreference memory
+                let db_path = crate::memory::default_db_path();
+                if let Ok(store) = crate::memory::SqliteMemoryStore::new(&db_path) {
+                    let mut mgr = crate::memory::MemoryManager::new(Box::new(store), "feedback");
+                    let text = format!("Positive feedback: {}", reason.join(" "));
+                    let _ = mgr.remember(&text, crate::memory::MemoryType::UserPreference);
+                }
+            }
+            FeedbackAction::Bad { reason } => {
+                println!("👎 Negative feedback recorded");
+                if !reason.is_empty() {
+                    println!("   Reasons: {}", reason.join(", "));
+                }
+                let db_path = crate::memory::default_db_path();
+                if let Ok(store) = crate::memory::SqliteMemoryStore::new(&db_path) {
+                    let mut mgr = crate::memory::MemoryManager::new(Box::new(store), "feedback");
+                    let text = format!("Negative feedback: {}", reason.join(" "));
+                    let _ = mgr.remember(&text, crate::memory::MemoryType::Correction);
+                }
+            }
+            FeedbackAction::List { limit } => {
+                let db_path = crate::memory::default_db_path();
+                match crate::memory::SqliteMemoryStore::new(&db_path) {
+                    Ok(store) => {
+                        let mgr = crate::memory::MemoryManager::new(Box::new(store), "feedback");
+                        let q = crate::memory::MemoryQuery {
+                            limit: *limit,
+                            ..Default::default()
+                        };
+                        match mgr.store().query(&q) {
+                            Ok(entries) => {
+                                println!("💬 Recent feedback ({}):", entries.len());
+                                for e in entries {
+                                    println!("  [{}] {}", e.memory_type, e.content);
+                                }
+                            }
+                            Err(err) => eprintln!("query failed: {err}"),
+                        }
+                    }
+                    Err(err) => eprintln!("could not open memory db: {err}"),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn handle_global(&self, action: &GlobalAction) -> Result<()> {
+        let db_path = crate::memory::default_db_path();
+        let store = crate::memory::SqliteMemoryStore::new(&db_path)?;
+        let mut mgr = crate::memory::MemoryManager::new(Box::new(store), "global");
+        mgr = mgr.with_container("_global");
+        match action {
+            GlobalAction::List { limit } => {
+                let q = crate::memory::MemoryQuery {
+                    limit: *limit,
+                    container_tag: Some("_global".to_string()),
+                    ..Default::default()
+                };
+                match mgr.store().query(&q) {
+                    Ok(entries) => {
+                        println!("🌐 Global memories ({}):", entries.len());
+                        for e in entries {
+                            println!("  [{}] {}", e.memory_type, e.content);
+                        }
+                    }
+                    Err(err) => eprintln!("query failed: {err}"),
+                }
+            }
+            GlobalAction::Forget { id } => {
+                mgr.store().delete(id)?;
+                println!("🗑  Forgot global memory: {}", id);
             }
         }
         Ok(())
