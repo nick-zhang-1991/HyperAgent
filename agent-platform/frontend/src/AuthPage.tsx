@@ -69,7 +69,6 @@ export default function AuthPage({ onAuth }: { onAuth: (t: string, u: any) => vo
           </button>
         </div>
 
-        <p className="text-center text-xs mt-6" style={{color:'rgba(148,163,184,0.4)'}}>Multi-Agent Orchestration · 20 Languages · SQLite · JWT</p>
       </div>
     </div>
   );

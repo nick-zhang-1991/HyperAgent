@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn hybrid_empty_query_returns_empty() {
         let (retriever, _tmp) = setup_retriever();
-        let results = retriever.recall("", 5).unwrap();
+        let results = retriever.retrieve("", 5).unwrap();
         assert!(results.is_empty() || results.len() <= 5);
         drop(retriever);
         let _ = std::fs::remove_dir_all(&_tmp);
@@ -191,7 +191,7 @@ mod tests {
     fn hybrid_query_finds_exact_match() {
         let (retriever, _tmp) = setup_retriever();
         // Memory has "User prefers concise responses" from the test setup
-        let results = retriever.recall("rust", 5).unwrap();
+        let results = retriever.retrieve("rust", 5).unwrap();
         // Should not crash, should return 0+ results
         assert!(results.len() <= 5);
         drop(retriever);
