@@ -2091,22 +2091,6 @@ impl MemoryManager {
         Ok(out)
     }
 
-    /// Access the underlying memory store (for low-level operations).
-    /// Search global (cross-project) memories.
-        /// Returns memories from all agents/projects, useful for shared knowledge.
-        pub fn global_search(
-            &self,
-            query: &str,
-            limit: usize,
-        ) -> anyhow::Result<Vec<crate::memory::MemoryEntry>> {
-            // Global search ignores the current container filter
-            self.store.query(&crate::memory::MemoryQuery {
-                text: query.to_string(),
-                limit,
-                ..Default::default()
-            })
-        }
-
     /// Enable auto-promotion of frequently-accessed memories to "global" status.
     /// `threshold` is the importance score (0.0-1.0) above which memories get promoted.
     pub fn with_global_promote(mut self, threshold: f64) -> Self {

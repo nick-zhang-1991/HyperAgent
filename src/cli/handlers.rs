@@ -893,17 +893,21 @@ impl Cli {
                 sm.save(&forked)?;
                 println!("🔀 Forked session: {} → {}", &source.id[..15], &forked.id[..15]);
             }
-                        SessionAction::Share { id } => {
+            SessionAction::Share { id } => {
                 let share_store = crate::session::ShareStore::new();
-                let token = share_store.share(&id);
-                let session_path = format!("{}/hyper/sessions/{}.json",
-                    dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).display(), id);
+                let token = share_store.share(id);
+                let session_path = format!(
+                    "{}/hyper/sessions/{}.json",
+                    dirs_next::data_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .display(),
+                    id
+                );
                 println!("   🔗 Session shared!");
                 println!("   Token: {}", token);
                 println!("   Web:   http://127.0.0.1:3000/api/share/{}", token);
                 println!("   CLI:   hyper session join {}", token);
                 println!("   File:  {}", session_path);
-                Ok(())
             }
             SessionAction::Join { token } => {
                 let share_store = crate::session::ShareStore::new();
@@ -914,15 +918,16 @@ impl Cli {
                             Ok(session) => {
                                 session.display();
                                 println!();
-                                println!("   💡 Run `hyper session fork {}` to continue this session", session_id);
+                                println!(
+                                    "   💡 Run `hyper session fork {}` to continue this session",
+                                    session_id
+                                );
                             }
                             Err(e) => eprintln!("   ❌ Session not found: {e}"),
                         }
-                        Ok(())
                     }
                     None => {
                         eprintln!("   ❌ Invalid or expired share token: {}", token);
-                        Ok(())
                     }
                 }
             }

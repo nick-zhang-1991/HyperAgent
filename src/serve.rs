@@ -278,8 +278,8 @@ async fn feedback_handler(
     );
     match store {
         Ok(store) => {
-            let mut mgr = crate::memory::MemoryManager::new(Box::new(store), "web");
-            mgr.with_global_promote(0.5);
+            let mgr = crate::memory::MemoryManager::new(Box::new(store), "web")
+                .with_global_promote(0.5);
             let text = if req.kind == "good" {
                 format!("✅ [FEEDBACK] User approved: {}", req.reason)
             } else {

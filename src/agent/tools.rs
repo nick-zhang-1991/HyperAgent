@@ -300,6 +300,7 @@ pub fn builtin_tool_definitions(mode: &str, with_memory: bool) -> Vec<ToolDefini
     // General mode: add write_file + http_request for versatility
     if mode == "general" {
         tools.push(ToolDefinition {
+            tool_type: "function".to_string(),
             function: ToolFunction {
                 name: "write_file".into(),
                 description: "Write content to a file in the project directory. Creates parent directories automatically. Use for saving reports, configs, scripts, or any generated content.".into(),
@@ -314,6 +315,7 @@ pub fn builtin_tool_definitions(mode: &str, with_memory: bool) -> Vec<ToolDefini
             },
         });
         tools.push(ToolDefinition {
+            tool_type: "function".to_string(),
             function: ToolFunction {
                 name: "http_request".into(),
                 description: "Send an HTTP request and get the response. Use to call APIs, check website status, download data, or test endpoints. Supports GET and POST.".into(),

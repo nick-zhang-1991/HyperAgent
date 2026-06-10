@@ -863,7 +863,7 @@ impl Cli {
                     }
                 } else {
                     if !*yes {
-                        Self::run_onboarding_checks(dir).await;
+                        run_onboarding_checks(dir).await;
                     }
                     self.build_index(dir, *force).await
                 }

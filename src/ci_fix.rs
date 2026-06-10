@@ -77,7 +77,7 @@ pub async fn run(log_path: Option<&Path>, branch: &str, push: bool) -> Result<()
 /// Use LLM to analyze CI log and identify the root cause
 async fn analyze_ci_failure(log: &str) -> Result<String> {
     let config = crate::config::AppConfig::load();
-    let pool = crate::llm::ProviderPool::new(&config.providers)?;
+    let mut pool = crate::llm::ProviderPool::new(&config.providers)?;
 
     let prompt = format!(
         "You are a CI failure analyzer. Given the following CI build log, identify:\n\
@@ -100,7 +100,7 @@ async fn analyze_ci_failure(log: &str) -> Result<String> {
 /// Apply the fix using HyperAgent's code generation
 async fn apply_fix(analysis: &str) -> Result<bool> {
     let config = crate::config::AppConfig::load();
-    let pool = crate::llm::ProviderPool::new(&config.providers)?;
+    let mut pool = crate::llm::ProviderPool::new(&config.providers)?;
 
     let fix_prompt = format!(
         "Based on this CI failure analysis, generate the exact code changes needed:\n\n{}\n\n\

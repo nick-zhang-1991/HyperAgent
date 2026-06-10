@@ -36,13 +36,14 @@ pub async fn run(prompt: &str, agents: usize, dir: &PathBuf) -> Result<()> {
     println!("🚀 Launching agents...\n");
     let mut handles = Vec::new();
 
-    for (i, task) in sub_tasks.iter().enumerate() {
+    for (i, task) in sub_tasks.iter().cloned().enumerate() {
         let prompt_clone = task.prompt.clone();
         let dir_clone = dir.clone();
         let idx = i + 1;
+        let title_clone = task.title.clone();
 
         let handle = tokio::spawn(async move {
-            println!("   {}", i18n::t_with("swarm_agent_start", &[&idx.to_string(), &task.title]));
+            println!("   {}", i18n::t_with("swarm_agent_start", &[&idx.to_string(), &title_clone]));
             let result = run_agent(&prompt_clone, &dir_clone, idx).await;
             match &result {
                 Ok(()) => println!("   [Agent {}] ✅ Complete", idx),
@@ -87,20 +88,28 @@ pub async fn run(prompt: &str, agents: usize, dir: &PathBuf) -> Result<()> {
 
 /// Decompose a complex task into sub-tasks using the LLM
 async fn decompose_task(prompt: &str, num_agents: usize) -> Result<Vec<SubTask>> {
-    let config = crate::config::AppConfig::load()
-        .context("Failed to load config")?;
+    let config = crate::config::AppConfig::load();
 
     let provider = crate::llm::LlmProvider::new(
-        config.llm.providers.first()
-            .map(|c| c.model.as_deref().unwrap_or("gpt-4o"))
+        config
+            .providers
+            .first()
+            .map(|c| c.models.first().map(|s| s.as_str()).unwrap_or("gpt-4o"))
             .unwrap_or("gpt-4o"),
-        &config.llm.providers.first()
+        config
+            .providers
+            .first()
             .map(|c| c.base_url.as_str())
             .unwrap_or("https://api.openai.com/v1"),
-        &config.llm.providers.first()
+        config
+            .providers
+            .first()
             .map(|c| c.api_key.as_str())
             .unwrap_or(""),
-    ).context("Failed to create provider")?;
+    )
+    .context("Failed to create provider")?;
+
+    let mut provider = provider;
 
     let decomposition_prompt = format!(
         "You are a task decomposition agent. Break down the following complex programming task into {} independent sub-tasks. Each sub-task should be:\n\
