@@ -816,4 +816,46 @@ mod tests {
 
         let _ = std::fs::remove_file(&tmp);
     }
+
+    #[tokio::test]
+    async fn test_to_tool_definitions_empty() {
+        let reg = McpRegistry::new(std::path::Path::new("/tmp"));
+        let defs = reg.to_tool_definitions().await;
+        assert_eq!(defs.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_tools_to_llm_format_empty() {
+        let reg = McpRegistry::new(std::path::Path::new("/tmp"));
+        let s = reg.tools_to_llm_format().await;
+        assert_eq!(s, "");
+    }
+
+    #[tokio::test]
+    async fn test_list_connections_empty() {
+        let reg = McpRegistry::new(std::path::Path::new("/tmp"));
+        let conns = reg.list_connections().await;
+        assert_eq!(conns.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_all_tools_empty() {
+        let reg = McpRegistry::new(std::path::Path::new("/tmp"));
+        let tools = reg.get_all_tools().await;
+        assert_eq!(tools.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_no_panic() {
+        let reg = McpRegistry::new(std::path::Path::new("/tmp"));
+        reg.shutdown().await;
+        // Just verify it doesn't panic
+    }
+
+    #[tokio::test]
+    async fn test_call_tool_nonexistent() {
+        let reg = McpRegistry::new(std::path::Path::new("/tmp"));
+        let result = reg.call_tool("nonexistent.tool", serde_json::json!({})).await;
+        assert!(result.is_err());
+    }
 }

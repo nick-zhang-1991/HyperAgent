@@ -329,3 +329,123 @@ pub async fn start_server(port: u16, host: &str) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn test_health_handler() {
+        let resp = health_handler().await;
+        let v = resp.0;
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["name"], "HyperAgent");
+        assert!(v["version"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_sessions_handler_empty() {
+        let state = Arc::new(AppState {
+            configs: vec![],
+            sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        });
+        let resp = sessions_handler(axum::extract::State(state)).await;
+        let v = resp.0;
+        assert_eq!(v["count"], 0);
+        assert!(v["sessions"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sessions_handler_with_sessions() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("s1".to_string(), vec![]);
+        map.insert("s2".to_string(), vec![]);
+        let state = Arc::new(AppState {
+            configs: vec![],
+            sessions: Arc::new(Mutex::new(map)),
+        });
+        let resp = sessions_handler(axum::extract::State(state)).await;
+        let v = resp.0;
+        assert_eq!(v["count"], 2);
+        assert_eq!(v["sessions"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_error_response_construction() {
+        let e = ErrorResponse { error: "test error".into() };
+        assert_eq!(e.error, "test error");
+    }
+
+    #[test]
+    fn test_error_response_serialize() {
+        let e = ErrorResponse { error: "boom".into() };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains("\"error\":\"boom\""));
+    }
+
+    #[test]
+    fn test_chat_request_construction() {
+        let r = ChatRequest {
+            message: "hello".into(),
+            session_id: Some("s1".into()),
+        };
+        assert_eq!(r.message, "hello");
+        assert_eq!(r.session_id, Some("s1".into()));
+    }
+
+    #[test]
+    fn test_chat_request_no_session() {
+        let r = ChatRequest {
+            message: "hi".into(),
+            session_id: None,
+        };
+        assert!(r.session_id.is_none());
+    }
+
+    #[test]
+    fn test_chat_request_deserialize() {
+        let json = r#"{"message": "test", "session_id": "abc"}"#;
+        let r: ChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(r.message, "test");
+        assert_eq!(r.session_id, Some("abc".into()));
+    }
+
+    #[test]
+    fn test_chat_response_serialize() {
+        let r = ChatResponse {
+            response: "hello".into(),
+            session_id: "s1".into(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"response\":\"hello\""));
+        assert!(json.contains("\"session_id\":\"s1\""));
+    }
+
+    #[test]
+    fn test_feedback_request_construction() {
+        let r = FeedbackRequest {
+            kind: "good".into(),
+            reason: "Great job".into(),
+        };
+        assert_eq!(r.kind, "good");
+    }
+
+    #[test]
+    fn test_feedback_request_deserialize_bad() {
+        let json = r#"{"kind": "bad", "reason": "wrong answer"}"#;
+        let r: FeedbackRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(r.kind, "bad");
+        assert_eq!(r.reason, "wrong answer");
+    }
+
+    #[test]
+    fn test_app_state_construction() {
+        let state = AppState {
+            configs: vec![],
+            sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        };
+        assert_eq!(state.configs.len(), 0);
+    }
+}

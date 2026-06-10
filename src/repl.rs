@@ -852,3 +852,143 @@ fn get_memory_count(path: &Path) -> Option<usize> {
         Err(_) => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    // ── looks_like_coding_task ─────────────────────────────────
+
+    #[test]
+    fn test_looks_like_coding_task_empty() {
+        assert!(!looks_like_coding_task(""));
+        assert!(!looks_like_coding_task("   "));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_code_fence() {
+        assert!(looks_like_coding_task("Here's some code:\n```rust\nfn x() {}\n```"));
+        assert!(looks_like_coding_task("```python\nprint('hi')\n```"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_inline_backticks() {
+        assert!(looks_like_coding_task("Call `foo()` with `bar::baz`"));
+        assert!(looks_like_coding_task("Use `path/to/file.rs`"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_file_extensions() {
+        assert!(looks_like_coding_task("Look at main.rs"));
+        assert!(looks_like_coding_task("Update index.tsx"));
+        assert!(looks_like_coding_task("Edit config.toml"));
+        assert!(looks_like_coding_task("Check package.json"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_english_verbs() {
+        assert!(looks_like_coding_task("implement the function"));
+        assert!(looks_like_coding_task("refactor the code"));
+        assert!(looks_like_coding_task("fix the bug"));
+        assert!(looks_like_coding_task("add a new feature"));
+        assert!(looks_like_coding_task("remove the old method"));
+        assert!(looks_like_coding_task("rename the variable"));
+        assert!(looks_like_coding_task("extract the helper"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_chinese_verbs() {
+        assert!(looks_like_coding_task("实现一个新的函数"));
+        assert!(looks_like_coding_task("写一个测试"));
+        assert!(looks_like_coding_task("修改这段代码"));
+        assert!(looks_like_coding_task("删除旧的文件"));
+        assert!(looks_like_coding_task("重构一下"));
+        assert!(looks_like_coding_task("修复这个bug"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_dev_commands() {
+        assert!(looks_like_coding_task("run cargo build"));
+        assert!(looks_like_coding_task("execute cargo test"));
+        assert!(looks_like_coding_task("run npm install"));
+        assert!(looks_like_coding_task("try pytest"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_in_file_pattern() {
+        assert!(looks_like_coding_task("change the function in src/main.rs"));
+        assert!(looks_like_coding_task("edit the code in tests/foo.rs"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_code_keywords() {
+        assert!(looks_like_coding_task("add a fn new_helper"));
+        assert!(looks_like_coding_task("create struct User"));
+        assert!(looks_like_coding_task("implement trait Display"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_plain_question() {
+        assert!(!looks_like_coding_task("what is a closure"));
+        assert!(!looks_like_coding_task("explain Rust's borrow checker"));
+        assert!(!looks_like_coding_task("tell me a joke"));
+        assert!(!looks_like_coding_task("hello"));
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_false_positive_avoidance() {
+        // "fixed" alone should not be detected as a coding task
+        // (since it's in the past tense without imperative form)
+        // The function uses word-boundary detection
+        let result = looks_like_coding_task("I fixed the bug yesterday");
+        // "fixed" doesn't match "fix" exactly due to word-boundary
+        // but "fix" is in coding_verbs - and "fix" doesn't appear in this string
+        // but "fix" does match the verb list
+        // Actually "fixed" contains "fix" as substring - need to check boundary logic
+        // "fix" would match at index 2, before is space (good), after is "e" (alphanumeric, so NOT a word boundary)
+        // So this should NOT be a coding task
+        assert!(!result, "past-tense 'fixed' should not be detected");
+    }
+
+    #[test]
+    fn test_looks_like_coding_task_cargo_toml_mention() {
+        assert!(looks_like_coding_task("update Cargo.toml"));
+        assert!(looks_like_coding_task("edit pyproject.toml"));
+    }
+
+    // ── get_memory_count ──────────────────────────────────────
+
+    #[test]
+    fn test_get_memory_count_nonexistent_path() {
+        let p = Path::new("/nonexistent/path/that/does/not/exist/db.sqlite");
+        assert_eq!(get_memory_count(p), Some(0));
+    }
+
+    #[test]
+    fn test_get_memory_count_with_empty_db() {
+        let dir = std::env::temp_dir().join(format!("hyperagent_repl_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let db_path = dir.join("mem.sqlite");
+        // Create an empty SQLite db
+        let _ = rusqlite::Connection::open(&db_path).unwrap();
+        // An empty db without memories table returns 0 from the COUNT query
+        // Actually COUNT(*) on a non-existent table would fail and unwrap_or(0) would kick in
+        let count = get_memory_count(&db_path);
+        assert_eq!(count, Some(0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_get_memory_count_with_memories_table() {
+        let dir = std::env::temp_dir().join(format!("hyperagent_repl_mem_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let db_path = dir.join("mem.sqlite");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT); INSERT INTO memories (content) VALUES ('a'), ('b'), ('c');").unwrap();
+        drop(conn);
+        let count = get_memory_count(&db_path);
+        assert_eq!(count, Some(3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
